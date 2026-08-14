@@ -1,0 +1,178 @@
+"use client"
+
+import * as React from "react"
+import { REGEXP_ONLY_DIGITS } from "input-otp"
+import { QRCodeSVG } from "qrcode.react"
+
+import { cn } from "@/lib/utils"
+import {
+  InputOTP,
+  InputOTPGroup,
+  InputOTPSlot,
+} from "@/components/ui/input-otp"
+import {
+  BackLink,
+  Heading,
+  PrimaryButton,
+  StepIcon,
+  Subtext,
+} from "../parts"
+import { AlertCircleIcon, MfaIcon } from "../icons"
+import { mfaMessageForError } from "@/lib/login-client"
+
+type StartResult = { ok: true; secret: string; otpauthUri: string } | { ok: false; error: string }
+type ActivateResult = { ok: true; recoveryCodes: string[] } | { ok: false; error: string }
+
+export function StepMfaEnroll({
+  onStart,
+  onActivate,
+  onDone,
+  onBack,
+}: {
+  onStart: () => Promise<StartResult>
+  onActivate: (code: string) => Promise<ActivateResult>
+  onDone: () => void
+  onBack: () => void
+}) {
+  const [uri, setUri] = React.useState<string | null>(null)
+  const [secret, setSecret] = React.useState("")
+  const [code, setCode] = React.useState("")
+  const [codes, setCodes] = React.useState<string[] | null>(null)
+  const [error, setError] = React.useState<string | null>(null)
+  const [loading, setLoading] = React.useState(false)
+  const started = React.useRef(false)
+
+  // Kick off enrollment once on mount: fetch the pending secret + provisioning URI.
+  React.useEffect(() => {
+    if (started.current) return
+    started.current = true
+    onStart().then((r) => {
+      if (r.ok) {
+        setUri(r.otpauthUri)
+        setSecret(r.secret)
+      } else {
+        setError(mfaMessageForError(r.error))
+      }
+    })
+  }, [onStart])
+
+  async function handleActivate(e: React.FormEvent) {
+    e.preventDefault()
+    if (loading) return
+    if (code.length < 6) {
+      setError("Please enter all 6 digits.")
+      return
+    }
+    setError(null)
+    setLoading(true)
+    const r = await onActivate(code)
+    setLoading(false)
+    if (r.ok) {
+      setCodes(r.recoveryCodes)
+    } else {
+      setError(mfaMessageForError(r.error))
+      setCode("")
+    }
+  }
+
+  // ── Recovery-codes screen (shown once, after activation) ──
+  if (codes) {
+    return (
+      <>
+        <StepIcon>
+          <MfaIcon />
+        </StepIcon>
+        <Heading>Save your recovery codes</Heading>
+        <Subtext>
+          Store these somewhere safe. Each code works <strong>once</strong> if you lose your
+          authenticator — they won’t be shown again.
+        </Subtext>
+
+        <ul className="my-5 grid grid-cols-2 gap-2 rounded-[10px] border-[1.5px] border-input bg-ao-field p-4 font-mono text-[14px] text-ao-ink">
+          {codes.map((c) => (
+            <li key={c} className="text-center tracking-wide tabular-nums select-all">
+              {c}
+            </li>
+          ))}
+        </ul>
+
+        <PrimaryButton type="button" onClick={onDone}>
+          I’ve saved my codes
+        </PrimaryButton>
+      </>
+    )
+  }
+
+  const invalid = Boolean(error)
+  const slotClass = cn(
+    "h-[58px] w-full rounded-[10px] border-[1.5px]! border-input bg-ao-field text-[22px] font-semibold text-ao-ink transition-[border-color,box-shadow,background-color] max-[520px]:h-[52px] max-[520px]:text-[20px]",
+    "data-[active=true]:z-10 data-[active=true]:border-primary data-[active=true]:bg-white data-[active=true]:ring-4 data-[active=true]:ring-[var(--ao-orange-soft)]",
+    "data-[filled=true]:border-primary data-[filled=true]:bg-white",
+    invalid &&
+      "border-destructive bg-ao-error-bg data-[active=true]:border-destructive data-[active=true]:ring-destructive/15 data-[filled=true]:border-destructive"
+  )
+
+  return (
+    <>
+      <StepIcon>
+        <MfaIcon />
+      </StepIcon>
+      <Heading>Set up two-factor authentication</Heading>
+      <Subtext>
+        Scan this QR code with your authenticator app, then enter the 6-digit code it shows.
+      </Subtext>
+
+      <div className="my-5 flex flex-col items-center gap-3">
+        {uri ? (
+          <div className="rounded-[12px] border-[1.5px] border-input bg-white p-3">
+            <QRCodeSVG value={uri} size={168} marginSize={0} />
+          </div>
+        ) : (
+          <div className="grid h-[192px] w-[192px] place-items-center rounded-[12px] border-[1.5px] border-input bg-ao-field text-[13px] text-ao-muted">
+            {error ? "Couldn’t start setup" : "Loading…"}
+          </div>
+        )}
+        {secret && (
+          <p className="text-center text-[12.5px] text-ao-muted">
+            Can’t scan? Enter this key:{" "}
+            <span className="font-mono font-semibold tracking-wide text-ao-ink select-all">{secret}</span>
+          </p>
+        )}
+      </div>
+
+      <form onSubmit={handleActivate} noValidate>
+        <InputOTP
+          maxLength={6}
+          pattern={REGEXP_ONLY_DIGITS}
+          value={code}
+          onChange={(v) => {
+            setCode(v)
+            if (error) setError(null)
+          }}
+          aria-invalid={invalid}
+          disabled={!uri}
+          containerClassName="w-full"
+        >
+          <InputOTPGroup className="grid w-full grid-cols-6 gap-2.5 max-[520px]:gap-[7px]">
+            {[0, 1, 2, 3, 4, 5].map((i) => (
+              <InputOTPSlot key={i} index={i} className={slotClass} />
+            ))}
+          </InputOTPGroup>
+        </InputOTP>
+
+        {invalid && (
+          <p className="mt-3.5 flex items-center justify-center gap-[5px] text-[12.5px] font-medium text-ao-error">
+            <AlertCircleIcon className="size-[13px]" />
+            <span>{error}</span>
+          </p>
+        )}
+
+        <PrimaryButton loading={loading} loadingLabel="Verifying">
+          Turn on two-factor
+        </PrimaryButton>
+      </form>
+
+      <BackLink onClick={onBack} />
+    </>
+  )
+}

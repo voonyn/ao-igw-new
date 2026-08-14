@@ -1,0 +1,77 @@
+App:
+  name: "AO Identity Gateway"
+  version: 0.1
+  environment: development
+  timezone: Asia/Kuching
+  url: "http://localhost:8080"
+  login_url: "http://localhost:3000"
+  portal_url: "http://localhost:3001"
+  console_url: "http://localhost:3002"
+
+Server:
+  host: 0.0.0.0
+  port: 8080
+  header_name: AO_ID_GW
+  prefork: false
+  # Reverse-proxy/LB IPs or CIDRs whose X-Forwarded-For / X-Forwarded-Host the
+  # gateway trusts (the real client IP for rate limiting + audit, and tenant
+  # selection). Requests from any other peer have their forwarding headers
+  # ignored. Defaults to loopback (an on-host nginx). NEVER use 0.0.0.0/0 in
+  # production — that re-enables header spoofing. Env override
+  # AO_SERVER_TRUSTED_PROXIES (comma-separated).
+  trusted_proxies:
+    - 127.0.0.1/32
+    - ::1/128
+
+Database:
+  driver: mysql
+  host: localhost
+  port: 3306
+  name: ao_identity
+  username: root
+  password: ""
+  # Encrypt the DB connection in transit. When true, TLS is required and startup
+  # fails if it cannot be established. With ssl_ca_path set, the server cert is
+  # verified against that CA; otherwise against the host system root store.
+  ssl_mode: false
+  # Optional PEM CA bundle path used to verify the DB server certificate when
+  # ssl_mode is true. Leave empty to verify against system roots.
+  ssl_ca_path: ""
+
+  # Database connection pool settings
+  pool:
+    max_open_conns: 100
+    max_idle_conns: 10
+    max_conn_lifetime: 30m
+    max_conn_idle_time: 5m
+
+  # Encryption key for sensitive data (32 bytes)
+  encryption_key: "1cd6ae77110eaac1b64df002e52ba887"
+
+# Redis configuration (optional but recommended for OIDC)
+Redis:
+  host: localhost
+  port: 6379
+  password: ""
+  database: 0
+
+Log:
+  level: info
+  formatter:
+    format: text
+
+# OIDC routing configuration.
+# Per-tenant provider settings (issuer, token lifetimes, PKCE, rotation, signing
+# keys) are NOT configured here — they live in the database (oidc_provider_configs
+# / oidc_keys) and are selected per request by the request's domain (Zitadel
+# style). Map domains to tenants in the tenant_domains table.
+OIDC:
+  # Shared prefix for every endpoint except discovery (served at the root
+  # /.well-known/openid-configuration). Empty serves endpoints at the root.
+  path_prefix: "/oidc"
+  # Optional trusted header that overrides the request host when resolving the
+  # tenant domain. Takes priority over the verified host (Host / trusted-proxy
+  # X-Forwarded-Host). Override with AO_OIDC_TENANT_HEADER. Empty disables the
+  # header override. Only set this when a trusted proxy injects it — it bypasses
+  # the host trust check.
+  tenant_header: ""

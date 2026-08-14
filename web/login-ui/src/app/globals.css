@@ -1,0 +1,224 @@
+@import "tailwindcss";
+
+/* ============================================================
+   AlphaOmega — design tokens
+   Source of truth: AlphaOmega Login.html (Claude Design handoff)
+   ============================================================ */
+:root {
+  --radius: 10px;
+
+  /* shadcn token surface — the WHITE card is the component surface */
+  --background: #ffffff;
+  --foreground: #1f2024;
+  --card: #ffffff;
+  --card-foreground: #1f2024;
+  --popover: #ffffff;
+  --popover-foreground: #1f2024;
+  --primary: #ee4d2d;
+  --primary-foreground: #ffffff;
+  --secondary: #fafafb;
+  --secondary-foreground: #41434a;
+  --muted: #f4f5f6;
+  --muted-foreground: #8a8d93;
+  --accent: #fff1ee;
+  --accent-foreground: #ee4d2d;
+  --destructive: #e03a20;
+  --destructive-foreground: #ffffff;
+  --border: #e6e7ea;
+  --input: #e6e7ea;
+  --ring: #ee4d2d;
+
+  /* AlphaOmega raw palette (for bespoke chrome) */
+  --ao-charcoal: #1a1a1a;
+  --ao-ink: #1f2024;
+  --ao-label: #41434a;
+  --ao-muted: #8a8d93;
+  --ao-muted-2: #b4b7bd;
+  --ao-orange: #ee4d2d;
+  --ao-orange-bright: #ff6633;
+  --ao-orange-soft: rgba(238, 77, 45, 0.12);
+  --ao-field: #fafafb;
+  --ao-border: #e6e7ea;
+  --ao-error: #e03a20;
+  --ao-error-bg: #fff6f4;
+  --ao-success: #1f9d5b;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  /* AlphaOmega colors exposed as utilities (bg-ao-charcoal, text-ao-muted, …) */
+  --color-ao-charcoal: var(--ao-charcoal);
+  --color-ao-ink: var(--ao-ink);
+  --color-ao-label: var(--ao-label);
+  --color-ao-muted: var(--ao-muted);
+  --color-ao-muted-2: var(--ao-muted-2);
+  --color-ao-orange: var(--ao-orange);
+  --color-ao-orange-bright: var(--ao-orange-bright);
+  --color-ao-field: var(--ao-field);
+  --color-ao-error: var(--ao-error);
+  --color-ao-error-bg: var(--ao-error-bg);
+  --color-ao-success: var(--ao-success);
+
+  --font-sans: var(--font-inter), -apple-system, BlinkMacSystemFont, "Segoe UI",
+    sans-serif;
+
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+
+  --animate-caret-blink: caret-blink 1.25s ease-out infinite;
+}
+
+@keyframes caret-blink {
+  0%,
+  70%,
+  100% {
+    opacity: 1;
+  }
+  20%,
+  50% {
+    opacity: 0;
+  }
+}
+
+@layer base {
+  * {
+    border-color: var(--border);
+  }
+  body {
+    background-color: var(--ao-charcoal);
+    color: var(--foreground);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+}
+
+/* ============================================================
+   Bespoke chrome — not expressible cleanly as utilities
+   ============================================================ */
+
+/* Orange dot-grid pattern, masked to fade at the edges */
+.ao-bg-pattern {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background-image: radial-gradient(
+    circle,
+    rgba(238, 77, 45, 0.16) 1.4px,
+    transparent 1.4px
+  );
+  background-size: 26px 26px;
+  background-position: center;
+  -webkit-mask-image: radial-gradient(
+    ellipse 90% 80% at 50% 50%,
+    #000 35%,
+    transparent 100%
+  );
+  mask-image: radial-gradient(
+    ellipse 90% 80% at 50% 50%,
+    #000 35%,
+    transparent 100%
+  );
+}
+
+/* Soft warm glow behind the card */
+.ao-bg-glow {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  width: 720px;
+  height: 720px;
+  transform: translate(-50%, -50%);
+  z-index: 0;
+  pointer-events: none;
+  background: radial-gradient(
+    circle,
+    rgba(238, 77, 45, 0.1) 0%,
+    transparent 60%
+  );
+}
+
+/* Warm, orange-tinted card shadow (3 layers) */
+.ao-card {
+  box-shadow:
+    0 1px 2px rgba(238, 77, 45, 0.06),
+    0 24px 60px rgba(238, 77, 45, 0.12),
+    0 8px 24px rgba(0, 0, 0, 0.28);
+}
+
+/* Directional step entrance — transform-only so it stays visible even if frozen */
+.ao-step-in {
+  animation: ao-step-in 0.42s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.ao-step-in-back {
+  animation: ao-step-in-back 0.42s cubic-bezier(0.16, 1, 0.3, 1);
+}
+@keyframes ao-step-in {
+  from {
+    transform: translateX(26px);
+  }
+  to {
+    transform: translateX(0);
+  }
+}
+@keyframes ao-step-in-back {
+  from {
+    transform: translateX(-26px);
+  }
+  to {
+    transform: translateX(0);
+  }
+}
+
+/* Loading spinner (button + redirect) */
+.ao-spinner {
+  width: 18px;
+  height: 18px;
+  border: 2.5px solid rgba(255, 255, 255, 0.4);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: ao-spin 0.7s linear infinite;
+}
+.ao-spinner-orange {
+  width: 15px;
+  height: 15px;
+  border: 2.5px solid rgba(238, 77, 45, 0.25);
+  border-top-color: var(--ao-orange);
+  border-radius: 50%;
+  animation: ao-spin 0.7s linear infinite;
+}
+@keyframes ao-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ao-step-in,
+  .ao-step-in-back,
+  .ao-spinner,
+  .ao-spinner-orange {
+    animation: none;
+  }
+}

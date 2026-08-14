@@ -1,0 +1,23 @@
+# Build context for deployments/docker/Dockerfile.web (context = ./web).
+# All three apps share this context; each image COPYs only its own ${APP} dir.
+
+**/node_modules
+**/.next
+**/out
+**/dist
+**/build
+**/coverage
+
+# Local env. Next bakes .env* into the build; runtime config must come from the
+# container environment instead, so keep every .env out of the image. (.env.example
+# is kept only as in-context documentation and is never read by `next build`.)
+**/.env
+**/.env.*
+!**/.env.example
+
+**/*.log
+**/.DS_Store
+**/.vscode
+**/.idea
+**/*.tsbuildinfo
+**/.eslintcache
