@@ -19,7 +19,6 @@ export interface Tenant {
   state: EntityState;
   defaultOrgId: string | null;
   created: string;
-  kind: string;
   domains: TenantDomain[];
 }
 
@@ -141,12 +140,15 @@ export interface ProviderConfig {
   accessTokenLifetime: number;
   idTokenLifetime: number;
   refreshTokenLifetime: number | null;
-  signingAlgs: Record<string, string[]>;
+  /** RFC 8707 resource identifiers a client of this tenant may ask for. Read
+   * only: the admin API's own identifier is in here, and removing it would leave
+   * no way to mint the token that would put it back. */
+  resourceIndicators: string[];
 }
 
 /** A PATCH body for the provider config. Every field is optional: an omitted
- * field is left alone. `issuer`, `state`, `accessTokenType` and `signingAlgs`
- * are absent on purpose — the API does not accept writes to them. */
+ * field is left alone. `issuer`, `state` and `resourceIndicators` are absent on
+ * purpose — the API does not accept writes to them. */
 export interface ProviderConfigBody {
   authCodeLifetime?: number;
   accessTokenLifetime?: number;
@@ -154,6 +156,9 @@ export interface ProviderConfigBody {
   refreshTokenLifetime?: number;
   requirePkce?: boolean;
   refreshRotation?: boolean;
+  /** 'JWT' only. The API accepts the field and refuses 'Opaque', because the
+   * protocol engine does not build a provider that issues one. */
+  accessTokenType?: string;
 }
 
 export interface Key {
@@ -233,18 +238,22 @@ export interface Bootstrap {
 }
 
 /**
- * One page of a growth-bearing list read. Mirrors the Go `page.Page[T]` envelope
- * in `internal/page/page.go` field-for-field — keep the two in sync.
+ * One page of a growth-bearing list read.
  *
- * `nextCursor` is present only while more rows remain, so the absence of one is
- * how a caller tells end-of-list from truncation. `total` is sent only for a
- * request with no cursor (the first page), which is why it is optional rather
- * than a number: an omitted total and a genuine zero are different answers.
+ * `items` is the gateway envelope's `data`, and the four numbers are its `meta`
+ * (`response.Meta` in `internal/api/http/response/response.go`) — keep the two in
+ * sync. The BFF merges them into this one shape.
+ *
+ * Every page carries `total` and `totalPages`, so a pager can address page 7
+ * before an operator has walked to page 6. See
+ * `docs/adr/0007-offset-pagination-for-admin-lists.md`.
  */
 export interface Page<T> {
   items: T[];
-  nextCursor?: string;
-  total?: number;
+  page: number;
+  limit: number;
+  total: number;
+  totalPages: number;
 }
 
 /**

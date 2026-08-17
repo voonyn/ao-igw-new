@@ -4,7 +4,7 @@ import { useId, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Icon } from "@/components/console/icons";
-import { AppTypeBadge, Btn, confirmAction, EntityStateBadge, Field, KV, LoadMore, MonoChip, SelectInput, Toggle, Ts } from "@/components/console/primitives";
+import { AppTypeBadge, Btn, confirmAction, EntityStateBadge, Field, KV, Pager, MonoChip, SelectInput, Toggle, Ts } from "@/components/console/primitives";
 import { DataTable, type Column } from "@/components/console/data-table";
 import { useTabParam } from "@/components/console/detail-route";
 import { StateFilter } from "@/components/views/organizations";
@@ -143,13 +143,13 @@ export function ProjectDetailPage({
             <KV k="Organization" v={orgName(accessibleOrgs, project.orgId)} />
           </SectionCard>
 
-          <SectionCard title="Authorization behaviour" desc="Control how project roles are asserted and enforced when tokens are issued.">
-            {flag(roleAssertion, setRoleAssertion, "Assert roles in tokens", "Include the user’s project roles as claims in issued tokens.")}
-            {flag(roleCheck, setRoleCheck, "Check role on authentication", "Reject sign-in unless the user holds at least one project role.")}
-            {flag(hasProjectCheck, setHasProjectCheck, "Require project grant", "Only users of granted organizations may authenticate to this project.")}
+          <SectionCard title="Authorization behaviour" desc="Not enforced yet. The gateway stores these three settings and reads none of them. Project roles and project grants do not exist here, so no sign-in is blocked and no token changes.">
+            {flag(roleAssertion, setRoleAssertion, "Assert roles in tokens (not enforced yet)", "Intended to include the user’s project roles as claims in issued tokens.")}
+            {flag(roleCheck, setRoleCheck, "Check role on authentication (not enforced yet)", "Intended to reject sign-in unless the user holds at least one project role.")}
+            {flag(hasProjectCheck, setHasProjectCheck, "Require project grant (not enforced yet)", "Intended to admit only users of granted organizations to this project.")}
           </SectionCard>
 
-          <SectionCard title="Private labeling" desc="Which branding a user sees when authenticating to this project’s applications.">
+          <SectionCard title="Private labeling" desc="Not enforced yet. The gateway stores this setting and reads it nowhere. Every user sees the tenant branding.">
             <SelectInput
               value={PL[privateLabeling]}
               options={Object.keys(PL).map((k) => PL[Number(k)])}
@@ -187,7 +187,7 @@ export function ProjectDetailPage({
           {!appList.loading && apps.length === 0 && (
             <div style={{ fontSize: 13, color: "var(--muted)" }}>No applications registered in this project.</div>
           )}
-          <LoadMore list={appList} />
+          <Pager list={appList} />
         </SectionCard>
       )}
     </FullPage>
@@ -278,7 +278,7 @@ export function ProjectsView() {
     },
     {
       key: "flags",
-      header: "Authorization flags",
+      header: "Authorization flags (not enforced yet)",
       className: "hide-md",
       text: (p) =>
         [p.roleAssertion && "assert roles", p.roleCheck && "role check", p.hasProjectCheck && "project grant"]

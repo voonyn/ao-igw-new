@@ -1,37 +1,505 @@
 package http
 
 import (
-	"time"
+	"context"
+	"fmt"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/gofiber/fiber/v3/middleware/healthcheck"
 	"github.com/gofiber/fiber/v3/middleware/requestid"
 	"github.com/uptrace/bun"
 
+	"alphaomega/identitygateway/internal/api/http/middlewares"
 	"alphaomega/identitygateway/internal/api/http/response"
+	apioidc "alphaomega/identitygateway/internal/api/oidc"
+	"alphaomega/identitygateway/internal/application"
+	"alphaomega/identitygateway/internal/audit"
+	"alphaomega/identitygateway/internal/authpolicy"
+	"alphaomega/identitygateway/internal/notification"
+	"alphaomega/identitygateway/internal/oidc"
+	"alphaomega/identitygateway/internal/organization"
 	"alphaomega/identitygateway/internal/platform/cache"
 	"alphaomega/identitygateway/internal/platform/config"
+	"alphaomega/identitygateway/internal/platform/crypto"
+	"alphaomega/identitygateway/internal/platform/db"
 	"alphaomega/identitygateway/internal/platform/logger"
+	"alphaomega/identitygateway/internal/project"
+	"alphaomega/identitygateway/internal/session"
+	"alphaomega/identitygateway/internal/tenant"
+	"alphaomega/identitygateway/internal/user"
 )
 
-const requestTimeout = 30 * time.Second
+// loginPrefix is where the login UI reaches the login steps.
+const loginPrefix = "/api/v1/login"
 
-func Routes(app *fiber.App, cfg *config.Config, bdb *bun.DB, rdb cache.Client, log logger.Logger) {
+// adminPrefix is where the console reaches the admin management API.
+const adminPrefix = "/api/v1/admin"
+
+func Routes(app *fiber.App, cfg *config.Config, bdb *bun.DB, rdb cache.Client, log logger.Logger) error {
 	app.Use(requestid.New())
-
-	// rootPath := app.Group("/")
-
-	// healthSvc := handler.NewHealthCheckService(bdb, rdb, cfg, log)
-	// handler.HealthCheckRoutes(rootPath, healthSvc)
+	app.Use(middlewares.RequestLog(log))
 
 	healthCheckHandler(app)
-	// const oidcPrefix = "/oidc/v1"
 
-	// reg := mountOIDC(rootPath, oidcPrefix, cfg, bdb, rdb, log, auditRec)
+	// The cipher seals the private signing keys, the protocol state, and the
+	// login sessions at rest. A nil cipher stores them as plain JSON, which
+	// server startup allows in development only.
+	var cipher *crypto.Cipher
+	if cfg.Database.EncryptionKey != "" {
+		var err error
+		if cipher, err = crypto.NewCipher(cfg.Database.EncryptionKey); err != nil {
+			return fmt.Errorf("build cipher: %w", err)
+		}
+	}
 
-	// mountLogin(rootPath, "/api/v1/login", oidcPrefix, cfg, bdb, rdb, log, auditRec)
+	// Every request resolves its tenant from the host, so both stacks share one
+	// middleware.
+	lookup := middlewares.DBLookup(
+		tenant.NewRepository(bdb, log),
+		oidc.NewProviderRepository(bdb, log),
+	)
+	tenantMW := middlewares.Tenant(lookup, cfg.OIDC.TenantHeader, log)
+
+	// The audit trail is written on the caller's transaction, so one recorder
+	// serves both stacks.
+	recorder := audit.NewRecorder(audit.NewRepository(bdb).Insert, log)
+
+	storage := oidc.NewStorageRepository(bdb, cipher, log)
+
+	// The scopes of a tenant reach both stacks: the protocol engine advertises
+	// them and releases their claims, and the consent screen renders their
+	// words. One repository serves all three reads.
+	scopeRepo := oidc.NewScopeRepository(bdb, log)
+	scopes := oidc.NewScopeService(oidc.ScopeDeps{List: scopeRepo.List, Log: log})
+	claims := oidc.NewClaimsService(oidc.ClaimsDeps{
+		Mappers: scopeRepo.Mappers,
+		Profile: scopeRepo.Profile,
+		Log:     log,
+	})
+
+	// One transaction manager serves both stacks. The login steps take it as a
+	// service dependency, and the token endpoint takes it as a middleware.
+	tx := db.NewTxManager(bdb)
+
+	// The login session service serves both stacks. The login UI drives it, and
+	// an RP-initiated logout ends a session through it, so it is built once here
+	// and handed to each stack.
+	sessions := newSessionService(bdb, rdb, cipher, recorder, tx.RunInTx, log)
+
+	mountOIDCRoutes(app, cfg, bdb, storage, scopes, claims, recorder, cipher, sessions, tenantMW, tx.RunInTx, log)
+	mountLogin(app, cfg, bdb, cipher, storage, scopes, recorder, sessions, tenantMW, tx.RunInTx, log)
+	mountAdmin(app, bdb, rdb, cipher, storage, recorder, cfg.Notification, tenantMW, tx.RunInTx, log)
 
 	// mountAccount(rootPath, "/api/v1/account", cfg, bdb, rdb, log, auditRec)
+	return nil
+}
+
+// mountOIDCRoutes builds the protocol stack: the domain services each provider
+// reads, and the registry that caches one provider per tenant.
+func mountOIDCRoutes(
+	app *fiber.App, cfg *config.Config, bdb *bun.DB, storage *oidc.StorageRepository,
+	scopes *oidc.ScopeService, claims *oidc.ClaimsService,
+	recorder *audit.Recorder, cipher *crypto.Cipher, sessions *session.Service,
+	tenantMW fiber.Handler, tx db.TxRunner, log logger.Logger,
+) {
+	build := apioidc.NewBuilder(apioidc.Services{
+		PathPrefix: cfg.OIDC.PathPrefix,
+		LoginURL:   cfg.App.LoginURL,
+		Terminate:  sessions.TerminateByID,
+		Keys:       oidc.NewKeyService(oidc.NewKeyRepository(bdb, log), cipher, log),
+		Clients:    oidc.NewClientService(oidc.NewClientRepository(bdb, log), log),
+		Storage:    storage,
+		Scopes:     scopes,
+		Claims:     claims,
+		Audit:      recorder,
+		Log:        log,
+	})
+
+	mountOIDC(app, cfg.OIDC.PathPrefix, tenantMW, apioidc.NewRegistry(build, log), tx, log)
+}
+
+// mountLogin builds the login stack the login UI drives. Only the login UI
+// reaches it, so the group carries the PAT check before the tenant lookup.
+func mountLogin(
+	app *fiber.App, cfg *config.Config, bdb *bun.DB, cipher *crypto.Cipher,
+	storage *oidc.StorageRepository, scopes *oidc.ScopeService, recorder *audit.Recorder,
+	svc *session.Service, tenantMW fiber.Handler, tx db.TxRunner, log logger.Logger,
+) {
+	consents := oidc.NewConsentRepository(bdb, log)
+	consent := oidc.NewConsentService(oidc.ConsentDeps{
+		Find:  consents.Find,
+		Save:  consents.Save,
+		InTx:  tx,
+		Audit: recorder,
+		Log:   log,
+	})
+	complete := apioidc.NewCompleter(apioidc.CompleterDeps{
+		PathPrefix: cfg.OIDC.PathPrefix,
+		Find:       storage.FindSession,
+		Save:       storage.SaveSession,
+		Decide:     consent.Decide,
+		Approve:    consent.Approve,
+		Deny:       consent.Deny,
+		Log:        log,
+	})
+
+	group := app.Group(loginPrefix, middlewares.LoginPAT(cfg.Auth.LoginPATs(), log), tenantMW)
+	session.Routes(group, session.NewHandler(svc, complete, scopes.Describe, log))
+}
+
+// mountAdmin builds the admin management API the console drives.
+//
+// The group carries the tenant lookup and then the bearer guard, so a handler
+// below reads a resolved tenant and a verified subject. The guard admits only a
+// token minted for the admin resource identifier, so a token of the account API
+// never reaches these routes.
+//
+// Every admin write runs in one transaction and records one audit event on it,
+// so the group takes the same recorder and the same transaction runner the login
+// stack takes.
+func mountAdmin(
+	app *fiber.App, bdb *bun.DB, rdb cache.Client, cipher *crypto.Cipher,
+	storage *oidc.StorageRepository, recorder *audit.Recorder,
+	notify config.NotificationConfig, tenantMW fiber.Handler, tx db.TxRunner,
+	log logger.Logger,
+) {
+	keyRepo := oidc.NewKeyRepository(bdb, log)
+	keys := oidc.NewKeyService(keyRepo, cipher, log)
+	bearer := middlewares.Bearer(keys.PublicKeySet, oidc.ResourceAdminAPI, log)
+
+	users := user.NewRepository(bdb, log)
+	tenants := tenant.NewRepository(bdb, log)
+	orgs := organization.NewRepository(bdb, log)
+	providers := oidc.NewProviderRepository(bdb, log)
+
+	svc := user.NewService(user.Deps{
+		Find:           users.FindByID,
+		Tenant:         tenants.FindByID,
+		Domains:        tenants.ListDomains,
+		TenantRoles:    tenants.MemberRoles,
+		Orgs:           orgs.ListByTenant,
+		OrgMemberships: orgs.ListMemberships,
+
+		List:         users.List,
+		Read:         users.Read,
+		Org:          orgs.FindByID,
+		Insert:       users.Insert,
+		InsertHuman:  users.InsertHuman,
+		InsertMember: orgs.InsertMembership,
+		UpdateHuman:  users.UpdateHuman,
+		SetState:     users.SetState,
+		Unlock:       users.Unlock,
+		SoftDelete:   users.SoftDelete,
+		InsertToken:  users.InsertToken,
+		ClearMFA:     users.ClearMFA,
+		TenantMember: tenants.FindMember,
+
+		CountTenantOwners: tenants.CountOwners,
+
+		InTx:  tx,
+		Audit: recorder,
+		Log:   log,
+	})
+
+	orgSvc := organization.NewService(organization.Deps{
+		List:        orgs.List,
+		Find:        orgs.FindByID,
+		Insert:      orgs.Insert,
+		Rename:      orgs.Rename,
+		Delete:      orgs.SoftDelete,
+		Tenant:      tenants.FindByID,
+		TenantRoles: tenants.MemberRoles,
+		Memberships: orgs.ListMemberships,
+		InTx:        tx,
+		Audit:       recorder,
+		Log:         log,
+	})
+
+	// The two rosters of a tenant are written by one service. The tenant owns
+	// tenant_members and the organization owns organization_members, so each
+	// write is the method of the domain that owns the table.
+	memberSvc := organization.NewMemberService(organization.MemberDeps{
+		ListTenantMembers:  tenants.ListMembers,
+		ListOrgMembers:     orgs.ListMembers,
+		SaveTenantMember:   tenants.SaveMember,
+		SaveOrgMember:      orgs.SaveMembership,
+		DeleteTenantMember: tenants.DeleteMember,
+		DeleteOrgMember:    orgs.DeleteMembership,
+		CountTenantOwners:  tenants.CountOwners,
+		Org:                orgs.FindByID,
+		TenantRoles:        tenants.MemberRoles,
+		Memberships:        orgs.ListMemberships,
+		InTx:               tx,
+		Audit:              recorder,
+		Log:                log,
+	})
+
+	projects := project.NewRepository(bdb, log)
+	projectSvc := project.NewService(project.Deps{
+		List:        projects.List,
+		Find:        projects.FindByID,
+		Insert:      projects.Insert,
+		Update:      projects.Update,
+		Delete:      projects.SoftDelete,
+		TenantRoles: tenants.MemberRoles,
+		Memberships: orgs.ListMemberships,
+		InTx:        tx,
+		Audit:       recorder,
+		Log:         log,
+	})
+
+	apps := application.NewRepository(bdb, log)
+	appSvc := application.NewService(application.Deps{
+		List:         apps.List,
+		Find:         apps.FindByID,
+		Configs:      apps.Configs,
+		Project:      projects.FindByID,
+		Insert:       apps.Insert,
+		InsertConfig: apps.InsertConfig,
+		Update:       apps.Update,
+		UpdateConfig: apps.UpdateConfig,
+		SetSecret:    apps.SetSecret,
+		Delete:       apps.SoftDelete,
+		TenantRoles:  tenants.MemberRoles,
+		Memberships:  orgs.ListMemberships,
+		InTx:         tx,
+		Audit:        recorder,
+		Log:          log,
+	})
+
+	// The login sessions of a tenant, and the grants they fan out to. A revoke
+	// hard deletes both, from the database and from the cache: a session and a
+	// grant are consumed rows, and neither is recoverable once it ends. See
+	// docs/adr/0002-session-storage.md.
+	loginSessions := session.NewRepository(bdb, cipher, log)
+	sessionSvc := session.NewAdminService(session.AdminDeps{
+		List:             loginSessions.ListSessions,
+		Revoke:           session.CachingRevoker(rdb, loginSessions.DeleteSession, log),
+		RevokeUser:       session.CachingUserRevoker(rdb, loginSessions.DeleteUserSessions, log),
+		RevokeGrants:     storage.DeleteGrantsByLoginSession,
+		RevokeUserGrants: storage.DeleteGrantsBySubject,
+		TenantRoles:      tenants.MemberRoles,
+		InTx:             tx,
+		Audit:            recorder,
+		Log:              log,
+	})
+
+	grantSvc := oidc.NewGrantService(oidc.GrantDeps{
+		List:        storage.ListGrants,
+		TenantRoles: tenants.MemberRoles,
+		Log:         log,
+	})
+
+	// The tenant record, the hostnames it answers on, and the bootstrap marker.
+	// A domain remove flips the row to inactive: tenant_domains.domain is
+	// globally unique, so a delete would free the host for another tenant and
+	// the removal could not be undone.
+	tenantSvc := tenant.NewAdminService(tenant.AdminDeps{
+		Tenant:        tenants.FindByID,
+		Domains:       tenants.ListAllDomains,
+		FindDomain:    tenants.FindDomain,
+		InsertDomain:  tenants.InsertDomain,
+		RestoreDomain: tenants.RestoreDomain,
+		RemoveDomain:  tenants.DeactivateDomain,
+		Bootstrap:     tenants.ReadBootstrap,
+		TenantRoles:   tenants.MemberRoles,
+		InTx:          tx,
+		Audit:         recorder,
+		Log:           log,
+	})
+
+	// The protocol settings and the signing keys of the tenant. The key service
+	// above serves the protocol, and this one serves the console: the read
+	// carries the lifecycle columns and no key material.
+	scopeRepo := oidc.NewScopeRepository(bdb, log)
+	scopeSvc := oidc.NewScopeAdminService(oidc.ScopeAdminDeps{
+		ListScopes:      scopeRepo.ListScopes,
+		FindScope:       scopeRepo.FindScope,
+		FindScopeByName: scopeRepo.FindScopeByName,
+
+		InsertScope: scopeRepo.InsertScope,
+		UpdateScope: scopeRepo.UpdateScope,
+		DeleteScope: scopeRepo.DeleteScope,
+
+		CountClientsWithScope: scopeRepo.CountClientsWithScope,
+
+		ListMappers:  scopeRepo.ListMappers,
+		FindMapper:   scopeRepo.FindMapper,
+		CountMappers: scopeRepo.CountMappers,
+
+		InsertMapper: scopeRepo.InsertMapper,
+		UpdateMapper: scopeRepo.UpdateMapper,
+		DeleteMapper: scopeRepo.DeleteMapper,
+
+		TenantRoles: tenants.MemberRoles,
+		InTx:        tx,
+		Audit:       recorder,
+		Log:         log,
+	})
+
+	// The lockout, password, and recovery rules of the tenant, and the override
+	// of each organization. A read resolves the two levels, and a write
+	// replaces one of them.
+	policies := authpolicy.NewRepository(bdb, log)
+	policySvc := authpolicy.NewService(authpolicy.Deps{
+		Find:        policies.Find,
+		Upsert:      policies.Upsert,
+		Remove:      policies.Remove,
+		Org:         orgs.FindByID,
+		TenantRoles: tenants.MemberRoles,
+		Memberships: orgs.ListMemberships,
+		InTx:        tx,
+		Audit:       recorder,
+		Log:         log,
+	})
+
+	// How the tenant sends mail, and the message each key renders. The relay is
+	// tenant-wide, and a template resolves the organization override over the
+	// tenant one over the message the gateway ships.
+	notifications := notification.NewRepository(bdb, cipher, log)
+	notificationSvc := notification.NewService(notification.Deps{
+		FindSettings:   notifications.FindSettings,
+		UpsertSettings: notifications.UpsertSettings,
+		FindTemplate:   notifications.FindTemplate,
+		UpsertTemplate: notifications.UpsertTemplate,
+		RemoveTemplate: notifications.RemoveTemplate,
+		Send:           notification.NewSender(log),
+		// What a tenant that stores no row sends with. The configuration layer
+		// carries the transport, the port, the TLS mode, and the timeout as
+		// defaults, so this value is always complete.
+		Defaults: notification.Settings{
+			Transport:     notify.Transport,
+			SMTPHost:      notify.SMTPHost,
+			SMTPPort:      notify.SMTPPort,
+			SMTPUsername:  notify.SMTPUsername,
+			Password:      notify.SMTPPassword,
+			FromAddress:   notify.FromAddress,
+			FromName:      notify.FromName,
+			TLSMode:       notify.TLSMode,
+			SendTimeoutMS: int(notify.SendTimeout.Milliseconds()),
+		},
+		Org:            orgs.FindByID,
+		TenantRoles:    tenants.MemberRoles,
+		Memberships:    orgs.ListMemberships,
+		InTx:           tx,
+		Audit:          recorder,
+		Log:            log,
+	})
+
+	// What every write above left behind. The feed is a read and nothing more:
+	// a row of audit_events records a fact, so it is never updated and never
+	// deleted.
+	auditSvc := audit.NewService(audit.Deps{
+		List:          audit.NewRepository(bdb).ListEvents,
+		TenantManager: tenants.IsManager,
+		Log:           log,
+	})
+
+	providerSvc := oidc.NewAdminService(oidc.AdminDeps{
+		Provider:    providers.ReadByTenant,
+		Update:      providers.Update,
+		Keys:        keyRepo.ListKeys,
+		TenantRoles: tenants.MemberRoles,
+		InTx:        tx,
+		Audit:       recorder,
+		Log:         log,
+	})
+
+	group := app.Group(adminPrefix, tenantMW, bearer)
+	tenant.AdminRoutes(group, tenant.NewAdminHandler(tenantSvc, tenantActor, log))
+	oidc.AdminRoutes(group, oidc.NewAdminHandler(providerSvc, providerActor, log))
+	oidc.ScopeAdminRoutes(group, oidc.NewScopeAdminHandler(scopeSvc, providerActor, log))
+	user.AdminRoutes(group, user.NewHandler(svc, log))
+	organization.AdminRoutes(group, organization.NewHandler(orgSvc, log))
+	organization.MemberRoutes(group, organization.NewMemberHandler(memberSvc, log))
+	project.AdminRoutes(group, project.NewHandler(projectSvc, log))
+	application.AdminRoutes(group, application.NewHandler(appSvc, log))
+	session.AdminRoutes(group, session.NewAdminHandler(sessionSvc, log))
+	session.GrantRoutes(group, session.NewGrantHandler(grantSvc, log))
+	authpolicy.AdminRoutes(group, authpolicy.NewHandler(policySvc, log))
+	notification.AdminRoutes(group, notification.NewHandler(notificationSvc, log))
+	audit.AdminRoutes(group, audit.NewHandler(auditSvc, auditActor, log),
+		middlewares.Paginate(audit.SortKeys...))
+}
+
+// tenantActor, providerActor, and auditActor read the person behind one admin
+// request.
+//
+// Every other domain reads the request for itself. These three cannot: the
+// tenant middleware imports internal/tenant to resolve a host to its tenant and
+// internal/oidc for the provider config of that tenant, and internal/tenant
+// records its own writes through internal/audit. A handler in any of the three
+// packages that imported the middleware would close an import cycle. The router
+// imports everything, so it reads the request here and hands each domain a
+// function value.
+//
+// A read of the audit trail records nothing, so auditActor carries no address
+// and no agent.
+func tenantActor(c fiber.Ctx) tenant.Actor {
+	tc, _ := middlewares.TenantFrom(c)
+	subject, _ := middlewares.SubjectFrom(c)
+
+	return tenant.Actor{
+		TenantID:  tc.TenantID,
+		UserID:    subject,
+		IP:        c.IP(),
+		UserAgent: c.Get(fiber.HeaderUserAgent),
+	}
+}
+
+func auditActor(c fiber.Ctx) audit.Actor {
+	tc, _ := middlewares.TenantFrom(c)
+	subject, _ := middlewares.SubjectFrom(c)
+
+	return audit.Actor{TenantID: tc.TenantID, UserID: subject}
+}
+
+func providerActor(c fiber.Ctx) oidc.AdminActor {
+	tc, _ := middlewares.TenantFrom(c)
+	subject, _ := middlewares.SubjectFrom(c)
+
+	return oidc.AdminActor{
+		TenantID:  tc.TenantID,
+		UserID:    subject,
+		IP:        c.IP(),
+		UserAgent: c.Get(fiber.HeaderUserAgent),
+	}
+}
+
+// newSessionService builds the login session service both stacks share.
+//
+// The database is the source of truth, and Redis is the cache in front of it.
+// See docs/adr/0002-session-storage.md.
+func newSessionService(
+	bdb *bun.DB, rdb cache.Client, cipher *crypto.Cipher, recorder *audit.Recorder,
+	tx db.TxRunner, log logger.Logger,
+) *session.Service {
+	users := user.NewRepository(bdb, log)
+	sessions := session.NewRepository(bdb, cipher, log)
+
+	return session.NewService(session.Deps{
+		Identity:   identityFinder(users),
+		Credential: users.FindPasswordHash,
+		Save:       session.CachingSaver(rdb, sessions.Save, cipher, log),
+		Find:       session.CachedFinder(rdb, sessions.FindByTokenHash, cipher, log),
+		Terminate:  session.CachingTerminator(rdb, sessions.Terminate, log),
+		InTx:       tx,
+		Audit:      recorder,
+		Log:        log,
+	})
+}
+
+// identityFinder adapts the user repository to the session service, which knows
+// a person as an id and an email and nothing more. The password step reads the
+// repository directly, because its signature already matches.
+func identityFinder(users *user.Repository) session.IdentityFinder {
+	return func(ctx context.Context, tenantID, identifier string) (session.Identity, error) {
+		row, err := users.FindByIdentifier(ctx, tenantID, identifier)
+		if err != nil {
+			return session.Identity{}, err
+		}
+		return session.Identity{UserID: row.ID, Email: row.Email}, nil
+	}
 }
 
 func healthCheckHandler(app *fiber.App) {

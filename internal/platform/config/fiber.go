@@ -7,6 +7,8 @@ import (
 	"github.com/bytedance/sonic"
 	"github.com/gofiber/fiber/v3"
 	"github.com/spf13/viper"
+
+	"alphaomega/identitygateway/internal/api/http/response"
 )
 
 // Connection timeouts guard the internet-facing server against slow-client
@@ -35,6 +37,16 @@ func FiberConfig(trustedProxies []string, appName, serverHeader string) fiber.Co
 
 		// Every c.Bind().Body(&req) validates the `validate:` tags here.
 		StructValidator: newStructValidator(),
+
+		// The last stop for an error no handler mapped. Without it, Fiber
+		// writes the raw wrapped text as the body and the response envelope
+		// escapes on every unhandled path.
+		ErrorHandler: response.ErrorHandler,
+
+		// Copy the request locals into the request context, so the request id
+		// reaches a layer that holds only a context.Context. A repository never
+		// sees fiber.Ctx, and every layer logs the request id.
+		PassLocalsToContext: true,
 
 		ReadTimeout:  serverReadTimeout,
 		WriteTimeout: serverWriteTimeout,

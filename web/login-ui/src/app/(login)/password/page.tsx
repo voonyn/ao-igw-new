@@ -7,7 +7,7 @@ import { submitPassword } from "./actions"
 
 export default function LoginPasswordPage() {
   const email = useRequireEmail()
-  const { navigate, authRequest, setMethods } = useLoginFlow()
+  const { navigate, setMethods } = useLoginFlow()
 
   if (!email) return null
 
@@ -16,7 +16,7 @@ export default function LoginPasswordPage() {
       email={email}
       onBack={() => navigate("/identifier", "back")}
       onSubmit={async (password) => {
-        const result = await submitPassword(password, authRequest)
+        const result = await submitPassword(password)
         if (!result.ok) return messageForError(result.error)
         // The gateway signals the next step via methods. A passkey and TOTP are
         // interchangeable second factors; `webauthn`/`otp` challenge an enrolled

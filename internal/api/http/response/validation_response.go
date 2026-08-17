@@ -10,6 +10,7 @@ import (
 // Validation writes 422 with one message per rejected field:
 //
 //	{"code":422,"status":"error","message":"Validation failed",
+//	 "error":"unprocessable_entity",
 //	 "errors":{"identifier":"identifier is required"}}
 //
 // If err is not a validator error, it writes 400 with no field detail, because

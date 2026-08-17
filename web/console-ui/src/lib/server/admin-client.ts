@@ -46,6 +46,9 @@ export async function resolveAccessToken(session: SessionTokens | null): Promise
       sub: session.sub,
       accessToken: rotated.accessToken,
       refreshToken: rotated.refreshToken,
+      // A refresh need not answer with a new id_token. Keep the one the
+      // callback sealed, so the logout hint survives every rotation.
+      idToken: rotated.idToken ?? session.idToken,
       expiresAt: rotated.expiresAt,
     }
     return { accessToken: next.accessToken, session: next, rotated: true }

@@ -1,5 +1,5 @@
-// Package response holds the transport's wire shapes: the two JSON error
-// envelopes the gateway emits and the health-probe payload.
+// Package response holds the transport's wire shapes: the success envelope and
+// the error envelope the gateway emits.
 //
 // It is the old repo's internal/response, moved under internal/api/http per the
 // migration's package mapping. It sits in its own package (rather than in
@@ -9,17 +9,18 @@
 // internal/* and never logs: the caller holds the structured logger.
 package response
 
-type Common struct {
+// Failure is the error envelope. Every error answer reads
+// {code, status, message, error, errors?}.
+//
+// Error is a machine-readable slug, and a client branches on it, never on
+// Message, so a reworded message never changes behaviour. Errors is present
+// only when the answer names the fields that failed.
+type Failure struct {
 	Code    int    `json:"code"`
 	Status  string `json:"status"`
 	Message string `json:"message"`
-}
-
-type ErrorDetails struct {
-	Code    int    `json:"code"`
-	Status  string `json:"status"`
-	Message string `json:"message"`
-	Errors  any    `json:"errors"`
+	Error   string `json:"error"`
+	Errors  any    `json:"errors,omitempty"`
 }
 
 // Success is the envelope for every non-error response. Meta is present only on

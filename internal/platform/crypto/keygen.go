@@ -6,11 +6,13 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
-	"crypto/x509"
+	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"math/big"
 )
 
 // JOSE algorithm identifiers supported by Generate. These match the
@@ -29,62 +31,129 @@ const (
 )
 
 // Generate returns a freshly generated asymmetric key pair for the given
-// JOSE algorithm. publicDER is PKIX-marshaled; privateDER is PKCS8-marshaled.
-// Both payloads are suitable for direct insertion into oidc_keys.
-func Generate(alg string) (publicDER, privateDER []byte, err error) {
+// JOSE algorithm, encoded as JWK JSON (RFC 7517 / RFC 7518). publicJWK holds
+// the public members only and is safe to publish at the JWKS endpoint.
+// privateJWK holds the same members plus the private ones, and must be sealed
+// by the Cipher before it reaches oidc_keys.private_key.
+func Generate(alg string) (publicJWK, privateJWK []byte, err error) {
 	switch alg {
 	case AlgES256:
-		return generateECDSA(elliptic.P256())
+		return generateECDSA(alg, elliptic.P256())
 	case AlgES384:
-		return generateECDSA(elliptic.P384())
+		return generateECDSA(alg, elliptic.P384())
 	case AlgES512:
-		return generateECDSA(elliptic.P521())
+		return generateECDSA(alg, elliptic.P521())
 	case AlgRS256:
-		return generateRSA(2048)
+		return generateRSA(alg, 2048)
 	case AlgRS384:
-		return generateRSA(3072)
+		return generateRSA(alg, 3072)
 	case AlgRS512:
-		return generateRSA(4096)
+		return generateRSA(alg, 4096)
 	// PS* (RSASSA-PSS) sign with ordinary RSA keys: the PSS padding is chosen at
 	// signing time by the JOSE `alg`, not by the key material, so the same RSA
 	// generation backs both RS* and PS* at the matching modulus size.
 	case AlgPS256:
-		return generateRSA(2048)
+		return generateRSA(alg, 2048)
 	case AlgPS384:
-		return generateRSA(3072)
+		return generateRSA(alg, 3072)
 	case AlgPS512:
-		return generateRSA(4096)
+		return generateRSA(alg, 4096)
 	default:
 		return nil, nil, fmt.Errorf("unsupported algorithm %q", alg)
 	}
 }
 
-func generateECDSA(curve elliptic.Curve) ([]byte, []byte, error) {
+// jsonWebKey is the wire shape of one JWK. Members absent for a key type are
+// omitted, so the same struct serves both EC and RSA keys, public and private.
+// No `kid` is set here: the oidc_keys row id is the kid, and it is added when
+// the key set is read.
+type jsonWebKey struct {
+	Kty string `json:"kty"`
+	Alg string `json:"alg"`
+	Use string `json:"use"`
+
+	// EC members.
+	Crv string `json:"crv,omitempty"`
+	X   string `json:"x,omitempty"`
+	Y   string `json:"y,omitempty"`
+
+	// RSA members.
+	N string `json:"n,omitempty"`
+	E string `json:"e,omitempty"`
+
+	// Private members. D is the private scalar for EC and the private exponent
+	// for RSA; the rest are the RSA primes and CRT values.
+	D  string `json:"d,omitempty"`
+	P  string `json:"p,omitempty"`
+	Q  string `json:"q,omitempty"`
+	Dp string `json:"dp,omitempty"`
+	Dq string `json:"dq,omitempty"`
+	Qi string `json:"qi,omitempty"`
+}
+
+func generateECDSA(alg string, curve elliptic.Curve) ([]byte, []byte, error) {
 	priv, err := ecdsa.GenerateKey(curve, rand.Reader)
 	if err != nil {
 		return nil, nil, fmt.Errorf("generate EC key: %w", err)
 	}
-	return marshalKeyPair(&priv.PublicKey, priv)
+	// RFC 7518 section 6.2.1 fixes x, y and d at the octet length of the curve,
+	// so short values keep their leading zeros.
+	size := (curve.Params().BitSize + 7) / 8
+	pub := jsonWebKey{
+		Kty: "EC",
+		Alg: alg,
+		Use: "sig",
+		Crv: curve.Params().Name,
+		X:   b64Fixed(priv.X, size),
+		Y:   b64Fixed(priv.Y, size),
+	}
+	full := pub
+	full.D = b64Fixed(priv.D, size)
+	return marshalKeyPair(pub, full)
 }
 
-func generateRSA(bits int) ([]byte, []byte, error) {
+func generateRSA(alg string, bits int) ([]byte, []byte, error) {
 	priv, err := rsa.GenerateKey(rand.Reader, bits)
 	if err != nil {
 		return nil, nil, fmt.Errorf("generate RSA-%d key: %w", bits, err)
 	}
-	return marshalKeyPair(&priv.PublicKey, priv)
+	pub := jsonWebKey{
+		Kty: "RSA",
+		Alg: alg,
+		Use: "sig",
+		N:   b64Int(priv.N),
+		E:   b64Int(big.NewInt(int64(priv.E))),
+	}
+	full := pub
+	full.D = b64Int(priv.D)
+	full.P = b64Int(priv.Primes[0])
+	full.Q = b64Int(priv.Primes[1])
+	full.Dp = b64Int(priv.Precomputed.Dp)
+	full.Dq = b64Int(priv.Precomputed.Dq)
+	full.Qi = b64Int(priv.Precomputed.Qinv)
+	return marshalKeyPair(pub, full)
 }
 
-func marshalKeyPair(pub any, priv any) ([]byte, []byte, error) {
-	publicDER, err := x509.MarshalPKIXPublicKey(pub)
+func marshalKeyPair(pub, priv jsonWebKey) ([]byte, []byte, error) {
+	publicJWK, err := json.Marshal(pub)
 	if err != nil {
-		return nil, nil, fmt.Errorf("marshal public key: %w", err)
+		return nil, nil, fmt.Errorf("marshal public JWK: %w", err)
 	}
-	privateDER, err := x509.MarshalPKCS8PrivateKey(priv)
+	privateJWK, err := json.Marshal(priv)
 	if err != nil {
-		return nil, nil, fmt.Errorf("marshal private key: %w", err)
+		return nil, nil, fmt.Errorf("marshal private JWK: %w", err)
 	}
-	return publicDER, privateDER, nil
+	return publicJWK, privateJWK, nil
+}
+
+// b64Int encodes a JWK integer member: big-endian, no leading zero octet.
+func b64Int(v *big.Int) string {
+	return base64.RawURLEncoding.EncodeToString(v.Bytes())
+}
+
+// b64Fixed encodes a JWK integer member padded to a fixed octet length.
+func b64Fixed(v *big.Int, size int) string {
+	return base64.RawURLEncoding.EncodeToString(v.FillBytes(make([]byte, size)))
 }
 
 // Cipher provides authenticated symmetric encryption (AES-256-GCM) for

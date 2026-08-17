@@ -15,6 +15,8 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/uptrace/bun"
 
+	"alphaomega/identitygateway/internal/authpolicy"
+	"alphaomega/identitygateway/internal/oidc"
 	"alphaomega/identitygateway/internal/platform/config"
 	"alphaomega/identitygateway/internal/platform/crypto"
 	"alphaomega/identitygateway/internal/platform/db"
@@ -180,8 +182,8 @@ func runBootstrap(cmd *cobra.Command, _ []string) error {
 // signingKey is one generated OIDC key pair, already sealed for storage.
 type signingKey struct {
 	id          string
-	publicDER   []byte
-	privateBlob []byte // encrypted PKCS8 DER, or raw PKCS8 DER when no cipher
+	publicJWK   []byte // public JWK JSON, stored as it is
+	privateBlob []byte // encrypted private JWK JSON, or raw JWK JSON when no cipher
 }
 
 // seedApplication is a default OIDC application (public SPA client).
@@ -189,7 +191,7 @@ type seedApplication struct {
 	id                     string
 	name                   string
 	clientID               string
-	scopeIDs               string // space-separated; goidc validates requested scopes against this
+	scopes                 string // space-separated; goidc validates requested scopes against this
 	redirectURIs           []byte // JSON
 	grantTypes             []byte // JSON
 	responseTypes          []byte // JSON
@@ -281,17 +283,17 @@ func buildBootstrapData(alg string, cipher *crypto.Cipher, adminEmail, adminUser
 }
 
 func generateSigningKey(alg string, cipher *crypto.Cipher) (signingKey, error) {
-	publicDER, privateDER, err := crypto.Generate(alg)
+	publicJWK, privateJWK, err := crypto.Generate(alg)
 	if err != nil {
 		return signingKey{}, err
 	}
-	privateBlob := privateDER
+	privateBlob := privateJWK
 	if cipher != nil {
-		if privateBlob, err = cipher.Encrypt(privateDER); err != nil {
+		if privateBlob, err = cipher.Encrypt(privateJWK); err != nil {
 			return signingKey{}, fmt.Errorf("encrypt private key: %w", err)
 		}
 	}
-	return signingKey{id: utils.NewUUIDv7(), publicDER: publicDER, privateBlob: privateBlob}, nil
+	return signingKey{id: utils.NewUUIDv7(), publicJWK: publicJWK, privateBlob: privateBlob}, nil
 }
 
 func newSeedApplication(name, baseURL string) (seedApplication, error) {
@@ -316,7 +318,7 @@ func newSeedApplication(name, baseURL string) (seedApplication, error) {
 		id:                     utils.NewUUIDv7(),
 		name:                   name,
 		clientID:               utils.NewUUIDv7(),
-		scopeIDs:               "openid profile email offline_access",
+		scopes:                 "openid profile email offline_access",
 		redirectURIs:           redirects,
 		grantTypes:             grants,
 		responseTypes:          responses,
@@ -369,7 +371,7 @@ func applyBootstrap(ctx context.Context, db *bun.DB, bs *bootstrapData, domain, 
 	}
 	// Builtin OIDC scopes + standard claim mappers, matching the existing-tenant
 	// backfill (migration 00020). Without these the DB-driven WithScopes would
-	// advertise only `openid` and the seeded SPA clients (scope_ids
+	// advertise only `openid` and the seeded SPA clients (scopes
 	// "openid profile email offline_access") would fail with invalid_scope.
 	if err := seedBuiltinScopes(ctx, tx, bs.tenantID); err != nil {
 		return err
@@ -479,10 +481,10 @@ func seedApplications(ctx context.Context, tx bun.Tx, bs *bootstrapData) error {
 		if _, err := tx.ExecContext(ctx,
 			`INSERT INTO application_oidc_configs
 			   (app_id, tenant_id, client_id, created_at, token_authn_method, subject_type,
-			    scope_ids, redirect_uris, grant_types, response_types, post_logout_redirect_uris, is_first_party)
+			    scopes, redirect_uris, grant_types, response_types, post_logout_redirect_uris, is_first_party)
 			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
 			app.id, bs.tenantID, app.clientID, now, publicClientAuthMethod, publicSubjectType,
-			app.scopeIDs, string(app.redirectURIs), string(app.grantTypes),
+			app.scopes, string(app.redirectURIs), string(app.grantTypes),
 			string(app.responseTypes), string(app.postLogoutRedirectURIs),
 		); err != nil {
 			return fmt.Errorf("insert oidc config for %q: %w", app.name, err)
@@ -493,9 +495,15 @@ func seedApplications(ctx context.Context, tx bun.Tx, bs *bootstrapData) error {
 
 // seedProviderConfig inserts the tenant's OIDC provider config and primary domain.
 func seedProviderConfig(ctx context.Context, tx bun.Tx, bs *bootstrapData, domain, issuer string) error {
+	// resource_indicators is a MySQL JSON column, and the driver sends a []byte as
+	// a binary string, which MySQL refuses to read as JSON. Bind it as a string.
+	resources, err := toJSON(oidc.SeedResourceIndicators)
+	if err != nil {
+		return err
+	}
 	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO oidc_provider_configs (tenant_id, issuer) VALUES (?, ?)`,
-		bs.tenantID, issuer,
+		`INSERT INTO oidc_provider_configs (tenant_id, issuer, resource_indicators) VALUES (?, ?, ?)`,
+		bs.tenantID, issuer, string(resources),
 	); err != nil {
 		return fmt.Errorf("insert provider config: %w", err)
 	}
@@ -512,18 +520,22 @@ func seedProviderConfig(ctx context.Context, tx bun.Tx, bs *bootstrapData, domai
 // seedSigningKeys inserts the active signing key (serves JWKS now) and a standby
 // key for the next rotation (state=2 inactive, no active_at — flip to state=1 to
 // promote).
+//
+// public_key is a MySQL JSON column, and the driver sends a []byte as a binary
+// string, which MySQL refuses to read as JSON. The public half is therefore
+// bound as a string. private_key is a BLOB and stays bytes.
 func seedSigningKeys(ctx context.Context, tx bun.Tx, bs *bootstrapData) error {
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO oidc_keys (id, tenant_id, key_use, algorithm, state, public_key, private_key, active_at)
 		 VALUES (?, ?, 1, ?, 1, ?, ?, CURRENT_TIMESTAMP(3))`,
-		bs.activeKey.id, bs.tenantID, bs.alg, bs.activeKey.publicDER, bs.activeKey.privateBlob,
+		bs.activeKey.id, bs.tenantID, bs.alg, string(bs.activeKey.publicJWK), bs.activeKey.privateBlob,
 	); err != nil {
 		return fmt.Errorf("insert active signing key: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO oidc_keys (id, tenant_id, key_use, algorithm, state, public_key, private_key)
 		 VALUES (?, ?, 1, ?, 2, ?, ?)`,
-		bs.standbyKey.id, bs.tenantID, bs.alg, bs.standbyKey.publicDER, bs.standbyKey.privateBlob,
+		bs.standbyKey.id, bs.tenantID, bs.alg, string(bs.standbyKey.publicJWK), bs.standbyKey.privateBlob,
 	); err != nil {
 		return fmt.Errorf("insert standby signing key: %w", err)
 	}
@@ -536,18 +548,6 @@ func seedSigningKeys(ctx context.Context, tx bun.Tx, bs *bootstrapData) error {
 // migration (move-auth-settings-to-db). pw_deny_list is left NULL (no default
 // deny-list); the numeric knobs are seeded so the console shows editable values.
 func seedAuthPolicyDefault(ctx context.Context, tx bun.Tx, tenantID string) error {
-	const (
-		DefaultLockoutThreshold  = 5
-		DefaultLockoutWindow     = 15 * time.Minute
-		DefaultLockoutCooldown   = 15 * time.Minute
-		DefaultPwMinLength       = 8
-		DefaultPwMinClasses      = 1
-		DefaultPwCheckBreach     = false
-		DefaultRecoveryResetTTL  = time.Hour
-		DefaultRecoveryVerifyTTL = 24 * time.Hour
-		DefaultMFARequired       = false
-	)
-
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO auth_policy_settings
 		   (tenant_id, org_id, lockout_threshold, lockout_window_ms, lockout_cooldown_ms,
@@ -555,14 +555,14 @@ func seedAuthPolicyDefault(ctx context.Context, tx bun.Tx, tenantID string) erro
 		    recovery_reset_ttl_ms, recovery_verify_ttl_ms)
 		 VALUES (?, '', ?, ?, ?, ?, ?, ?, ?, ?)`,
 		tenantID,
-		DefaultLockoutThreshold,
-		int(DefaultLockoutWindow/time.Millisecond),
-		int(DefaultLockoutCooldown/time.Millisecond),
-		DefaultPwMinLength,
-		DefaultPwMinClasses,
-		DefaultPwCheckBreach,
-		int(DefaultRecoveryResetTTL/time.Millisecond),
-		int(DefaultRecoveryVerifyTTL/time.Millisecond),
+		authpolicy.DefaultLockoutThreshold,
+		int(authpolicy.DefaultLockoutWindow/time.Millisecond),
+		int(authpolicy.DefaultLockoutCooldown/time.Millisecond),
+		authpolicy.DefaultPwMinLength,
+		authpolicy.DefaultPwMinClasses,
+		authpolicy.DefaultPwCheckBreach,
+		int(authpolicy.DefaultRecoveryResetTTL/time.Millisecond),
+		int(authpolicy.DefaultRecoveryVerifyTTL/time.Millisecond),
 	); err != nil {
 		return fmt.Errorf("seed auth policy default: %w", err)
 	}

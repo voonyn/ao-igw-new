@@ -92,7 +92,9 @@ func runServer() error {
 	}
 	defer rdb.Close() //nolint:errcheck
 
-	mountRoutes(app, cfg, bdb, rdb, appLog)
+	if err := mountRoutes(app, cfg, bdb, rdb, appLog); err != nil {
+		return err
+	}
 
 	serverErrors := make(chan error, 1)
 	go startHTTP(app, cfg, appLog, serverErrors)
@@ -147,9 +149,12 @@ func closeDB(bdb *bun.DB, log logger.Logger) {
 	}
 }
 
-func mountRoutes(app *fiber.App, cfg *config.Config, bdb *bun.DB, rdb cache.Client, log logger.Logger) {
-	apihttp.Routes(app, cfg, bdb, rdb, log)
+func mountRoutes(app *fiber.App, cfg *config.Config, bdb *bun.DB, rdb cache.Client, log logger.Logger) error {
+	if err := apihttp.Routes(app, cfg, bdb, rdb, log); err != nil {
+		return err
+	}
 	app.Use(apihttp.NotFoundHandler)
+	return nil
 }
 
 func startHTTP(app *fiber.App, cfg *config.Config, log logger.Logger, serverErrors chan<- error) {

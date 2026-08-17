@@ -20,6 +20,7 @@ import type {
   ProviderConfig,
   ProviderConfigBody,
   Tenant,
+  TenantDomain,
   TenantMember,
   App as AppType,
   User,
@@ -36,7 +37,7 @@ export interface Me {
   displayName: string;
   email: string;
   tenant: Tenant;
-  isInstanceManager: boolean;
+  isTenantManager: boolean;
   tenantRoles: string[];
   orgMemberships: OrgMember[];
   accessibleOrgs: OrgRef[];
@@ -54,7 +55,7 @@ export type CollectionStatus =
 /** The reads the console loads eagerly and shares. Every one of them is BOUNDED:
  * the growth-bearing collections moved into the views that page them, and took
  * their load status with them (a view that owns its fetch owns its error). */
-export const COLLECTION_KEYS = ["keys", "provider", "instance", "bootstrap"] as const;
+export const COLLECTION_KEYS = ["keys", "provider", "tenant", "bootstrap"] as const;
 
 export type CollectionKey = (typeof COLLECTION_KEYS)[number];
 
@@ -100,10 +101,12 @@ export async function getOptional<T>(path: string): Promise<Outcome<T>> {
 // ── Paged list reads ──────────────────────────────────────────────────────────
 //
 // Every growth-bearing list read answers with a `Page<T>` envelope rather than a
-// bare array, and accepts `limit`, `cursor`, and `orgId`. The window is keyset —
-// `cursor` is opaque and must be echoed back verbatim, never constructed — so a
-// row written mid-scroll cannot duplicate or skip an entry the way an offset
-// would.
+// bare array, and accepts `page`, `limit`, and `orgId`. The window is an offset:
+// the console shows a pager, and an operator names a page and goes to it.
+//
+// A row written while an operator reads page 3 shifts every later row by one
+// place, so a row can appear twice or not at all. A refresh corrects the view.
+// See `docs/adr/0007-offset-pagination-for-admin-lists.md`.
 
 /** The narrowing a list read asks the SERVER for: a sort key from that list's
  * allowlist, a direction, a prefix search term, and the typed filters. Every one
@@ -129,14 +132,14 @@ export interface ListQuery {
   type?: number;
 }
 
-/** Options for a paged list read. Omit `cursor` for the first page (the only
- * page that carries a `total`). `orgId` narrows the query server-side; narrowing
- * the returned page in the client instead would shrink it below the requested
- * limit and misreport a full list as exhausted. `userId` narrows the reads that
- * have a subject (sessions, grants, memberships) the same way. */
+/** Options for a paged list read. Omit `page` for page 1. `orgId` narrows the
+ * query server-side; narrowing the returned page in the client instead would
+ * shrink it below the requested limit and misreport a full list as exhausted.
+ * `userId` narrows the reads that have a subject (sessions, grants, memberships)
+ * the same way. */
 export interface PageOpts extends ListQuery {
   limit?: number;
-  cursor?: string;
+  page?: number;
   orgId?: string | null;
   userId?: string;
 }
@@ -144,7 +147,7 @@ export interface PageOpts extends ListQuery {
 function pageQuery(opts: PageOpts = {}): string {
   const q = new URLSearchParams();
   if (opts.limit) q.set("limit", String(opts.limit));
-  if (opts.cursor) q.set("cursor", opts.cursor);
+  if (opts.page && opts.page > 1) q.set("page", String(opts.page));
   if (opts.orgId) q.set("orgId", opts.orgId);
   if (opts.userId) q.set("userId", opts.userId);
   if (opts.sort) q.set("sort", opts.sort);
@@ -169,47 +172,48 @@ export async function getPage<T>(path: string, opts: PageOpts = {}): Promise<Out
  * can drive them all. */
 export type PageReader<P extends Page<unknown>> = (o?: PageOpts) => Promise<Outcome<P>>;
 
-/** The page sizes the gateway serves (`internal/page.AllowedSizes`). A `limit`
- * outside this set is refused, not resized, so every control offering a page size
- * reads its options from here. */
+/** The page sizes the size control offers. The largest is the largest the
+ * gateway serves (`middlewares.maxPageLimit`), so no selection is a size the
+ * gateway would clamp. Every control offering a page size reads its options from
+ * here. */
 export const PAGE_SIZES = [10, 50, 100] as const;
 
-/** Page size for a picker. A `<select>` has no *Load more*, so a picker follows
- * the cursor instead of asking for one oversized page; the largest served size
- * just keeps the number of round trips down. */
-export const PICKER_PAGE = 100;
+/** Page size for an exhaustive read. It is the largest size the gateway serves
+ * (`middlewares.maxPageLimit`), so the walk takes the fewest round trips. A
+ * larger number is clamped, not served, which is why the picker walks pages
+ * instead of asking for one page the size of the collection. */
+export const WALK_PAGE = 100;
 
-/** How many picker pages to follow before stopping. 1000 rows is already an
- * unusable `<select>`; past this the picker reports itself truncated rather than
- * rendering a short list as if it were the whole collection. */
-export const PICKER_MAX_PAGES = 10;
+/** How many pages an exhaustive read follows before it stops. 1000 rows is
+ * already an unusable `<select>`; past this the caller reports itself truncated
+ * rather than rendering a short list as if it were the whole collection. */
+export const WALK_MAX_PAGES = 10;
 
 /**
- * One exhaustive read: follow `nextCursor` until the collection is exhausted or
- * PICKER_MAX_PAGES pages have been read, concatenating the rows. The envelope
- * keeps the first page's shape (its `total`); a `nextCursor` surviving the walk
- * means the bound cut the list short, which is what the caller renders as
- * truncated — a picker as a short `<select>`, an export as a partial file.
+ * One exhaustive read: read page 1, then read the pages after it until the
+ * collection is exhausted or WALK_MAX_PAGES pages have been read.
  *
- * It backs both, because they are the same walk: a `<select>` has no *Load more*
- * and a CSV has no second page, so each follows the cursor under a declared
- * bound and says so when it hits it.
+ * It backs both a picker and an export, because they are the same walk: a
+ * `<select>` has no pager and a CSV has no second page, so each reads the whole
+ * collection under a declared bound and says so when it hits it.
  *
- * A page that fails mid-walk keeps the rows already gathered AND the cursor, so a
- * partial collection still reports itself incomplete rather than as the end.
+ * The answer keeps page 1's shape and its `total`. The caller compares the rows
+ * it holds against that `total` to tell a complete collection from a truncated
+ * one, so a walk that fails mid-way still reports itself incomplete rather than
+ * as the end.
  */
-export async function readPicker<P extends Page<unknown>>(read: PageReader<P>, opts: PageOpts = {}): Promise<Outcome<P>> {
-  const first = await read({ ...opts, limit: PICKER_PAGE });
+export async function readAllPages<P extends Page<unknown>>(read: PageReader<P>, opts: PageOpts = {}): Promise<Outcome<P>> {
+  const first = await read({ ...opts, limit: WALK_PAGE, page: 1 });
   if (!first.ok) return first;
+
   let items = first.data.items ?? [];
-  let cursor = first.data.nextCursor;
-  for (let n = 1; cursor && n < PICKER_MAX_PAGES; n++) {
-    const next = await read({ ...opts, limit: PICKER_PAGE, cursor });
+  const last = Math.min(first.data.totalPages ?? 1, WALK_MAX_PAGES);
+  for (let page = 2; page <= last; page++) {
+    const next = await read({ ...opts, limit: WALK_PAGE, page });
     if (!next.ok) break;
     items = items.concat(next.data.items ?? []);
-    cursor = next.data.nextCursor;
   }
-  return { ok: true, data: { ...first.data, items, nextCursor: cursor } };
+  return { ok: true, data: { ...first.data, items } };
 }
 
 /** The paged collection reads, one per growth-bearing resource. Each is a stable
@@ -222,7 +226,7 @@ export const pages = {
   users: (o?: PageOpts) => getPage<User>("/api/admin/users", o),
   sessions: (o?: PageOpts) => getPage<LoginSession>("/api/admin/sessions", o),
   grants: (o?: PageOpts) => getPage<Grant>("/api/admin/grants", o),
-  /** The tenant's administrator roster. Instance-scoped: an org manager is
+  /** The tenant's administrator roster. Tenant-scoped: an org manager is
    * answered with an empty page rather than a refusal. */
   tenantMembers: (o?: PageOpts) => getPage<TenantMember>("/api/admin/members/tenant", o),
   orgMembers: (o?: PageOpts) => getPage<OrgMember>("/api/admin/members/org", o),
@@ -241,12 +245,12 @@ export interface UserMemberships {
 export const userMemberships = (id: string) =>
   getOptional<UserMemberships>(`/api/admin/users/${encodeURIComponent(id)}/memberships`);
 
-/** Reads just the `total` of a scoped collection — the smallest served page
- * fetched and discarded, the count taken server-side by the same `COUNT(*)`
- * whatever the size. This is how the overview tiles, the sidebar badges and the
- * detail-page counts are sourced now that no view holds a whole collection to
- * measure. A read the caller may not make counts as zero: a badge is not the
- * place to raise a permission error the view itself will state. */
+/** Reads just the `total` of a scoped collection. Every page carries `meta.total`
+ * — the count taken server-side by the same `COUNT(*)` whatever the size — so the
+ * smallest page answers it. This is how the overview tiles, the sidebar badges
+ * and the detail-page counts are sourced now that no view holds a whole
+ * collection to measure. A read the caller may not make counts as zero: a badge
+ * is not the place to raise a permission error the view itself will state. */
 export async function getTotal(path: string, opts: PageOpts = {}): Promise<number> {
   const out = await getPage<unknown>(path, { ...opts, limit: 10 });
   return out.ok ? (out.data.total ?? 0) : 0;
@@ -269,7 +273,7 @@ function settledOptional<T>(r: PromiseSettledResult<Outcome<T>>, fallback: T): [
 
 /**
  * Loads the console's shared state: who the caller is, which organizations they
- * may read, and the bounded singletons (signing keys, provider config, instance,
+ * may read, and the bounded singletons (signing keys, provider config, tenant,
  * bootstrap record).
  *
  * It deliberately loads NO list collection. Every growth-bearing read is paged
@@ -284,19 +288,19 @@ export async function loadConsoleData(): Promise<ConsoleData> {
   const settledAll = await Promise.allSettled([
     getOptional<Key[]>("/api/admin/keys"),
     getOptional<ProviderConfig>("/api/admin/provider"),
-    getOptional<Tenant>("/api/admin/instance"),
+    getOptional<Tenant>("/api/admin/tenant"),
     getOptional<Bootstrap>("/api/admin/bootstrap"),
   ] as const);
 
   const [keys, sKeys] = settledOptional(settledAll[0], [] as Key[]);
   const [provider, sProvider] = settledOptional<ProviderConfig | null>(settledAll[1], null);
-  const [instance, sInstance] = settledOptional<Tenant | null>(settledAll[2], null);
+  const [resolved, sTenant] = settledOptional<Tenant | null>(settledAll[2], null);
   const [bootstrap, sBootstrap] = settledOptional<Bootstrap | null>(settledAll[3], null);
 
   const db: Db = {
-    // The console is bound to one instance; the multi-tenant list is SYSTEM scope
-    // and deferred. `tenants` holds only the resolved instance.
-    tenants: [instance ?? me.tenant],
+    // The console is bound to one tenant; the multi-tenant list is SYSTEM scope
+    // and deferred. `tenants` holds only the resolved tenant.
+    tenants: [resolved ?? me.tenant],
     keys,
     providerConfigs: provider ? { [tenantId]: provider } : {},
   };
@@ -305,7 +309,7 @@ export async function loadConsoleData(): Promise<ConsoleData> {
     me,
     db,
     bootstrap,
-    status: { keys: sKeys, provider: sProvider, instance: sInstance, bootstrap: sBootstrap },
+    status: { keys: sKeys, provider: sProvider, tenant: sTenant, bootstrap: sBootstrap },
   };
 }
 
@@ -511,7 +515,7 @@ export interface AuthPolicyBody {
 }
 
 // authBase is the auth-policy path for a scope: an empty orgId is the tenant
-// default (instance route); a real org id is that org's override route.
+// default (the tenant route); a real org id is that org's override route.
 const authBase = (orgId?: string) =>
   orgId ? `/api/admin/orgs/${encodeURIComponent(orgId)}/settings/auth` : `/api/admin/settings/auth`;
 
@@ -549,10 +553,8 @@ export interface AuditEvent {
   createdAt: string; // RFC3339
 }
 
-export interface AuditPage {
-  events: AuditEvent[];
-  nextCursor?: string;
-}
+/** The audit feed pages the same way every other list does. */
+export type AuditPage = Page<AuditEvent>;
 
 /** Filter/pagination for an audit read. All fields optional; the server ignores
  * empty ones and returns the tenant's whole feed, newest first. */
@@ -564,7 +566,7 @@ export interface AuditQuery {
   from?: string; // RFC3339
   to?: string; // RFC3339
   limit?: number;
-  cursor?: string;
+  page?: number;
 }
 
 /** Client for the audit read API, proxied through the BFF. A non-manager 403 is
@@ -580,7 +582,7 @@ export const auditApi = {
     if (q.from) p.set("from", q.from);
     if (q.to) p.set("to", q.to);
     if (q.limit) p.set("limit", String(q.limit));
-    if (q.cursor) p.set("cursor", q.cursor);
+    if (q.page && q.page > 1) p.set("page", String(q.page));
     const qs = p.toString();
     return getOptional<AuditPage>(`/api/admin/audit${qs ? `?${qs}` : ""}`);
   },
@@ -637,12 +639,12 @@ export interface OrgBody {
   name: string;
 }
 
-/** Tenant (instance) domains. IAM_OWNER-only, and `remove` is a soft delete — the
- * row flips to inactive, so the globally unique domain is not freed for another
- * tenant to claim. Neither call touches DNS, TLS, or the reverse proxy. */
+/** Tenant domains. IAM_OWNER-only, and `remove` is a soft delete — the row flips
+ * to inactive, so the globally unique domain is not freed for another tenant to
+ * claim. Neither call touches DNS, TLS, or the reverse proxy. */
 export const domainsApi = {
-  add: (domain: string) => mutate<{ ok: boolean }>("/api/admin/instance/domains", "POST", { domain }),
-  remove: (domain: string) => mutate<{ ok: boolean }>(`/api/admin/instance/domains/${encodeURIComponent(domain)}`, "DELETE"),
+  add: (domain: string) => mutate<TenantDomain>("/api/admin/tenant/domains", "POST", { domain }),
+  remove: (domain: string) => mutate<void>(`/api/admin/tenant/domains/${encodeURIComponent(domain)}`, "DELETE"),
 };
 
 export const orgsApi = {
@@ -710,7 +712,7 @@ export const appsApi = {
   rotateSecret: (id: string) => mutate<SecretRotationResult>(`/api/admin/applications/${id}/rotate-secret`, "POST"),
 };
 
-/** An empty orgId targets the tenant (instance) membership; a non-empty one an org. */
+/** An empty orgId targets the tenant membership; a non-empty one an org. */
 export interface MemberBody {
   userId?: string;
   orgId: string;
@@ -748,12 +750,30 @@ const MUTATION_MESSAGES: Record<string, string> = {
   forbidden_read: "You don't have permission to view this.",
   not_found: "That item no longer exists, or is outside your access.",
   name_conflict: "That name or identifier is already taken.",
+  // The username is unique inside one tenant. A create and an update both answer
+  // it, and it names the one field the operator has to change.
+  duplicate_username: "Another account of this tenant already holds that username.",
+  // Self-registration points at the tenant's default organization, so deleting
+  // it would leave a new person nowhere to land.
+  default_org: "This is the tenant's default organization and can't be deleted.",
+  // The issuer names the primary host, so removing it would refuse every token
+  // this tenant signed — including the one this console is holding.
+  primary_domain: "This is the tenant's primary domain and can't be removed.",
   invalid_input: "Some fields are invalid — check the form and try again.",
   server_error: "The server hit an error. Please try again.",
   protected_claim: "That claim name is reserved (a protocol or trust claim) and can't be used.",
   scope_in_use: "This scope is still assigned to a client and can't be deleted.",
   limit_exceeded: "Limit exceeded — too many mappers on this scope, or the value is too large.",
   send_failed: "The transport rejected the send — check the SMTP host, credentials, and TLS mode.",
+  // Migration 00020 seeds the OIDC standard scopes. The provider resolves claims
+  // through them, so a tenant cannot delete one — it can disable it.
+  builtin_scope: "This is a built-in OIDC scope and can't be deleted. Disable it instead.",
+  // The tenant default is the bottom level of the auth policy, so it has no
+  // override to remove. Only an organization can be reset.
+  tenant_scope: "The tenant default has nothing to inherit and can't be reset. Clear the fields you no longer set instead.",
+  // Only an IAM_OWNER writes a tenant membership, so a tenant with none left could
+  // never grant one again.
+  last_owner: "The tenant must keep one IAM_OWNER — grant the role to somebody else first.",
 };
 
 /** Maps the gateway's resource-write error codes to a human sentence. */
@@ -797,24 +817,24 @@ export function describeStatus(
 // what to *show*, not what is *allowed*.
 
 /** IAM_OWNER/IAM_ADMIN — tenant-wide write authority. */
-export function canManageInstance(me: Me): boolean {
+export function canManageTenant(me: Me): boolean {
   return me.tenantRoles.includes("IAM_OWNER") || me.tenantRoles.includes("IAM_ADMIN");
 }
 
-/** IAM_OWNER — required to manage tenant (instance) memberships. */
+/** IAM_OWNER — required to manage tenant memberships. */
 export function isIAMOwner(me: Me): boolean {
   return me.tenantRoles.includes("IAM_OWNER");
 }
 
-/** Instance managers, or a caller holding one of `roles` in `orgId`. */
+/** Tenant managers, or a caller holding one of `roles` in `orgId`. */
 export function canWriteOrg(me: Me, orgId: string, roles: string[]): boolean {
-  if (canManageInstance(me)) return true;
+  if (canManageTenant(me)) return true;
   return me.orgMemberships.some((om) => om.orgId === orgId && om.roles.some((r) => roles.includes(r)));
 }
 
 /** The org roles `me` may actually confer in `orgId` (mirrors
  * `Scope.AuthorizeOrgRoleGrant`): ORG_OWNER is the one elevated role, and only
- * an instance manager or a sitting ORG_OWNER may hand it out — otherwise an
+ * a tenant manager or a sitting ORG_OWNER may hand it out — otherwise an
  * ORG_USER_MANAGER could mint an owner. Offering it anyway just buys a 403. */
 export function grantableOrgRoles(me: Me, orgId: string, roles: string[]): string[] {
   if (canWriteOrg(me, orgId, ["ORG_OWNER"])) return roles;
@@ -823,12 +843,12 @@ export function grantableOrgRoles(me: Me, orgId: string, roles: string[]): strin
 
 /** True when the caller can write to at least one org (gates create buttons). */
 export function canWriteAnyOrg(me: Me, roles: string[]): boolean {
-  if (canManageInstance(me)) return true;
+  if (canManageTenant(me)) return true;
   return me.orgMemberships.some((om) => om.roles.some((r) => roles.includes(r)));
 }
 
 // tmplBase is the templates path for a scope: an empty orgId is the tenant
-// default (instance route); a real org id is that org's override route.
+// default (the tenant route); a real org id is that org's override route.
 const tmplBase = (orgId?: string) =>
   orgId
     ? `/api/admin/orgs/${encodeURIComponent(orgId)}/notifications/templates`

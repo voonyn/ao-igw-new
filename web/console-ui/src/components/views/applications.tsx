@@ -444,8 +444,8 @@ export function AppDetailPage({
 export function CreateAppPage({ onClose }: { onClose: () => void }) {
   const projectId = useId();
   const { me } = useConsole();
-  // ponytail: the project picker follows the cursor to exhaustion under a page
-  // bound rather than offering a *Load more* nobody can reach inside a <select>,
+  // ponytail: the project picker reads every page to exhaustion under a page
+  // bound rather than offering a pager nobody can reach inside a <select>,
   // and says so when the bound cuts the list short. Swap in a typeahead over a
   // filtered read if a tenant ever outgrows it.
   const projectPage = usePagedList(pages.projects, "projects", { picker: true });

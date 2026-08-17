@@ -7,7 +7,7 @@ import { useConsole, usePending } from "@/components/console/store";
 import { PageHead } from "@/components/console/page-head";
 import {
   authPolicyApi,
-  canManageInstance,
+  canManageTenant,
   canWriteOrg,
   describeStatus,
   type AuthPolicy,
@@ -51,15 +51,15 @@ function numProblem(key: string, raw: string): string | null {
 
 export function PoliciesView() {
   const { me } = useConsole();
-  const instanceManager = canManageInstance(me);
-  // Orgs whose override the caller may manage: every org for an instance manager,
+  const tenantManager = canManageTenant(me);
+  // Orgs whose override the caller may manage: every org for an tenant manager,
   // else the orgs where the caller is an ORG_OWNER.
   const manageableOrgs = useMemo(
     () => me.accessibleOrgs.filter((o) => canWriteOrg(me, o.id, ["ORG_OWNER"])),
     [me],
   );
 
-  if (!instanceManager && manageableOrgs.length === 0) {
+  if (!tenantManager && manageableOrgs.length === 0) {
     // Pre-emptive refusal, same sentence a 403 would produce: the console
     // decides it here only because it can, not because it means something else.
     const gate = describeStatus({ state: "forbidden" }, POLICIES_RESOURCE, "IAM_OWNER or IAM_ADMIN", "ORG_OWNER")!;
@@ -74,19 +74,19 @@ export function PoliciesView() {
     );
   }
 
-  return <AuthPolicyManager instanceManager={instanceManager} manageableOrgs={manageableOrgs} />;
+  return <AuthPolicyManager tenantManager={tenantManager} manageableOrgs={manageableOrgs} />;
 }
 
 function AuthPolicyManager({
-  instanceManager,
+  tenantManager,
   manageableOrgs,
 }: {
-  instanceManager: boolean;
+  tenantManager: boolean;
   manageableOrgs: OrgRef[];
 }) {
   const scopeId = useId();
-  // Scope: "" = tenant default (instance managers only); else an org id override.
-  const [scope, setScope] = useState<string>(instanceManager ? "" : manageableOrgs[0]?.id ?? "");
+  // Scope: "" = tenant default (tenant managers only); else an org id override.
+  const [scope, setScope] = useState<string>(tenantManager ? "" : manageableOrgs[0]?.id ?? "");
   const [pol, setPol] = useState<AuthPolicy | null>(null);
 
   // Same shape as audit.tsx: a refused read resolves to the shared sentence, and
@@ -127,6 +127,7 @@ function AuthPolicyManager({
           <>
             Lockout, password strength, and recovery-token lifetimes. The tenant default governs every
             organization; an organization override changes only the fields it sets and inherits the rest.
+            A field the tenant does not set keeps the gateway default.
           </>
         }
       />
@@ -142,7 +143,7 @@ function AuthPolicyManager({
           value={scope}
           onChange={(e) => setScope(e.target.value)}
         >
-          {instanceManager && <option value="">Tenant default</option>}
+          {tenantManager && <option value="">Tenant default</option>}
           {manageableOrgs.map((o) => (
             <option key={o.id} value={o.id}>
               {o.name} (override)
@@ -180,16 +181,21 @@ function PolicyForm({ pol, scope, onReload }: { pol: AuthPolicy; scope: string; 
   const [breach, setBreach] = useState(pol.pwCheckBreach);
   const [mfaRequired, setMfaRequired] = useState(pol.mfaRequired);
   const [deny, setDeny] = useState(pol.pwDenyList.join("\n"));
-  // Which fields are overridden at THIS org scope (ignored at the tenant scope,
-  // where every field is always set).
+  // Which fields are set at THIS scope, as the API reports them. It answers
+  // `overridden` truthfully at the tenant scope too: a tenant that never stored a
+  // field reads the gateway default, and the console used to render that as the
+  // tenant's own setting.
   const [over, setOver] = useState<Set<string>>(
     () => new Set(Object.entries(pol.overridden).filter(([, v]) => v).map(([k]) => k)),
   );
   const [saving, run] = usePending();
 
-  // A field is editable when it is set at this scope: always at the tenant scope,
-  // and only when overridden at an org scope.
-  const active = (key: string) => !isOrg || over.has(key);
+  // A field is editable when it is set at this scope. There is a level below
+  // either scope: the tenant default under an organization, and the gateway
+  // default under the tenant.
+  const active = (key: string) => over.has(key);
+  // What an unset field falls back to at this scope.
+  const inheritedFrom = isOrg ? "Inherited from the tenant default." : "Not set — the gateway default applies.";
 
   // Only fields actually being written are validated — an inherited field is
   // sent as null and its input is disabled.
@@ -206,8 +212,10 @@ function PolicyForm({ pol, scope, onReload }: { pol: AuthPolicy; scope: string; 
 
   async function save() {
     if (problems.length > 0) return;
-    // At an org scope an inactive (not overridden) field is sent as null so it
-    // inherits the tenant default; at the tenant scope every field is set.
+    // A field that is not set here is sent as null, so it keeps inheriting the
+    // level below: the tenant default at an org scope, and the gateway default at
+    // the tenant scope. Sending the resolved value instead would freeze today's
+    // gateway default into the row.
     const val = <T,>(key: string, v: T): T | null => (active(key) ? v : null);
     const n = (key: string) => val(key, Number(num[key]));
     const body: AuthPolicyBody = {
@@ -249,7 +257,7 @@ function PolicyForm({ pol, scope, onReload }: { pol: AuthPolicy; scope: string; 
           <label className="field-label" style={{ margin: 0 }} htmlFor={fieldId + key}>
             {label}
           </label>
-          {isOrg && <OverrideToggle on={over.has(key)} onChange={(v) => toggleOver(key, v)} />}
+          <OverrideToggle isOrg={isOrg} on={over.has(key)} onChange={(v) => toggleOver(key, v)} />
         </div>
         <input
           id={fieldId + key}
@@ -265,7 +273,7 @@ function PolicyForm({ pol, scope, onReload }: { pol: AuthPolicy; scope: string; 
           onChange={(e) => setNum((s) => ({ ...s, [key]: e.target.value }))}
         />
         <div style={{ fontSize: 11.5, color: problem ? "var(--error)" : "var(--muted-2)", marginTop: 4 }}>
-          {problem ?? (on ? hint : "Inherited from the tenant default.")}
+          {problem ?? (on ? hint : inheritedFrom)}
         </div>
       </div>
     );
@@ -293,7 +301,7 @@ function PolicyForm({ pol, scope, onReload }: { pol: AuthPolicy; scope: string; 
         <div style={{ marginBottom: 14 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
             <span className="field-label" style={{ margin: 0 }}>Check breached passwords (Have I Been Pwned)</span>
-            {isOrg && <OverrideToggle on={over.has("pwCheckBreach")} onChange={(v) => toggleOver("pwCheckBreach", v)} />}
+            <OverrideToggle isOrg={isOrg} on={over.has("pwCheckBreach")} onChange={(v) => toggleOver("pwCheckBreach", v)} />
           </div>
           <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13 }}>
             <input
@@ -302,16 +310,16 @@ function PolicyForm({ pol, scope, onReload }: { pol: AuthPolicy; scope: string; 
               disabled={!active("pwCheckBreach")}
               onChange={(e) => setBreach(e.target.checked)}
             />
-            {active("pwCheckBreach") ? "Reject known-breached passwords" : "Inherited from the tenant default."}
+            {active("pwCheckBreach") ? "Reject known-breached passwords" : inheritedFrom}
           </label>
         </div>
 
         <div>
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
             <label className="field-label" style={{ margin: 0 }} htmlFor={fieldId + "pwDenyList"}>
-              Deny-list (one per line; org override replaces the tenant list)
+              Deny-list (one per line; a list set here replaces the one below)
             </label>
-            {isOrg && <OverrideToggle on={over.has("pwDenyList")} onChange={(v) => toggleOver("pwDenyList", v)} />}
+            <OverrideToggle isOrg={isOrg} on={over.has("pwDenyList")} onChange={(v) => toggleOver("pwDenyList", v)} />
           </div>
           <textarea
             id={fieldId + "pwDenyList"}
@@ -339,7 +347,7 @@ function PolicyForm({ pol, scope, onReload }: { pol: AuthPolicy; scope: string; 
         <div>
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
             <span className="field-label" style={{ margin: 0 }}>Require two-factor authentication (TOTP)</span>
-            {isOrg && <OverrideToggle on={over.has("mfaRequired")} onChange={(v) => toggleOver("mfaRequired", v)} />}
+            <OverrideToggle isOrg={isOrg} on={over.has("mfaRequired")} onChange={(v) => toggleOver("mfaRequired", v)} />
           </div>
           <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13 }}>
             <input
@@ -350,7 +358,7 @@ function PolicyForm({ pol, scope, onReload }: { pol: AuthPolicy; scope: string; 
             />
             {active("mfaRequired")
               ? "Force users to set up an authenticator app on next sign-in"
-              : "Inherited from the tenant default."}
+              : inheritedFrom}
           </label>
         </div>
       </div>
@@ -381,10 +389,13 @@ function PolicyForm({ pol, scope, onReload }: { pol: AuthPolicy; scope: string; 
   );
 }
 
-function OverrideToggle({ on, onChange }: { on: boolean; onChange: (v: boolean) => void }) {
+/** Whether one field is set at the scope on screen. An organization overrides the
+ * tenant default; the tenant overrides the gateway default. Both levels have
+ * something below them, so both scopes carry the toggle. */
+function OverrideToggle({ isOrg, on, onChange }: { isOrg: boolean; on: boolean; onChange: (v: boolean) => void }) {
   return (
     <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "var(--muted)", marginLeft: "auto" }}>
-      <input type="checkbox" checked={on} onChange={(e) => onChange(e.target.checked)} /> Override
+      <input type="checkbox" checked={on} onChange={(e) => onChange(e.target.checked)} /> {isOrg ? "Override" : "Set here"}
     </label>
   );
 }

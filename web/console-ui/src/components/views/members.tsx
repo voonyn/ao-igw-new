@@ -7,7 +7,7 @@ import { DataTable, type BulkAction, type Column } from "@/components/console/da
 import { FullPage, Menu, SectionCard } from "@/components/console/overlays";
 import { useConsole, usePagedList, usePending, type PagedList } from "@/components/console/store";
 import { PageHead } from "@/components/console/page-head";
-import { canWriteOrg, grantableOrgRoles, isIAMOwner, membersApi, notificationsApi, pages, readPicker } from "@/lib/console-api";
+import { canWriteOrg, grantableOrgRoles, isIAMOwner, membersApi, notificationsApi, pages, readAllPages } from "@/lib/console-api";
 import { IAM_ROLES, ORG_ROLES } from "@/lib/data";
 import { nameOr, orgName, userDisplay } from "@/lib/helpers";
 import type { OrgMember, Page, TenantMember } from "@/lib/types";
@@ -89,7 +89,7 @@ function RoleEditor({
 }
 
 /** The user ids already holding a membership at this scope, so the picker cannot
- * offer a duplicate. Follows the cursor on the same bound as the picker itself:
+ * offer a duplicate. Walks the pages on the same bound as the picker itself:
  * an exclusion set that stops early would offer a duplicate the write then
  * refuses. */
 function useExistingMembers(scope: "tenant" | "org", orgId: string | null): Set<string> {
@@ -98,7 +98,7 @@ function useExistingMembers(scope: "tenant" | "org", orgId: string | null): Set<
   useEffect(() => {
     let cancelled = false;
     const read = scope === "tenant" ? pages.tenantMembers : pages.orgMembers;
-    readPicker(read, { orgId: scope === "tenant" ? null : orgId })
+    readAllPages(read, { orgId: scope === "tenant" ? null : orgId })
       .then((out) => {
         if (cancelled || !out.ok) return;
         setIds(new Set((out.data.items ?? []).map((m) => m.userId)));
@@ -305,8 +305,8 @@ export function MembersView() {
   const [busy, run] = usePending();
   const selOrg = orgs.find((o) => o.name === orgNameSel);
 
-  // Two collections, two reads, two cursors. They used to arrive in one envelope
-  // whose cursor and total described the org half alone while the tenant roster
+  // Two collections, two reads, two pages. They used to arrive in one envelope
+  // whose page and total described the org half alone while the tenant roster
   // rode along unpaged — so the roster could carry no count of its own and no
   // way to advance. Each tab now owns a page under the same contract.
   //

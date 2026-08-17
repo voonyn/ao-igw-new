@@ -4,10 +4,14 @@ export const metadata = {
   title: "No access — AlphaOmega Console",
 }
 
+// The portal is where a person without an administrative role belongs. An unset
+// AO_PORTAL_URL renders no link, rather than a link to a guess.
+const PORTAL_URL = process.env.AO_PORTAL_URL ?? ""
+
 const COPY: Record<string, { title: string; body: string }> = {
   not_a_console_user: {
     title: "You don't have console access",
-    body: "Your account signed in, but it isn't a member of this instance. Ask an administrator to grant you a tenant or organization membership, then try again.",
+    body: "Your account signed in, but the console needs an administrator role: IAM_OWNER or IAM_ADMIN on the tenant, or ORG_OWNER or ORG_USER_MANAGER in an organization. Ask an administrator to grant you one. To manage your own account, use the portal.",
   },
   invalid_state: {
     title: "Sign-in could not be verified",
@@ -36,6 +40,7 @@ export default async function NoAccessPage({
 }) {
   const { error } = await searchParams
   const copy = (error && COPY[error]) || COPY.not_a_console_user
+  const showPortal = PORTAL_URL !== "" && (!error || error === "not_a_console_user")
 
   return (
     <main
@@ -55,20 +60,38 @@ export default async function NoAccessPage({
         </div>
         <h1 style={{ margin: "0.75rem 0", fontSize: 26, fontWeight: 700 }}>{copy.title}</h1>
         <p style={{ margin: "0 0 1.75rem", lineHeight: 1.6, opacity: 0.75 }}>{copy.body}</p>
-        <Link
-          href="/auth/logout"
-          style={{
-            display: "inline-block",
-            padding: "0.6rem 1.25rem",
-            borderRadius: 8,
-            background: "#5b6bf5",
-            color: "#fff",
-            fontWeight: 600,
-            textDecoration: "none",
-          }}
-        >
-          Sign in as a different user
-        </Link>
+        <div style={{ display: "flex", gap: "0.75rem", justifyContent: "center", flexWrap: "wrap" }}>
+          <Link
+            href="/auth/logout"
+            style={{
+              display: "inline-block",
+              padding: "0.6rem 1.25rem",
+              borderRadius: 8,
+              background: "#5b6bf5",
+              color: "#fff",
+              fontWeight: 600,
+              textDecoration: "none",
+            }}
+          >
+            Sign in as a different user
+          </Link>
+          {showPortal && (
+            <a
+              href={PORTAL_URL}
+              style={{
+                display: "inline-block",
+                padding: "0.6rem 1.25rem",
+                borderRadius: 8,
+                border: "1px solid #33353c",
+                color: "#e8e9ec",
+                fontWeight: 600,
+                textDecoration: "none",
+              }}
+            >
+              Go to the portal
+            </a>
+          )}
+        </div>
       </div>
     </main>
   )

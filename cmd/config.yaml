@@ -68,7 +68,7 @@ Log:
 OIDC:
   # Shared prefix for every endpoint except discovery (served at the root
   # /.well-known/openid-configuration). Empty serves endpoints at the root.
-  path_prefix: "/oidc"
+  path_prefix: "/oidc/v1"
   # Optional trusted header that overrides the request host when resolving the
   # tenant domain. Takes priority over the verified host (Host / trusted-proxy
   # X-Forwarded-Host). Override with AO_OIDC_TENANT_HEADER. Empty disables the

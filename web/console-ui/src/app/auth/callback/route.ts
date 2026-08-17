@@ -89,12 +89,19 @@ export async function GET(req: NextRequest) {
     return fail("me_unavailable")
   }
 
-  // Finalize: land the user, hand the browser the sealed session (id_token dropped
-  // — console logout is local-only), and drop the now-consumed flow cookie.
+  // Finalize: land the user, hand the browser the sealed session, and drop the
+  // now-consumed flow cookie. The id_token stays in the seal, because the
+  // RP-initiated logout presents it to the gateway as the id_token_hint.
   const res = NextResponse.redirect(consoleURL(flow.returnTo || DEFAULT_LANDING))
   res.cookies.set(
     CONSOLE_SESSION_COOKIE,
-    await sealSession({ sub, accessToken: tokens.accessToken, refreshToken: tokens.refreshToken, expiresAt: tokens.expiresAt }),
+    await sealSession({
+      sub,
+      accessToken: tokens.accessToken,
+      refreshToken: tokens.refreshToken,
+      idToken: tokens.idToken,
+      expiresAt: tokens.expiresAt,
+    }),
     cookieOptions,
   )
   res.cookies.set(CONSOLE_FLOW_COOKIE, "", { ...cookieOptions, maxAge: 0 })

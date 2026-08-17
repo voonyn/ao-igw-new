@@ -10,8 +10,10 @@
  * encrypted, so the tokens stay opaque outside this process (the same "browser
  * never holds a usable token" property the old in-memory store gave us).
  *
- * The id_token is NOT stored: it's validated once at /auth/callback and console
- * logout is local-only, so keeping it out keeps the session cookie small.
+ * The id_token IS stored: console logout is RP-initiated, and the gateway's
+ * end_session_endpoint takes it as the `id_token_hint` that names the session to
+ * end. It is validated once at /auth/callback and never read for its claims
+ * again.
  *
  * Key: AO_CONSOLE_COOKIE_SECRET (>= 32 chars). Unset in production is fatal
  * (fail closed); in development a fixed insecure key is used with a warning,
@@ -50,11 +52,13 @@ export interface Tokens {
   expiresAt: number
 }
 
-/** The finished session: the token set (minus id_token) plus the authenticated `sub`. */
+/** The finished session: the token set plus the authenticated `sub`. */
 export interface SessionTokens {
   sub: string
   accessToken: string
   refreshToken?: string
+  /** Kept for the RP-initiated logout hint, never re-read for its claims. */
+  idToken?: string
   expiresAt: number
 }
 
@@ -145,6 +149,7 @@ export async function openSession(value: string | undefined | null): Promise<Ses
     sub: p.sub,
     accessToken: p.accessToken,
     refreshToken: typeof p.refreshToken === "string" ? p.refreshToken : undefined,
+    idToken: typeof p.idToken === "string" ? p.idToken : undefined,
     expiresAt: typeof p.expiresAt === "number" ? p.expiresAt : 0,
   }
 }

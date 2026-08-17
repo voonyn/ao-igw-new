@@ -6,15 +6,16 @@ import { Avatar, Btn, confirmAction, KV, MonoChip, Seg, SelectInput, Ts } from "
 import { DataTable, type BulkAction, type Column } from "@/components/console/data-table";
 import { Drawer } from "@/components/console/overlays";
 import { usePagedList, usePending } from "@/components/console/store";
-import { canWriteOrg, pages, sessionsApi, type Me } from "@/lib/console-api";
+import { canManageTenant, pages, sessionsApi, type Me } from "@/lib/console-api";
 import { nameOr, orUnknown } from "@/lib/helpers";
 import type { Grant, LoginSession } from "@/lib/types";
 import { useConsole } from "@/components/console/store";
 import { PageHead } from "@/components/console/page-head";
 
-// Org roles that may revoke a user's sessions — the gateway gates force-logout
-// on the session owner's org with exactly this set.
-const SESSION_WRITE_ROLES = ["ORG_OWNER", "ORG_USER_MANAGER"];
+// Force-logout is gated on a TENANT MANAGER, because that is what the gateway
+// gates it on (internal/session/admin_service.go: authorize). A login session is
+// held across every app of the tenant and is not owned by one org, so an org role
+// is not enough — offering the button to an org manager only produced a 403.
 
 function SessionDrawer({
   session,
@@ -28,17 +29,19 @@ function SessionDrawer({
   const who = nameOr(session.userName, session.userId);
   const [busy, run] = usePending();
 
-  // A real revocation: terminate server-side, then re-read. Unlike a user's own
-  // sign-out this also kills offline_access grants, so no refresh token survives.
+  // A real revocation: revoke server-side, then re-read. Unlike a user's own
+  // sign-out this also kills offline_access grants, so no refresh token survives,
+  // and it DELETES the row rather than marking it terminated — the session is a
+  // consumed row (CLAUDE.md), so the confirmation says the record goes.
   async function terminate() {
     const ok = await confirmAction({
-      title: "Terminate this session?",
-      body: `${who} is signed out of every app on this session immediately, and its token grants are revoked — refresh tokens included, so nothing can be renewed. Access tokens already issued live out their remaining TTL at the relying party.`,
-      confirmLabel: "Terminate session",
+      title: "Revoke this session?",
+      body: `${who} is signed out of every app on this session immediately, and its token grants are revoked — refresh tokens included, so nothing can be renewed. Access tokens already issued live out their remaining TTL at the relying party. The session record is deleted, so this row leaves the list: the audit trail keeps the event.`,
+      confirmLabel: "Revoke session",
       destructive: true,
     });
     if (!ok) return;
-    if (await run(() => sessionsApi.revoke(session.id), { ok: "Session terminated — grants revoked", icon: "ban" })) onClose();
+    if (await run(() => sessionsApi.revoke(session.id), { ok: "Session revoked — grants revoked", icon: "ban" })) onClose();
   }
   return (
     <Drawer title={`Session for ${who}`} onClose={onClose} width={480}>
@@ -124,7 +127,7 @@ function SessionDrawer({
         {session.state === 1 && canWrite && (
           <Btn className="btn danger-ghost" pending={busy} onClick={terminate}>
             <Icon name="logout" size={15} />
-            Terminate session
+            Revoke session
           </Btn>
         )}
         <button type="button" className="btn ghost" style={{ marginLeft: "auto" }} onClick={onClose}>
@@ -137,11 +140,15 @@ function SessionDrawer({
 
 /** A session's state is a LIFECYCLE, not a soft delete: the admin read no longer
  * hides terminated sessions, because an operator investigating an account needs
- * to see that a session ended and when. So it is a filter the caller chooses. */
+ * to see that a session ended and when. So it is a filter the caller chooses.
+ *
+ * "Terminated" is a session the PERSON ended by signing out. An administrative
+ * revoke deletes the row instead, so it never shows up under this filter — the
+ * audit trail is where a revoke is read back. */
 const SESSION_STATES: { label: string; value?: number }[] = [
   { label: "All states" },
   { label: "Active", value: 1 },
-  { label: "Terminated", value: 2 },
+  { label: "Terminated (signed out)", value: 2 },
 ];
 
 /** The Sessions table's columns and its bulk terminate. Shared with the user
@@ -226,23 +233,23 @@ export function sessionColumns(): Column<LoginSession>[] {
   ];
 }
 
-/** Terminate, as a bulk action: N of the same `DELETE /sessions/:id` the drawer
+/** Revoke, as a bulk action: N of the same `DELETE /sessions/:id` the drawer
  * issues, one confirmation, and a per-row result. There is no batch endpoint —
  * so authorization, auditing, and error mapping are unchanged by construction. */
 export function terminateBulk(me: Me): BulkAction<LoginSession> {
   return {
-    label: "Terminate",
+    label: "Revoke",
     icon: "logout",
     destructive: true,
-    // An already-terminated session is skipped rather than failed, and a session
-    // in an org the caller cannot write is not attempted at all.
-    applies: (s) => s.state === 1 && canWriteOrg(me, s.orgId, SESSION_WRITE_ROLES),
+    // An already-terminated session is skipped rather than failed, and nothing is
+    // attempted at all unless the caller administers the tenant.
+    applies: (s) => s.state === 1 && canManageTenant(me),
     describe: (s) => nameOr(s.userName, s.userId),
     run: (s) => sessionsApi.revoke(s.id),
     confirm: (n) => ({
-      title: `Terminate ${n} ${n === 1 ? "session" : "sessions"}?`,
-      body: "Each user is signed out of every app on that session immediately and its token grants are revoked — refresh tokens included, so nothing can be renewed. Access tokens already issued live out their remaining TTL at the relying party.",
-      confirmLabel: "Terminate",
+      title: `Revoke ${n} ${n === 1 ? "session" : "sessions"}?`,
+      body: "Each user is signed out of every app on that session immediately and its token grants are revoked — refresh tokens included, so nothing can be renewed. Access tokens already issued live out their remaining TTL at the relying party. Each session record is deleted, so these rows leave the list: the audit trail keeps the events.",
+      confirmLabel: "Revoke",
       destructive: true,
     }),
   };
@@ -310,7 +317,7 @@ export function SessionsView() {
     <div className="fade-in">
       <PageHead
         page="sessions"
-        sub="Durable SSO login sessions and the OIDC grants they fan out to. Terminating a session revokes its grants."
+        sub="Durable SSO login sessions and the OIDC grants they fan out to. Revoking a session revokes its grants and deletes the record."
       />
 
       {isSessions ? (
@@ -352,9 +359,7 @@ export function SessionsView() {
       {open && (
         <SessionDrawer
           session={open}
-          // The owner's org rides on the row: a paged view has no users
-          // collection to look it up in, and the gate cannot be guessed.
-          canWrite={canWriteOrg(me, open.orgId, SESSION_WRITE_ROLES)}
+          canWrite={canManageTenant(me)}
           onClose={() => setOpenId(null)}
         />
       )}

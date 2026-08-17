@@ -7,7 +7,9 @@ CREATE TABLE application_oidc_configs (
     created_at                  DATETIME(3)     NOT NULL,
     expires_at                  DATETIME(3)     NULL        DEFAULT NULL,
 
-    -- ── Secrets  (ENCRYPT at app layer — reversible, NOT hashed) ──
+    -- ── Secrets ──────────────────────────────────────────────
+    -- secret holds a bcrypt hash, never the secret itself. The gateway shows the
+    -- secret once, at creation, and verifies it with crypto.VerifyPassword.
     secret                      TEXT            NULL        DEFAULT NULL,
     secret_expires_at           DATETIME(3)     NULL        DEFAULT NULL,
     registration_token          TEXT            NULL        DEFAULT NULL,
@@ -16,7 +18,9 @@ CREATE TABLE application_oidc_configs (
     -- token_authn_method is kept flat so the app can quickly
     -- determine IsPublic() without deserializing any JSON.
     token_authn_method          VARCHAR(50)     NOT NULL    DEFAULT 'client_secret_basic',
-    scope_ids                   TEXT            NULL        DEFAULT NULL,
+    -- scopes the client can request, as space-separated names. It is the
+    -- allow-list goidc validates an authorization request against.
+    scopes                      TEXT            NULL        DEFAULT NULL,
     subject_type                VARCHAR(20)     NULL        DEFAULT NULL,
     sector_identifier_uri       TEXT            NULL        DEFAULT NULL,
     default_max_age_secs        INT UNSIGNED    NULL        DEFAULT NULL,

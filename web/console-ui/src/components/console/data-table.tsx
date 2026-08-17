@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import { Icon } from "./icons";
 import { Menu } from "./overlays";
-import { Btn, Cbx, confirmAction, LoadMore, PageCount, PageSize, SearchBox, ViewNotice, type ConfirmOptions } from "./primitives";
+import { Btn, Cbx, confirmAction, Pager, PageCount, PageSize, SearchBox, ViewNotice, type ConfirmOptions } from "./primitives";
 import { useConsole, type PagedList } from "./store";
 import { mutationMessage } from "@/lib/console-api";
 import { csvCell, downloadCsv } from "@/lib/csv";
@@ -466,7 +466,7 @@ export function DataTable<T>({
         </div>
       )}
 
-      {!list.error && <LoadMore list={list} />}
+      {!list.error && <Pager list={list} />}
     </div>
   );
 }

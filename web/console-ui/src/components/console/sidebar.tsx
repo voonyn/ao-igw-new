@@ -13,8 +13,8 @@ interface NavItem {
   id: string;
   icon: string;
   count?: number;
-  /** Instance-scoped view: shown only to instance managers (IAM_*). */
-  instanceOnly?: boolean;
+  /** Tenant-scoped view: shown only to tenant managers (IAM_*). */
+  tenantOnly?: boolean;
 }
 
 export function Sidebar() {
@@ -29,14 +29,14 @@ export function Sidebar() {
   const scopeName = selectedOrg ? selectedOrg.name : tenant?.name || "—";
 
   // No `label` here by design: a nav item is named by `PAGE_TITLES` (helpers.ts)
-  // like the breadcrumb and the page heading are. A second table is how
-  // /tenants came to be "Instance Settings" in the nav and "Tenants" everywhere
-  // else on the same screen.
+  // like the breadcrumb and the page heading are. A second table is how /tenants
+  // came to carry one name in the nav and another everywhere else on the same
+  // screen.
   const NAV: { section: string; items: NavItem[] }[] = [
     {
-      // Not "Tenant": this sat directly under the scope control and read as a
-      // tenant selector over a menu that switches organizations. These are the
-      // instance's directory objects.
+      // Not "Tenant": this sits directly under the scope control, where that
+      // heading reads as a tenant selector over a menu that switches
+      // organizations. These are the tenant's directory objects.
       section: "Directory",
       items: [
         { id: "overview", icon: "grid" },
@@ -50,20 +50,20 @@ export function Sidebar() {
     {
       section: "OIDC Provider",
       items: [
-        { id: "provider", icon: "sliders", instanceOnly: true },
-        { id: "scopes", icon: "layers", instanceOnly: true },
-        { id: "keys", icon: "key", count: counts.keys, instanceOnly: true },
+        { id: "provider", icon: "sliders", tenantOnly: true },
+        { id: "scopes", icon: "layers", tenantOnly: true },
+        { id: "keys", icon: "key", count: counts.keys, tenantOnly: true },
         { id: "sessions", icon: "fingerprint", count: counts.sessions },
       ],
     },
     {
-      section: "Instance",
+      section: "Tenant",
       items: [
-        { id: "tenants", icon: "server", instanceOnly: true },
-        { id: "policies", icon: "scroll", instanceOnly: true },
-        { id: "notifications", icon: "mail", instanceOnly: true },
-        { id: "audit", icon: "laptop", instanceOnly: true },
-        { id: "bootstrap", icon: "rocket", instanceOnly: true },
+        { id: "tenants", icon: "server", tenantOnly: true },
+        { id: "policies", icon: "scroll", tenantOnly: true },
+        { id: "notifications", icon: "mail", tenantOnly: true },
+        { id: "audit", icon: "laptop", tenantOnly: true },
+        { id: "bootstrap", icon: "rocket", tenantOnly: true },
       ],
     },
     {
@@ -89,7 +89,7 @@ export function Sidebar() {
         <span className="console-tag">Admin</span>
       </Link>
 
-      {/* The instance this console is bound to — stated, not selectable. The
+      {/* The tenant this console is bound to — stated, not selectable. The
           control below switches ORGANIZATION within it.
 
           Deliberately not a tenant switcher (design.md decision 2): the gateway
@@ -97,7 +97,7 @@ export function Sidebar() {
           the sealed cookie carries no tenant, and no endpoint lists the tenants
           a caller can reach. Switching tenants means authenticating against
           another issuer — a different URL, not a menu. */}
-      <div className="sb-section">{tenant?.name || "Instance"}</div>
+      <div className="sb-section">{tenant?.name || "Tenant"}</div>
 
       <div style={{ position: "relative" }}>
         <button
@@ -149,7 +149,7 @@ export function Sidebar() {
           navigation this is. */}
       <nav aria-label="Console">
         {NAV.map((sec) => {
-          const items = sec.items.filter((it) => !it.instanceOnly || me.isInstanceManager);
+          const items = sec.items.filter((it) => !it.tenantOnly || me.isTenantManager);
           if (items.length === 0) return null;
           return (
             <div key={sec.section}>

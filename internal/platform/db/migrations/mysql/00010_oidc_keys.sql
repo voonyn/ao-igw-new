@@ -2,10 +2,11 @@
 -- Asymmetric key pairs for the instance OpenID Provider. Public halves are
 -- published at the JWKS endpoint (jwks_uri in oidc_provider_configs); private
 -- halves are ENCRYPTED at the app layer (reversible, NOT hashed) before insert.
--- Material is produced by internal/utils/cryptokey: public_key is PKIX-marshaled
--- DER, private_key is PKCS8-marshaled DER, algorithm is the JOSE `alg` value
--- (RS256/RS384/RS512, ES256/ES384/ES512, EdDSA). The row id doubles as the
--- JWKS `kid`.
+-- Material is produced by internal/platform/crypto.Generate: both halves are
+-- JWK JSON (RFC 7517 / RFC 7518), so a row needs no decoding to reach a
+-- goidc.JSONWebKey. algorithm duplicates the JWK `alg` value
+-- (RS256/RS384/RS512, ES256/ES384/ES512, PS256/PS384/PS512) so the signer can
+-- be selected without parsing the key. The row id doubles as the JWKS `kid`.
 CREATE TABLE oidc_keys (
     -- ── Identity & lifecycle ──────────────────────────────────
     id            CHAR(36)     NOT NULL,                /* also published as the JWKS `kid` */
@@ -15,12 +16,8 @@ CREATE TABLE oidc_keys (
     state         TINYINT      NOT NULL DEFAULT 1,      /* 1=active 2=inactive 3=retired */
 
     -- ── Key material ──────────────────────────────────────────
-    public_key    BLOB         NOT NULL,                /* PKIX DER — public, served via JWKS */
-    private_key   BLOB         NOT NULL,                /* PKCS8 DER — ENCRYPTED at app layer */
-
-    -- Extra JWK attributes not derivable from algorithm (e.g. kid override,
-    -- crv, x5c chain, key_ops). NULL for the common case.
-    key_config    JSON         NULL DEFAULT NULL,
+    public_key    JSON         NOT NULL,                /* public JWK — served via JWKS */
+    private_key   BLOB         NOT NULL,                /* private JWK — ENCRYPTED at app layer */
 
     -- ── Rotation window ───────────────────────────────────────
     active_at     DATETIME(3)  NULL DEFAULT NULL,       /* when the key starts signing */

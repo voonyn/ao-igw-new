@@ -84,7 +84,7 @@ function TenantDetailPage({
             <EntityStateBadge state={tenant.state} />
             {tenant.id === currentTenantId && <span className="badge accent">current</span>}
             <span>
-              {tenant.kind} · created <Ts value={tenant.created} />
+              created <Ts value={tenant.created} />
             </span>
             <span>Tenant ID</span>
             <MonoChip value={tenant.id} toast={A.toast} />

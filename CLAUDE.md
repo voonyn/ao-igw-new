@@ -8,13 +8,19 @@ change that works and reads clearly is the right one.
 
 ## Detailed rules
 
+Load `andrej-karpathy-skills:karpathy-guidelines` at the start of every session,
+before any other work.
+
 | Skill | Use it when |
 |---|---|
 | `ao-go-api` | creating or changing a Go file under `internal/` or `cmd/` |
 | `ao-db-migration` | creating or changing a file under `internal/platform/db/migrations` |
 | `ao-nextjs-ui` | creating or changing a TypeScript or TSX file under `web/` |
 
-Read the matching skill before you write the file, not after.
+These skills are mandatory, not optional. If a task touches one of the paths
+above, load the matching `ao-*` skill with the Skill tool first. Read the skill
+before you write the file, not after. If a task touches more than one path, load
+every matching skill.
 
 ## Tech stack
 
@@ -49,12 +55,27 @@ docs/adr/                       architecture decision records
 
 ## Rules that hold everywhere
 
-**Soft delete.** An entity row is never hard deleted. Rows that expire or that record
-a fact are the exception, and the `ao-db-migration` skill lists them.
+**Soft delete for entities.** An entity is a row that a user creates, edits, and
+expects to find again: a tenant, a user, an organization, an application. Delete it
+with `deleted_at`. Every read filters on `deleted_at IS NULL`.
 
-**Never log a credential.** No password, token, secret, private key, session id, or
+Do not use `deleted_at` on other rows. Pick by what the row is:
+
+- A row that expires or is consumed once, such as a session, a token, or a code:
+  hard delete it. The client cannot recover it, and a pruning job removes the rest.
+- A row that stays readable after it stops working, such as a grant or a key: mark
+  it with its own column, for example `revoked_at` or `disabled_at`.
+- A row that records a fact, such as an audit event: never delete it.
+
+The `ao-db-migration` skill lists the tables in each group.
+
+**Never log a credential.** No password, token, secret, private key, or
 authorization code reaches a log line, at any level and in any environment. Log the
 user id instead of the identity.
+
+A session id is not a credential here. The opaque token credentials the session, and
+the id is disclosed to the client in the `/identifier` answer. Log the session id: it
+is the only handle that ties the steps of one sign-in together.
 
 **Log enough to troubleshoot.** Middleware logs each request at `info`. Each layer
 logs entry and exit at `debug`. An error is logged once, at `error`, where it stops

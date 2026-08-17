@@ -8,7 +8,7 @@ import { useConsole, usePending } from "@/components/console/store";
 import { PageHead } from "@/components/console/page-head";
 import { rowActivation } from "@/components/console/data-table";
 import {
-  canManageInstance,
+  canManageTenant,
   canWriteOrg,
   describeStatus,
   mutationMessage,
@@ -36,15 +36,15 @@ const TLS_MODES = [
 
 export function NotificationsView() {
   const { A, me } = useConsole();
-  const instanceManager = canManageInstance(me);
-  // Orgs whose templates the caller may manage: every org for an instance
+  const tenantManager = canManageTenant(me);
+  // Orgs whose templates the caller may manage: every org for a tenant
   // manager, else the orgs where the caller is an ORG_OWNER.
   const manageableOrgs = useMemo(
     () => me.accessibleOrgs.filter((o) => canWriteOrg(me, o.id, ["ORG_OWNER"])),
     [me],
   );
 
-  if (!instanceManager && manageableOrgs.length === 0) {
+  if (!tenantManager && manageableOrgs.length === 0) {
     // Pre-emptive refusal, same sentence a 403 would produce: the console
     // decides it here only because it can, not because it means something else.
     const gate = describeStatus({ state: "forbidden" }, NOTIFICATIONS_RESOURCE, "IAM_OWNER or IAM_ADMIN", "ORG_OWNER")!;
@@ -59,23 +59,23 @@ export function NotificationsView() {
     );
   }
 
-  return <NotificationsManager instanceManager={instanceManager} manageableOrgs={manageableOrgs} toast={A.toast} />;
+  return <NotificationsManager tenantManager={tenantManager} manageableOrgs={manageableOrgs} toast={A.toast} />;
 }
 
 function NotificationsManager({
-  instanceManager,
+  tenantManager,
   manageableOrgs,
   toast,
 }: {
-  instanceManager: boolean;
+  tenantManager: boolean;
   manageableOrgs: OrgRef[];
   toast: (msg: string, icon?: string, severity?: "success" | "error" | "info") => void;
 }) {
   const [settings, setSettings] = useState<NotificationSettings | null>(null);
   const [templates, setTemplates] = useState<NotificationTemplateInfo[] | null>(null);
   const [openKey, setOpenKey] = useState<string | null>(null);
-  // Templates scope: "" = tenant default (instance managers only); else an org id.
-  const [scope, setScope] = useState<string>(instanceManager ? "" : manageableOrgs[0]?.id ?? "");
+  // Templates scope: "" = tenant default (tenant managers only); else an org id.
+  const [scope, setScope] = useState<string>(tenantManager ? "" : manageableOrgs[0]?.id ?? "");
 
   // EH-4, same shape as audit.tsx: `loaded` flips in `finally`, so a failed read
   // renders an error instead of a card that stays blank forever.
@@ -110,8 +110,8 @@ function NotificationsManager({
   }, [toast, scope]);
 
   useEffect(() => {
-    if (instanceManager) void loadSettings();
-  }, [instanceManager, loadSettings]);
+    if (tenantManager) void loadSettings();
+  }, [tenantManager, loadSettings]);
 
   useEffect(() => {
     loadTemplates();
@@ -135,12 +135,12 @@ function NotificationsManager({
         sub={
           <>
             How this tenant sends mail (password resets, verifications, invitations) and the templates it uses. Falls
-            back to the instance default when unset.
+            back to the tenant default when unset.
           </>
         }
       />
 
-      {instanceManager && settingsError && (
+      {tenantManager && settingsError && (
         <ViewNotice
           title={settingsError.title}
           body={settingsError.body}
@@ -148,15 +148,15 @@ function NotificationsManager({
           pending={!settingsLoaded}
         />
       )}
-      {instanceManager && settings && !settingsError && (
+      {tenantManager && settings && !settingsError && (
         <SettingsForm settings={settings} onSaved={loadSettings} />
       )}
-      {instanceManager && <TestSend />}
+      {tenantManager && <TestSend />}
       <TemplatesCard
         templates={templates}
         scope={scope}
         onScope={setScope}
-        instanceManager={instanceManager}
+        tenantManager={tenantManager}
         orgs={manageableOrgs}
         onOpen={setOpenKey}
       />
@@ -208,9 +208,26 @@ function SettingsForm({ settings, onSaved }: { settings: NotificationSettings; o
 
   return (
     <div className="card" style={{ padding: 20, marginBottom: 18 }}>
-      <div className="sect-title" style={{ marginBottom: 14 }}>
+      {/* `configured` is the API's own answer to "can this transport send as it
+          stands": the log transport always can, and SMTP needs a host and a from
+          address. Reading it here is what stops the screen looking configured
+          while every message goes nowhere. */}
+      <div className="sect-title" style={{ marginBottom: 14, display: "flex", alignItems: "center", gap: 10 }}>
         Delivery settings
+        {settings.configured ? (
+          <span className="badge green">
+            <span className="bdot" />
+            ready to send
+          </span>
+        ) : (
+          <span className="badge amber">incomplete — nothing sends</span>
+        )}
       </div>
+      {!settings.configured && (
+        <div style={{ fontSize: 12.5, color: "var(--muted)", marginBottom: 12 }}>
+          The SMTP transport needs a host and a from address before the gateway can deliver a message.
+        </div>
+      )}
 
       <Field label="Transport">
         <select className="text-input" value={transport} onChange={(e) => setTransport(e.target.value)}>
@@ -392,14 +409,14 @@ function TemplatesCard({
   templates,
   scope,
   onScope,
-  instanceManager,
+  tenantManager,
   orgs,
   onOpen,
 }: {
   templates: NotificationTemplateInfo[] | null;
   scope: string;
   onScope: (scope: string) => void;
-  instanceManager: boolean;
+  tenantManager: boolean;
   orgs: OrgRef[];
   onOpen: (key: string) => void;
 }) {
@@ -429,7 +446,7 @@ function TemplatesCard({
             value={scope}
             onChange={(e) => onScope(e.target.value)}
           >
-            {instanceManager && <option value="">Tenant default</option>}
+            {tenantManager && <option value="">Tenant default</option>}
             {orgs.map((o) => (
               <option key={o.id} value={o.id}>
                 {o.name}

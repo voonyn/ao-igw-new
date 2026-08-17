@@ -4,7 +4,7 @@ import { useEffect, useId, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Icon } from "@/components/console/icons";
-import { Avatar, Btn, confirmAction, EntityStateBadge, Field, KV, LoadMore, MonoChip, SelectInput, Ts } from "@/components/console/primitives";
+import { Avatar, Btn, confirmAction, EntityStateBadge, Field, KV, Pager, MonoChip, SelectInput, Ts } from "@/components/console/primitives";
 import { DataTable, type Column } from "@/components/console/data-table";
 import { useTabParam } from "@/components/console/detail-route";
 import { EntityHeader, FullPage, ReadField, SectionCard, Tabs } from "@/components/console/overlays";
@@ -12,12 +12,12 @@ import { useConsole, usePagedList, usePending, type Actions } from "@/components
 import { PageHead } from "@/components/console/page-head";
 import { EntityAuditTab } from "./audit";
 import { sessionColumns, terminateBulk } from "./sessions";
-import { canManageInstance, getTotal, orgsApi, pages } from "@/lib/console-api";
+import { canManageTenant, getTotal, orgsApi, pages } from "@/lib/console-api";
 import { LABELS } from "@/lib/data";
 import { initials, nameOr } from "@/lib/helpers";
 import type { Org } from "@/lib/types";
 
-// Org rename/delete require ORG_OWNER of that org (or an instance manager) —
+// Org rename/delete require ORG_OWNER of that org (or an tenant manager) —
 // the detail route resolves that and passes `canWrite` in.
 // Sessions and Audit fell out of the per-user work: the sessions read already
 // narrows by `orgId`, and `audit_events.entity_id` is indexed — so both are the
@@ -171,7 +171,7 @@ export function OrgDetailPage({
             {!projectList.loading && projects.length === 0 && (
               <div style={{ fontSize: 13, color: "var(--muted)" }}>No projects in this organization.</div>
             )}
-            <LoadMore list={projectList} />
+            <Pager list={projectList} />
           </SectionCard>
           <SectionCard title={`Users (${userCount ?? "…"})`} desc="Identities whose home organization is this one.">
             <div style={{ fontSize: 13, color: "var(--muted)" }}>
@@ -225,7 +225,7 @@ function OrgSessionsTab({ org }: { org: Org }) {
   const { me } = useConsole();
   const list = usePagedList(pages.sessions, "sessions", { orgId: org.id });
   return (
-    <SectionCard title="Login sessions" desc="Every SSO session held by a member of this organization, active and terminated. Terminating a session revokes its token grants — refresh tokens included.">
+    <SectionCard title="Login sessions" desc="Every SSO session held by a member of this organization, active and signed out. Revoking a session revokes its token grants — refresh tokens included — and deletes the record.">
       <DataTable
         id="org-sessions"
         list={list}
@@ -302,7 +302,7 @@ export function StateFilter({ list }: { list: { query: { state?: number }; setQu
 export function OrganizationsView() {
   const { me } = useConsole();
   const router = useRouter();
-  const canCreate = canManageInstance(me);
+  const canCreate = canManageTenant(me);
   const list = usePagedList(pages.orgs, "organizations", { urlSync: true });
 
   const columns: Column<Org>[] = [

@@ -14,6 +14,28 @@ func txFromContext(ctx context.Context) (bun.Tx, bool) {
 	return tx, ok
 }
 
+// TxFrom returns the transaction the context carries, if it carries one.
+//
+// A caller needs this only to move the transaction onto a second carrier. The
+// OIDC stack is the one such caller: the Fiber adaptor hands the protocol
+// engine a request context of its own, and that context reaches the engine's
+// stores instead of this one.
+func TxFrom(ctx context.Context) (bun.Tx, bool) {
+	return txFromContext(ctx)
+}
+
+// TxKey is the key a transaction travels under. A carrier that is not a
+// context.Context, such as a fasthttp request context, must store the
+// transaction under this key for Conn to find it again.
+func TxKey() any {
+	return txKey{}
+}
+
+// TxRunner runs one unit of work on a transaction. It is what
+// TxManager.RunInTx is, named once, so a caller takes the behaviour without
+// declaring the signature again.
+type TxRunner func(ctx context.Context, fn func(ctx context.Context) error) error
+
 // TxManager satisfies the Tx interfaces declared by services. Usage:
 //
 //	err := tx.RunInTx(ctx, func(ctx context.Context) error {

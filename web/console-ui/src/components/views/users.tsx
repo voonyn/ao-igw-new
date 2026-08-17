@@ -12,7 +12,7 @@ import { sessionColumns, terminateBulk } from "@/components/views/sessions";
 import { EntityHeader, FullPage, ReadField, SectionCard, TabPanel, Tabs } from "@/components/console/overlays";
 import { useConsole, usePagedList, usePending, type Actions } from "@/components/console/store";
 import { PageHead } from "@/components/console/page-head";
-import { authPolicyApi, canWriteAnyOrg, canWriteOrg, pages, sessionsApi, userMemberships, usersApi, type AuthPolicy, type Me, type UserMemberships } from "@/lib/console-api";
+import { authPolicyApi, canManageTenant, canWriteAnyOrg, canWriteOrg, pages, sessionsApi, userMemberships, usersApi, type AuthPolicy, type Me, type UserMemberships } from "@/lib/console-api";
 import { LABELS } from "@/lib/data";
 import { orgName, orNever, userDisplay } from "@/lib/helpers";
 import { passwordViolation, policyRules } from "@/lib/password-policy";
@@ -20,6 +20,12 @@ import type { User } from "@/lib/types";
 
 // Org roles that may write users (mirrors the gateway's loadUserForWrite gate).
 const USER_WRITE_ROLES = ["ORG_OWNER", "ORG_USER_MANAGER"];
+
+// Signing a person out everywhere is NOT a user write: it ends login sessions,
+// which are held across the whole tenant, and the gateway gates
+// DELETE /users/:id/sessions on a tenant manager
+// (internal/session/admin_service.go: authorize). An org manager who was offered
+// the button only received a 403.
 
 export function UserDetailPage({
   user,
@@ -116,10 +122,12 @@ export function UserDetailPage({
   const accessCard = canWrite && user.state !== 3 && (
     <SectionCard danger title="Access" desc="Sign out, unlock, deactivate, or delete this account. These actions take effect immediately.">
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-        <Btn className="btn danger-ghost" pending={busy} onClick={signOutEverywhere}>
-          <Icon name="logout" size={15} />
-          Sign out everywhere
-        </Btn>
+        {canManageTenant(me) && (
+          <Btn className="btn danger-ghost" pending={busy} onClick={signOutEverywhere}>
+            <Icon name="logout" size={15} />
+            Sign out everywhere
+          </Btn>
+        )}
         {user.state === 4 && (
           <Btn className="btn ghost" pending={busy} onClick={() => void run(() => usersApi.unlock(user.id), "Unlocked " + userDisplay(user), "key")}>
             <Icon name="key" size={15} />
@@ -349,7 +357,7 @@ export function UserDetailPage({
 function UserSessionsTab({ user, me }: { user: User; me: Me }) {
   const list = usePagedList(pages.sessions, "sessions", { userId: user.id, orgId: null });
   return (
-    <SectionCard title="Login sessions" desc="Every SSO session for this account, active and terminated. Terminating a session revokes its token grants — refresh tokens included.">
+    <SectionCard title="Login sessions" desc="Every SSO session for this account, active and signed out. Revoking a session revokes its token grants — refresh tokens included — and deletes the record.">
       <DataTable
         id="user-sessions"
         list={list}
@@ -408,7 +416,7 @@ function UserPermissionsTab({ user }: { user: User }) {
     <div>
       <SectionCard title="Tenant roles" desc="IAM roles held at tenant level. These grant authority across every organization.">
         {tenantMemberships.length === 0 ? (
-          <div style={{ fontSize: 13, color: "var(--muted)" }}>No tenant-level roles — this account is not an instance administrator.</div>
+          <div style={{ fontSize: 13, color: "var(--muted)" }}>No tenant-level roles — this account is not a tenant administrator.</div>
         ) : (
           tenantMemberships.map((m) => (
             <KV
@@ -462,14 +470,14 @@ function UserPermissionsTab({ user }: { user: User }) {
 function UserAuditTab({ user, me, toast }: { user: User; me: Me; toast: Actions["toast"] }) {
   const [side, setSide] = useState("Performed by them");
 
-  // The audit read is instance-manager-gated at both the route and the service.
+  // The audit read is tenant-manager-gated at both the route and the service.
   // The tab still renders and states the role rather than disappearing: a
   // console that differs by role without saying so reads as a missing feature.
-  if (!me.isInstanceManager) {
+  if (!me.isTenantManager) {
     return (
       <ViewNotice
         title="You can't view the audit log."
-        body="Reading audit events requires an instance-manager role (IAM_OWNER or IAM_ADMIN). Organization-scoped audit is not offered."
+        body="Reading audit events requires an tenant-manager role (IAM_OWNER or IAM_ADMIN). Organization-scoped audit is not offered."
       />
     );
   }
@@ -765,6 +773,8 @@ export function UsersView() {
           label: "Sign out everywhere",
           icon: "logout",
           destructive: true,
+          // A tenant manager only, the same gate the endpoint carries.
+          applies: () => canManageTenant(me),
           describe: userDisplay,
           run: (u) => sessionsApi.revokeForUser(u.id),
           confirm: (n) => ({

@@ -12,8 +12,9 @@ import {
   type CollectionKey,
   type CollectionStatus,
   type ListQuery,
-  PICKER_PAGE,
-  readPicker,
+  WALK_PAGE,
+  WALK_MAX_PAGES,
+  readAllPages,
   type Me,
   type OrgRef,
   type PageReader,
@@ -313,20 +314,21 @@ export function usePending(): [boolean, (fn: () => Promise<unknown>, opts?: RunO
  * when the list has no count to give. */
 export interface PagedList<P extends Page<unknown>> {
   items: P["items"];
-  /** The whole first-page body, for a response that carries more than `items`
-   * (only `/members` does: it answers two collections, and the cursor describes
-   * one of them). Null until the first page lands. */
+  /** The whole page body, for a response that carries more than `items` (only
+   * `/members` does: it answers two collections). Null until a page lands. */
   raw: P | null;
   total: number | null;
-  /** True while more rows remain — i.e. the last page carried a cursor. */
-  hasMore: boolean;
-  /** The first page is in flight; the table has nothing to show yet. */
+  /** The page on screen, counting from 1. */
+  page: number;
+  /** How many pages the whole scoped list holds. 0 until a page lands. */
+  totalPages: number;
+  /** Goes to one page. A page outside 1..totalPages is ignored. */
+  setPage: (n: number) => void;
+  /** The page is in flight; the table has nothing to show yet. */
   loading: boolean;
-  /** A *Load more* is in flight; the rows already shown stay shown. */
-  loadingMore: boolean;
   /** Non-null when the list could not be read, phrased for the operator. */
   error: { title: string; body: string } | null;
-  /** Picker mode only: the collection was longer than PICKER_MAX_PAGES pages, so
+  /** Picker mode only: the collection was longer than WALK_MAX_PAGES pages, so
    * rows are missing from `items`. A short `<select>` that does not say this is
    * indistinguishable from a complete one. */
   truncated: boolean;
@@ -342,11 +344,10 @@ export interface PagedList<P extends Page<unknown>> {
   /** Merges a partial narrowing and refetches from the head. An empty string or
    * `undefined` clears a key rather than sending it empty. */
   setQuery: (patch: ListQuery) => void;
-  /** Walks the collection under the ACTIVE query to the picker bound and returns
+  /** Walks the collection under the ACTIVE query to the walk bound and returns
    * every row it retrieved. `truncated` means the bound cut the walk short — an
    * export built from it is partial and has to say so. */
   readAll: () => Promise<{ rows: P["items"]; truncated: boolean }>;
-  loadMore: () => void;
   reload: () => void;
 }
 
@@ -358,9 +359,9 @@ const PAGE_SIZE = 50;
 export interface PagedOpts {
   role?: string;
   limit?: number;
-  /** Picker mode: the first read follows `nextCursor` to exhaustion, bounded by
-   * PICKER_MAX_PAGES, because a `<select>` has no *Load more*. `truncated` on the
-   * result reports whether the bound cut the collection short. */
+  /** Picker mode: the read walks every page to exhaustion, bounded by
+   * WALK_MAX_PAGES, because a `<select>` has no pager. `truncated` on the result
+   * reports whether the bound cut the collection short. */
   picker?: boolean;
   /** Overrides the console's org selector for this list. A detail page that
    * lists a child collection knows its own organization and should narrow to it
@@ -468,8 +469,8 @@ function useQueryState(urlSync: boolean, defaultLimit: number): [QueryState, (pa
 }
 
 /**
- * Drives one paged list: first page on mount, *Load more* appends, and a fresh
- * page one whenever the organization selector moves or a write lands.
+ * Drives one paged list: one page at a time, replaced whenever the operator
+ * names another page, the organization selector moves, or a write lands.
  *
  * `read` must be a stable reference (the `pages.*` consts are); it is a
  * dependency, so an inline arrow would refetch on every render.
@@ -482,16 +483,16 @@ export function usePagedList<P extends Page<unknown>>(read: PageReader<P>, resou
   const { role, picker = false, userId, urlSync = false } = opts;
   const { selectedOrgId, dataVersion } = useConsole();
   const orgId = opts.orgId !== undefined ? opts.orgId : selectedOrgId;
-  // The narrowing and the size travel together: both restart the list from the
-  // head (D7), and both belong in a shared link.
-  const [state, setState] = useQueryState(urlSync, picker ? PICKER_PAGE : (opts.limit ?? PAGE_SIZE));
+  // The narrowing and the size travel together: both send the list back to page
+  // one, and both belong in a shared link.
+  const [state, setState] = useQueryState(urlSync, picker ? WALK_PAGE : (opts.limit ?? PAGE_SIZE));
   const { limit, ...query } = state;
   const [items, setItems] = useState<P["items"]>([]);
   const [raw, setRaw] = useState<P | null>(null);
   const [total, setTotal] = useState<number | null>(null);
-  const [cursor, setCursor] = useState<string | undefined>(undefined);
+  const [totalPages, setTotalPages] = useState(0);
+  const [page, setPageNumber] = useState(1);
   const [loading, setLoading] = useState(true);
-  const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<{ title: string; body: string } | null>(null);
   const [nonce, setNonce] = useState(0);
 
@@ -509,21 +510,21 @@ export function usePagedList<P extends Page<unknown>>(read: PageReader<P>, resou
     // synchronization with the external system, not a render derived from one.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setLoading(true);
-    (picker ? readPicker(read, scope) : read({ ...scope, limit }))
+    (picker ? readAllPages(read, scope) : read({ ...scope, limit, page }))
       .then((out) => {
         if (cancelled) return;
         if (!out.ok) {
           setItems([]);
           setRaw(null);
           setTotal(null);
-          setCursor(undefined);
+          setTotalPages(0);
           setError(describeStatus({ state: out.reason }, resource, role));
           return;
         }
         setItems(out.data.items ?? []);
         setRaw(out.data);
         setTotal(out.data.total ?? null);
-        setCursor(out.data.nextCursor);
+        setTotalPages(out.data.totalPages ?? 0);
         setError(null);
       })
       .catch((e: unknown) => {
@@ -535,7 +536,7 @@ export function usePagedList<P extends Page<unknown>>(read: PageReader<P>, resou
         setItems([]);
         setRaw(null);
         setTotal(null);
-        setCursor(undefined);
+        setTotalPages(0);
         setError(describeStatus({ state: "error", message: e instanceof Error ? e.message : String(e) }, resource));
       })
       .finally(() => {
@@ -544,86 +545,58 @@ export function usePagedList<P extends Page<unknown>>(read: PageReader<P>, resou
     return () => {
       cancelled = true;
     };
-  }, [read, resource, role, limit, picker, scope, dataVersion, nonce]);
-
-  const loadMore = useCallback(() => {
-    if (!cursor || loadingMore) return;
-    setLoadingMore(true);
-    read({ ...scope, limit, cursor })
-      .then((out) => {
-        // A page that 403s mid-scroll means the role changed under the caller;
-        // stop rather than silently ending the list on a permission error.
-        if (!out.ok) {
-          setError(describeStatus({ state: out.reason }, resource, role));
-          return;
-        }
-        setItems((prev) => prev.concat(out.data.items ?? []));
-        setCursor(out.data.nextCursor);
-      })
-      .catch((e: unknown) => {
-        if (e instanceof UnauthorizedError) {
-          window.location.href = "/auth/login";
-          return;
-        }
-        setError(describeStatus({ state: "error", message: e instanceof Error ? e.message : String(e) }, resource));
-      })
-      .finally(() => setLoadingMore(false));
-  }, [read, cursor, loadingMore, limit, scope, resource, role]);
+  }, [read, resource, role, limit, page, picker, scope, dataVersion, nonce]);
 
   const reload = useCallback(() => setNonce((n) => n + 1), []);
 
-  // Switching size or narrowing discards the accumulated rows and refetches page
-  // one with no cursor: the rows already shown were fetched under the old query,
-  // so keeping them would leave the table a mix of scopes with a total from a
-  // superseded page. A cursor is only valid in the ordering it was minted in —
-  // the gateway refuses it in another — so dropping it is required, not tidiness.
-  const restart = useCallback(() => {
-    setItems([]);
-    setRaw(null);
-    setTotal(null);
-    setCursor(undefined);
-  }, []);
+  // A page is addressed, not accumulated, so switching size or narrowing only
+  // has to send the list back to page one: the rows on screen were fetched under
+  // the old query, and page 3 of the old narrowing is not page 3 of the new one.
+  const setPage = useCallback((n: number) => setPageNumber(Math.max(1, n)), []);
 
   const setPageSize = useCallback(
     (n: number) => {
       if (n === limit) return;
-      restart();
+      setPageNumber(1);
       setState({ limit: n });
     },
-    [limit, restart, setState]
+    [limit, setState]
   );
 
   const setQuery = useCallback(
     (patch: ListQuery) => {
-      restart();
+      setPageNumber(1);
       setState(patch);
     },
-    [restart, setState]
+    [setState]
   );
 
   // The export walk. Same reader, same narrowing, same bound as a picker — an
   // export is a picker that writes a file instead of filling a <select>.
   const readAll = useCallback(async () => {
-    const out = await readPicker(read, scope);
+    const out = await readAllPages(read, scope);
     if (!out.ok) throw new Error(out.reason);
-    return { rows: (out.data.items ?? []) as P["items"], truncated: Boolean(out.data.nextCursor) };
+    return {
+      rows: (out.data.items ?? []) as P["items"],
+      truncated: (out.data.totalPages ?? 0) > WALK_MAX_PAGES,
+    };
   }, [read, scope]);
 
   return {
     items,
     raw,
     total,
-    hasMore: Boolean(cursor),
+    page,
+    totalPages,
+    setPage,
     loading,
-    loadingMore,
     error,
-    truncated: picker && Boolean(cursor),
+    truncated: picker && totalPages > WALK_MAX_PAGES,
     pageSize: limit,
     setPageSize,
     query,
     setQuery,
     readAll,
-    loadMore,
     reload,
   };
 }

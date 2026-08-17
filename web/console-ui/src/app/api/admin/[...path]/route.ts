@@ -65,12 +65,39 @@ function unauthenticated() {
 
 // Relays the upstream response and, when the token was refreshed, re-seals the
 // rotated session onto the cookie so the new refresh_token isn't lost.
+//
+// A successful answer is unwrapped: the gateway envelope is
+// `{code, status, message, data}`, and the browser client reads the payload
+// directly. A failed answer is forwarded verbatim, because the machine-readable
+// slug already sits at the top level as `error`.
 async function relay(upstream: Response, rotated: SessionTokens | null) {
   const body = await upstream.text()
-  const res = new NextResponse(body, {
+  const res = new NextResponse(upstream.ok ? unwrap(body) : body, {
     status: upstream.status,
     headers: { "Content-Type": upstream.headers.get("Content-Type") ?? "application/json" },
   })
   if (rotated) res.cookies.set(CONSOLE_SESSION_COOKIE, await sealSession(rotated), cookieOptions)
   return res
+}
+
+// Returns the `data` value of the gateway envelope. A body that is empty, that
+// is not JSON, or that carries no `data` key is returned unchanged, so a
+// non-envelope answer from a proxy still reaches the browser intact.
+//
+// A list answer also carries `meta` — the page, the limit, the total, and the
+// total pages. Dropping it would leave the pager with rows and no page numbers,
+// so `meta` is merged onto the payload as the browser's `Page<T>`: an array
+// payload becomes its `items`, and an object payload keeps its own fields.
+function unwrap(body: string): string {
+  if (!body) return body
+  try {
+    const parsed: unknown = JSON.parse(body)
+    if (!parsed || typeof parsed !== "object" || !("data" in parsed)) return body
+
+    const { data, meta } = parsed as { data: unknown; meta?: Record<string, unknown> }
+    if (!meta) return JSON.stringify(data)
+    return JSON.stringify(Array.isArray(data) || data === null ? { items: data ?? [], ...meta } : { ...data, ...meta })
+  } catch {
+    return body
+  }
 }

@@ -1,55 +1,119 @@
 package crypto
 
 import (
-	"crypto/ecdsa"
 	"crypto/elliptic"
-	"crypto/rsa"
-	"crypto/x509"
+	"encoding/base64"
+	"encoding/json"
+	"math/big"
 	"strings"
 	"testing"
 )
 
+// testCurve maps a JWK `crv` name to its curve, so the tests can recompute the
+// public point independently of the implementation.
+var testCurve = map[string]elliptic.Curve{
+	"P-256": elliptic.P256(),
+	"P-384": elliptic.P384(),
+	"P-521": elliptic.P521(),
+}
+
+// jwk is the wire shape the tests read back. Expected member names come from
+// RFC 7517 / RFC 7518, not from the implementation.
+type jwk struct {
+	Kty string `json:"kty"`
+	Alg string `json:"alg"`
+	Use string `json:"use"`
+	Crv string `json:"crv"`
+	X   string `json:"x"`
+	Y   string `json:"y"`
+	D   string `json:"d"`
+	N   string `json:"n"`
+	E   string `json:"e"`
+	P   string `json:"p"`
+	Q   string `json:"q"`
+	Dp  string `json:"dp"`
+	Dq  string `json:"dq"`
+	Qi  string `json:"qi"`
+}
+
+func parseJWK(t *testing.T, raw []byte) jwk {
+	t.Helper()
+	var k jwk
+	if err := json.Unmarshal(raw, &k); err != nil {
+		t.Fatalf("parse JWK %q: %v", raw, err)
+	}
+	return k
+}
+
+// b64uint decodes a base64url JWK member into a big integer.
+func b64uint(t *testing.T, member, value string) *big.Int {
+	t.Helper()
+	if strings.ContainsAny(value, "+/=") {
+		t.Errorf("member %q is not base64url without padding: %q", member, value)
+	}
+	b, err := base64.RawURLEncoding.DecodeString(value)
+	if err != nil {
+		t.Fatalf("decode member %q: %v", member, err)
+	}
+	return new(big.Int).SetBytes(b)
+}
+
 func TestGenerate_ECDSA_AllCurves(t *testing.T) {
 	cases := []struct {
-		alg   string
-		curve elliptic.Curve
+		alg      string
+		crv      string
+		coordLen int // fixed octet length of x, y and d for this curve
 	}{
-		{AlgES256, elliptic.P256()},
-		{AlgES384, elliptic.P384()},
-		{AlgES512, elliptic.P521()},
+		{AlgES256, "P-256", 32},
+		{AlgES384, "P-384", 48},
+		{AlgES512, "P-521", 66},
 	}
 	for _, c := range cases {
 		t.Run(c.alg, func(t *testing.T) {
-			pubDER, privDER, err := Generate(c.alg)
+			pubJWK, privJWK, err := Generate(c.alg)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
-			if len(pubDER) == 0 || len(privDER) == 0 {
-				t.Fatalf("expected non-empty key bytes, got pub=%d priv=%d", len(pubDER), len(privDER))
+
+			pub := parseJWK(t, pubJWK)
+			if pub.Kty != "EC" {
+				t.Errorf("public kty: expected EC, got %q", pub.Kty)
+			}
+			if pub.Crv != c.crv {
+				t.Errorf("public crv: expected %s, got %q", c.crv, pub.Crv)
+			}
+			if pub.Alg != c.alg {
+				t.Errorf("public alg: expected %s, got %q", c.alg, pub.Alg)
+			}
+			if pub.Use != "sig" {
+				t.Errorf("public use: expected sig, got %q", pub.Use)
+			}
+			if pub.D != "" {
+				t.Error("public JWK carries the private member d")
+			}
+			for member, value := range map[string]string{"x": pub.X, "y": pub.Y} {
+				b, err := base64.RawURLEncoding.DecodeString(value)
+				if err != nil {
+					t.Fatalf("decode %q: %v", member, err)
+				}
+				if len(b) != c.coordLen {
+					t.Errorf("member %q: expected %d octets, got %d", member, c.coordLen, len(b))
+				}
 			}
 
-			pub, err := x509.ParsePKIXPublicKey(pubDER)
-			if err != nil {
-				t.Fatalf("parse public: %v", err)
+			priv := parseJWK(t, privJWK)
+			if priv.X != pub.X || priv.Y != pub.Y || priv.Crv != pub.Crv {
+				t.Error("private JWK does not carry the same public half")
 			}
-			ecPub, ok := pub.(*ecdsa.PublicKey)
-			if !ok {
-				t.Fatalf("expected *ecdsa.PublicKey, got %T", pub)
+			d := b64uint(t, "d", priv.D)
+			if d.Sign() == 0 {
+				t.Fatal("private member d is zero")
 			}
-			if ecPub.Curve != c.curve {
-				t.Errorf("expected curve %v, got %v", c.curve, ecPub.Curve)
-			}
-
-			priv, err := x509.ParsePKCS8PrivateKey(privDER)
-			if err != nil {
-				t.Fatalf("parse private: %v", err)
-			}
-			ecPriv, ok := priv.(*ecdsa.PrivateKey)
-			if !ok {
-				t.Fatalf("expected *ecdsa.PrivateKey, got %T", priv)
-			}
-			if ecPriv.Curve != c.curve {
-				t.Errorf("expected private curve %v, got %v", c.curve, ecPriv.Curve)
+			// Independent check: the published point must be d*G on the curve.
+			curve := testCurve[c.crv]
+			wantX, wantY := curve.ScalarBaseMult(d.Bytes())
+			if wantX.Cmp(b64uint(t, "x", pub.X)) != 0 || wantY.Cmp(b64uint(t, "y", pub.Y)) != 0 {
+				t.Error("published point is not the public half of d")
 			}
 		})
 	}
@@ -71,29 +135,54 @@ func TestGenerate_RSA_AllSizes(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.alg, func(t *testing.T) {
-			pubDER, privDER, err := Generate(c.alg)
+			pubJWK, privJWK, err := Generate(c.alg)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
 
-			pub, err := x509.ParsePKIXPublicKey(pubDER)
-			if err != nil {
-				t.Fatalf("parse public: %v", err)
+			pub := parseJWK(t, pubJWK)
+			if pub.Kty != "RSA" {
+				t.Errorf("public kty: expected RSA, got %q", pub.Kty)
 			}
-			rsaPub, ok := pub.(*rsa.PublicKey)
-			if !ok {
-				t.Fatalf("expected *rsa.PublicKey, got %T", pub)
+			if pub.Alg != c.alg {
+				t.Errorf("public alg: expected %s, got %q", c.alg, pub.Alg)
 			}
-			if rsaPub.N.BitLen() != c.bits {
-				t.Errorf("expected %d-bit modulus, got %d", c.bits, rsaPub.N.BitLen())
+			if pub.Use != "sig" {
+				t.Errorf("public use: expected sig, got %q", pub.Use)
+			}
+			if pub.D != "" {
+				t.Error("public JWK carries the private member d")
+			}
+			n := b64uint(t, "n", pub.N)
+			if n.BitLen() != c.bits {
+				t.Errorf("expected %d-bit modulus, got %d", c.bits, n.BitLen())
+			}
+			// RFC 7518 fixes the public exponent members; Go generates e = 65537.
+			if e := b64uint(t, "e", pub.E); e.Int64() != 65537 {
+				t.Errorf("expected exponent 65537, got %s", e)
 			}
 
-			priv, err := x509.ParsePKCS8PrivateKey(privDER)
-			if err != nil {
-				t.Fatalf("parse private: %v", err)
+			priv := parseJWK(t, privJWK)
+			if priv.N != pub.N || priv.E != pub.E {
+				t.Error("private JWK does not carry the same public half")
 			}
-			if _, ok := priv.(*rsa.PrivateKey); !ok {
-				t.Fatalf("expected *rsa.PrivateKey, got %T", priv)
+			p := b64uint(t, "p", priv.P)
+			q := b64uint(t, "q", priv.Q)
+			// Independent check: the primes must multiply back to the modulus.
+			if new(big.Int).Mul(p, q).Cmp(n) != 0 {
+				t.Error("p*q does not equal the published modulus n")
+			}
+			// And the CRT members must agree with d mod (p-1), (q-1).
+			d := b64uint(t, "d", priv.D)
+			one := big.NewInt(1)
+			if want := new(big.Int).Mod(d, new(big.Int).Sub(p, one)); want.Cmp(b64uint(t, "dp", priv.Dp)) != 0 {
+				t.Error("dp is not d mod (p-1)")
+			}
+			if want := new(big.Int).Mod(d, new(big.Int).Sub(q, one)); want.Cmp(b64uint(t, "dq", priv.Dq)) != 0 {
+				t.Error("dq is not d mod (q-1)")
+			}
+			if want := new(big.Int).ModInverse(q, p); want.Cmp(b64uint(t, "qi", priv.Qi)) != 0 {
+				t.Error("qi is not the inverse of q mod p")
 			}
 		})
 	}

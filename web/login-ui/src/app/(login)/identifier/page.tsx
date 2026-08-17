@@ -8,9 +8,14 @@ import { IdentifierClient } from "./identifier-client"
 
 // Server component: it owns both SSO fast-paths off the session cookie.
 //   - Entered with an `authRequest` (from an OIDC client): finalize silently and
-//     redirect to the provider resume URL. When the auth request demands
-//     interaction (prompt=login / unsatisfied max_age) or the cookie is dead,
-//     silentComplete returns null and the interactive flow renders.
+//     redirect to the provider resume URL. This runs whether or not a session
+//     cookie exists, because only the gateway knows the auth request's `prompt`.
+//     On prompt=none with nobody signed in, the gateway writes the
+//     `login_required` marker and still answers with the resume URL, so the
+//     hidden iframe bounces back to the provider instead of rendering a page it
+//     could never show (ADR 0004). When the request demands interaction
+//     (prompt=login / unsatisfied max_age / no session), silentComplete returns
+//     null and the interactive flow renders.
 //   - Entered standalone (manual browse, no `authRequest`): when the cookie
 //     resolves to a live, fully authenticated session, the user is already
 //     signed in, so redirect straight to the validated `redirect_uri` when one
@@ -29,15 +34,13 @@ export default async function LoginIdentifierPage({
 
   const cookieStore = await cookies()
   const parsed = parseSessionCookie(cookieStore.get(SESSION_COOKIE)?.value)
-  if (parsed) {
-    if (authRequest) {
-      const redirectTo = await silentComplete(parsed.token, authRequest, host)
-      if (redirectTo) {
-        redirect(redirectTo)
-      }
-    } else if (await resolveSession(parsed.token, host)) {
-      redirect(redirectUri || "/success")
+  if (authRequest) {
+    const redirectTo = await silentComplete(parsed?.token ?? "", authRequest, host)
+    if (redirectTo) {
+      redirect(redirectTo)
     }
+  } else if (parsed && (await resolveSession(parsed.token, host))) {
+    redirect(redirectUri || "/success")
   }
 
   return <IdentifierClient authRequest={authRequest ?? ""} redirectUri={redirectUri} />

@@ -48,7 +48,7 @@ export type GoResult = { status: number; data: Record<string, unknown> }
 
 export async function callLoginAPI(
   path: string,
-  opts: { host: string; token?: string; body?: unknown },
+  opts: { host: string; token?: string; body?: unknown; method?: "GET" | "POST" },
 ): Promise<GoResult> {
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
@@ -61,18 +61,27 @@ export async function callLoginAPI(
   if (ip) headers["X-Forwarded-For"] = ip
 
   const res = await fetch(`${GO_API}/api/v1/login${path}`, {
-    method: "POST",
+    method: opts.method ?? "POST",
     headers,
     body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
     cache: "no-store",
   })
 
-  let data: Record<string, unknown> = {}
+  let body: Record<string, unknown> = {}
   try {
-    data = (await res.json()) as Record<string, unknown>
+    body = (await res.json()) as Record<string, unknown>
   } catch {
     // empty or non-JSON body
   }
+
+  // The gateway answers in one envelope: {code, status, message, data, meta?}
+  // on success, and {code, status, message, errors?} on failure. Callers read
+  // the payload, so unwrap `data` and fall back to the envelope itself when an
+  // error carries no payload.
+  const payload = body.data
+  const data =
+    payload !== null && typeof payload === "object" ? (payload as Record<string, unknown>) : body
+
   return { status: res.status, data }
 }
 
@@ -80,6 +89,11 @@ export async function callLoginAPI(
  * silentComplete attempts the SSO fast-path finalize. Returns the provider
  * resume URL on success, or null when the auth request demands interaction
  * (prompt=login / unsatisfied max_age) or the session is invalid.
+ *
+ * `token` may be empty. The gateway then finalizes with no subject, which is
+ * how a prompt=none request gets its `login_required` marker and its resume URL
+ * instead of a rendered page. Only the gateway knows the request's `prompt`, so
+ * the caller must ask even when it holds no session.
  */
 export async function silentComplete(token: string, authRequest: string, host: string): Promise<string | null> {
   const { status, data } = await callLoginAPI("/complete", { host, token, body: { authRequest } })
@@ -98,7 +112,7 @@ export type SessionInfo = { active: true; email: string }
  * partially authenticated (just /check ran), or expired.
  */
 export async function resolveSession(token: string, host: string): Promise<SessionInfo | null> {
-  const { status, data } = await callLoginAPI("/session", { host, token })
+  const { status, data } = await callLoginAPI("/session", { host, token, method: "GET" })
   if (status === 200 && data.active === true) {
     return { active: true, email: typeof data.email === "string" ? data.email : "" }
   }

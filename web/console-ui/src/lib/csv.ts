@@ -1,6 +1,6 @@
 // CSV writing for the console's exports.
 //
-// There is no export endpoint. Every export is the same cursor walk the pickers
+// There is no export endpoint. Every export is the same page walk the pickers
 // already do, under the same declared bound, with the file assembled here — so
 // the rows in the file are the rows the API answered under the filters the
 // operator is looking at, and a bounded walk can say so.

@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Btn, Field, FutureTag, Toggle, ViewNotice } from "@/components/console/primitives";
+import { Btn, Field, Toggle, ViewNotice } from "@/components/console/primitives";
 import { useConsole, usePending } from "@/components/console/store";
 import { PageHead } from "@/components/console/page-head";
 import { describeStatus, providerApi } from "@/lib/console-api";
@@ -165,32 +165,42 @@ export function ProviderView() {
           </div>
         </div>
 
+        {/* Read-only, and all three describe live behaviour. The provider state
+            decides whether this tenant answers at all; the access-token format
+            is what every resource server parses; the resource identifiers decide
+            which audiences a client may ask for — and one of them is what admits
+            this console's own token. */}
         <div className="card card-pad">
-          <div className="sect-title">
-            Advertised signing algorithms <FutureTag label="Editing coming soon" />
+          <div className="sect-title">Runtime</div>
+          <div className="kv">
+            <span className="k">Provider state</span>
+            <span className="v">{draft.state === 1 ? "Active" : "Inactive"}</span>
+          </div>
+          <div className="kv">
+            <span className="k">Access token format</span>
+            <span className="v mono">{draft.accessTokenType}</span>
+          </div>
+
+          <div className="sect-title" style={{ marginTop: 16 }}>
+            Resource identifiers
           </div>
           <p style={{ fontSize: 12.5, color: "var(--muted)", lineHeight: 1.5, marginBottom: 12 }}>
-            Published in discovery metadata. Stored as a grouped JSON blob; per-algorithm editing isn&apos;t wired yet.
+            RFC 8707. A client may request these audiences and no others. Read-only: removing the admin API identifier
+            would leave no way to mint the token that would put it back.
           </p>
-          {Object.keys(draft.signingAlgs).map((k) => {
-            const algs = draft.signingAlgs[k];
-            return (
-              <div className="kv" key={k}>
-                <span className="k">{k}</span>
-                <span className="v chip-row" style={{ justifyContent: "flex-end" }}>
-                  {algs.length ? (
-                    algs.map((a) => (
-                      <span key={a} className="chip" style={{ fontFamily: "var(--font-mono)", fontSize: 11 }}>
-                        {a}
-                      </span>
-                    ))
-                  ) : (
-                    <span style={{ color: "var(--muted-2)" }}>—</span>
-                  )}
+          <div className="chip-row">
+            {draft.resourceIndicators.length ? (
+              draft.resourceIndicators.map((r) => (
+                <span key={r} className="chip" style={{ fontFamily: "var(--font-mono)", fontSize: 11 }}>
+                  {r}
                 </span>
-              </div>
-            );
-          })}
+              ))
+            ) : (
+              <span style={{ fontSize: 12.5, color: "var(--muted)" }}>
+                None — this tenant runs without the resource indicator.
+              </span>
+            )}
+          </div>
         </div>
       </div>
     </div>

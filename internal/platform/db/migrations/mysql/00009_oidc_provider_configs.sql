@@ -11,7 +11,7 @@ CREATE TABLE oidc_provider_configs (
     created_at    DATETIME(3)   NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     updated_at    DATETIME(3)   NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
 
-    require_pkce            TINYINT       NOT NULL DEFAULT 1,       /* 1=require S256 PKCE 0=optional */
+    require_pkce            TINYINT       NOT NULL DEFAULT 1,       /* 1=require S256 PKCE 0=optional for a confidential client, still required of a public one */
     refresh_token_rotation  TINYINT       NOT NULL DEFAULT 1,       /* 1=rotate refresh token on use 0=reuse */
 
     -- ── Token defaults (kept flat: server reads these on every issue) ──
@@ -19,7 +19,7 @@ CREATE TABLE oidc_provider_configs (
     access_token_type                 TINYINT       NOT NULL DEFAULT 1,     /* 1=jwt 2=opaque */
     access_token_lifetime_secs        INT UNSIGNED  NOT NULL DEFAULT 3600,
     id_token_lifetime_secs            INT UNSIGNED  NOT NULL DEFAULT 3600,
-    refresh_token_lifetime_secs       INT UNSIGNED  NULL     DEFAULT NULL,  /* NULL = refresh disabled */
+    refresh_token_lifetime_secs       INT UNSIGNED  NULL     DEFAULT NULL,  /* NULL = the shipped default, see migration 00037 */
    
     -- ── Grouped metadata blobs (each read/written together) ──────────
 

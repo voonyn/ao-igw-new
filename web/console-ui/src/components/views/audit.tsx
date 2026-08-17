@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { Icon } from "@/components/console/icons";
-import { Avatar, Btn, copyToClipboard, ResultBadge, SearchBox, SelectInput, Ts, ViewNotice } from "@/components/console/primitives";
+import { Avatar, Btn, copyToClipboard, Pager, ResultBadge, SearchBox, SelectInput, Ts, ViewNotice } from "@/components/console/primitives";
 import { csvCell, downloadCsv } from "@/lib/csv";
 import { useConsole } from "@/components/console/store";
 import { PageHead } from "@/components/console/page-head";
@@ -76,6 +76,9 @@ function actionOf(label: string): string | undefined {
 const EXPORT_MAX_PAGES = 10;
 const EXPORT_PAGE = 100;
 
+/** Rows per page in the feed. The pager addresses the rest. */
+const PAGE_SIZE = 100;
+
 function resultLabel(result: string): string {
   return result === "failure" ? "Failed" : "Success";
 }
@@ -88,10 +91,10 @@ function actorLabel(e: AuditEvent): string {
 export function AuditView() {
   const { me, A } = useConsole();
 
-  // Reads are instance-manager scoped (matches the sidebar gate + the API).
+  // Reads are tenant-manager scoped (matches the sidebar gate + the API).
   // Refused here rather than by the gateway, but it is the same refusal, so it
   // resolves the same sentence.
-  if (!me.isInstanceManager) {
+  if (!me.isTenantManager) {
     const gate = describeStatus({ state: "forbidden" }, AUDIT_RESOURCE, AUDIT_ROLE)!;
     return (
       <div className="fade-in">
@@ -125,7 +128,8 @@ export function AuditLog({
   title?: ReactNode;
 }) {
   const [events, setEvents] = useState<AuditEvent[]>([]);
-  const [nextCursor, setNextCursor] = useState<string | undefined>(undefined);
+  const [page, setPage] = useState(1);
+  const [totalPages, setTotalPages] = useState(0);
   const [loaded, setLoaded] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<{ title: string; body: string } | null>(null);
@@ -144,66 +148,61 @@ export function AuditLog({
     [fixed, action, actor]
   );
 
-  // First page. `loaded` is set in `finally` — a failed first read must render an
-  // error, not a card that is blank forever because neither branch ran.
-  const loadFirst = useCallback(() => {
+  // The page on screen. `loaded` is set in `finally` — a failed read must render
+  // an error, not a card that is blank forever because neither branch ran.
+  const load = useCallback(() => {
     return auditApi
-      .list({ ...query, limit: 100 })
+      .list({ ...query, limit: PAGE_SIZE, page })
       .then((out) => {
         setError(null);
         if (!out.ok) {
           setEvents([]);
-          setNextCursor(undefined);
+          setTotalPages(0);
           setError(describeStatus({ state: out.reason }, AUDIT_RESOURCE, AUDIT_ROLE));
           return;
         }
-        setEvents(out.data.events);
-        setNextCursor(out.data.nextCursor);
+        setEvents(out.data.items);
+        setTotalPages(out.data.totalPages);
       })
       .catch((e: unknown) =>
         setError(describeStatus({ state: "error", message: e instanceof Error ? e.message : "" }, AUDIT_RESOURCE))
       )
-      .finally(() => setLoaded(true));
-  }, [query]);
+      .finally(() => {
+        setLoaded(true);
+        setLoading(false);
+      });
+  }, [query, page]);
 
   useEffect(() => {
-    void loadFirst();
-  }, [loadFirst]);
-
-  const loadMore = useCallback(() => {
-    if (!nextCursor) return;
+    // The pending flag has to flip before the request is issued — it IS the
+    // synchronization with the external system, not a render derived from one.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setLoading(true);
-    auditApi
-      .list({ ...query, limit: 100, cursor: nextCursor })
-      .then((out) => {
-        if (!out.ok) {
-          toast("Couldn’t load more events", "alert", "error");
-          return;
-        }
-        setEvents((prev) => [...prev, ...out.data.events]);
-        setNextCursor(out.data.nextCursor);
-      })
-      .catch(() => toast("Couldn’t load more events", "alert", "error"))
-      .finally(() => setLoading(false));
-  }, [nextCursor, query, toast]);
+    void load();
+  }, [load]);
 
-  // Export is the same cursor walk under the same bound, with the same filters
-  // the table is showing — no export endpoint, and no chance of the file
-  // disagreeing with the screen.
+  // A narrowing change sends the feed back to page one: page 3 of the old filter
+  // is not page 3 of the new one.
+  const narrow = useCallback(<T,>(set: (v: T) => void) => (v: T) => {
+    setPage(1);
+    set(v);
+  }, []);
+
+  // Export walks the pages under the same bound, with the same filters the table
+  // is showing — no export endpoint, and no chance of the file disagreeing with
+  // the screen.
   async function exportCsv() {
     setExporting(true);
     setExportNote(null);
     try {
       let rows: AuditEvent[] = [];
-      let cursor: string | undefined;
       let truncated = false;
-      for (let n = 0; n < EXPORT_MAX_PAGES; n++) {
-        const out = await auditApi.list({ ...query, limit: EXPORT_PAGE, cursor });
+      for (let n = 1; n <= EXPORT_MAX_PAGES; n++) {
+        const out = await auditApi.list({ ...query, limit: EXPORT_PAGE, page: n });
         if (!out.ok) break;
-        rows = rows.concat(out.data.events);
-        cursor = out.data.nextCursor;
-        if (!cursor) break;
-        truncated = n === EXPORT_MAX_PAGES - 1;
+        rows = rows.concat(out.data.items);
+        if (n >= out.data.totalPages) break;
+        truncated = n === EXPORT_MAX_PAGES;
       }
       const head = ["Time", "Actor", "Action", "Entity type", "Entity ID", "Result", "IP", "User agent"];
       const lines = [head.map(csvCell).join(",")];
@@ -349,10 +348,10 @@ export function AuditLog({
       )}
 
       <div className="filter-row" style={{ marginBottom: 14 }}>
-        <SelectInput width={260} value={action} options={ACTION_OPTIONS} onChange={setAction} />
+        <SelectInput width={260} value={action} options={ACTION_OPTIONS} onChange={narrow(setAction)} />
         {!fixed?.actor && (
           <span style={{ display: "inline-flex", flexDirection: "column", gap: 3 }}>
-            <SearchBox value={actor} onChange={setActor} placeholder="Actor user ID…" width={300} />
+            <SearchBox value={actor} onChange={narrow(setActor)} placeholder="Actor user ID…" width={300} />
             <span style={{ fontSize: 11, color: "var(--muted-2)" }}>Matches the actor’s user ID exactly</span>
           </span>
         )}
@@ -371,7 +370,7 @@ export function AuditLog({
       )}
 
       {error ? (
-        <ViewNotice title={error.title} body={error.body} onRetry={() => void loadFirst()} pending={!loaded} />
+        <ViewNotice title={error.title} body={error.body} onRetry={() => void load()} pending={!loaded} />
       ) : (
       <div className="card">
         <table className="tbl" aria-label="Audit events">
@@ -399,13 +398,7 @@ export function AuditLog({
       </div>
       )}
 
-      {nextCursor && !error && (
-        <div style={{ display: "flex", justifyContent: "center", marginTop: 14 }}>
-          <Btn className="btn ghost" pending={loading} onClick={loadMore}>
-            Load more
-          </Btn>
-        </div>
-      )}
+      {!error && <Pager list={{ page, totalPages, setPage, loading }} />}
     </div>
   );
 }
@@ -425,7 +418,7 @@ export function EntityAuditTab({ entityId, noun }: { entityId: string; noun: str
   // differs by role without saying so reads as a missing feature. Same refusal
   // as the full view, so the same sentence; the noun only adds why it is not
   // narrowed to the org the record belongs to.
-  if (!me.isInstanceManager) {
+  if (!me.isTenantManager) {
     const gate = describeStatus({ state: "forbidden" }, AUDIT_RESOURCE, AUDIT_ROLE)!;
     return (
       <ViewNotice

@@ -3,7 +3,7 @@
 import { useEffect, useId, useRef, useState, type ButtonHTMLAttributes, type CSSProperties, type ReactNode } from "react";
 import { AlertDialog } from "radix-ui";
 import { Icon } from "./icons";
-import { PAGE_SIZES, PICKER_MAX_PAGES, PICKER_PAGE } from "@/lib/console-api";
+import { PAGE_SIZES, WALK_MAX_PAGES, WALK_PAGE } from "@/lib/console-api";
 import { LABELS } from "@/lib/data";
 import { avatarHue, fmtTs, initials, utcTs } from "@/lib/helpers";
 import type { Key } from "@/lib/types";
@@ -319,28 +319,73 @@ export function ViewNotice({
 interface PagedView {
   items: unknown[];
   total: number | null;
-  hasMore: boolean;
-  loadingMore: boolean;
+  page: number;
+  totalPages: number;
+  setPage: (n: number) => void;
+  loading: boolean;
   pageSize: number;
   setPageSize: (n: number) => void;
-  loadMore: () => void;
+}
+
+/** What the pager reads. Narrower than `PagedView`, so a view that holds its own
+ * page state (the audit feed does) can render the same control. */
+interface PagerView {
+  page: number;
+  totalPages: number;
+  setPage: (n: number) => void;
+  loading: boolean;
+}
+
+/** How many numbered buttons the pager renders around the current page. */
+const PAGER_WINDOW = 5;
+
+// pageWindow names the pages the pager offers directly: PAGER_WINDOW of them,
+// centred on the current page and pushed inside 1..totalPages at both ends, so
+// the pager keeps its width wherever the operator is.
+function pageWindow(page: number, totalPages: number): number[] {
+  const start = Math.max(1, Math.min(page - Math.floor(PAGER_WINDOW / 2), totalPages - PAGER_WINDOW + 1));
+  const end = Math.min(totalPages, start + PAGER_WINDOW - 1);
+  const out: number[] = [];
+  for (let n = start; n <= end; n++) out.push(n);
+  return out;
 }
 
 /**
- * *Load more*, rendered only while the server is still handing out a cursor.
+ * The pager: first, previous, the numbered pages, next, last.
  *
- * Its absence is the signal: no button means the list is exhausted. That is the
- * whole point of the `nextCursor` contract — the old console showed a capped
- * list with no way to tell it apart from a complete one.
+ * An operator names a page and goes to it. A page number has an address before
+ * anyone has walked to it, which is what the offset window buys and a cursor
+ * window cannot give. See `docs/adr/0007-offset-pagination-for-admin-lists.md`.
  */
-export function LoadMore({ list }: { list: PagedView }) {
-  if (!list.hasMore) return null;
+export function Pager({ list }: { list: PagerView }) {
+  if (list.totalPages <= 1) return null;
+
+  const go = (n: number) => () => list.setPage(n);
+  const step = (label: string, to: number, disabled: boolean, glyph: string) => (
+    <Btn key={label} className="btn ghost sm" disabled={disabled || list.loading} onClick={go(to)} aria-label={label}>
+      <span aria-hidden="true">{glyph}</span>
+    </Btn>
+  );
+
   return (
-    <div style={{ display: "flex", justifyContent: "center", marginTop: 14 }}>
-      <Btn className="btn ghost" pending={list.loadingMore} onClick={list.loadMore}>
-        Load more
-      </Btn>
-    </div>
+    <nav aria-label="Pagination" style={{ display: "flex", justifyContent: "center", alignItems: "center", gap: 6, marginTop: 14 }}>
+      {step("First page", 1, list.page <= 1, "«")}
+      {step("Previous page", list.page - 1, list.page <= 1, "‹")}
+      {pageWindow(list.page, list.totalPages).map((n) => (
+        <Btn
+          key={n}
+          className={n === list.page ? "btn sm" : "btn ghost sm"}
+          disabled={list.loading}
+          onClick={go(n)}
+          aria-label={`Page ${n}`}
+          aria-current={n === list.page ? "page" : undefined}
+        >
+          {n}
+        </Btn>
+      ))}
+      {step("Next page", list.page + 1, list.page >= list.totalPages, "›")}
+      {step("Last page", list.totalPages, list.page >= list.totalPages, "»")}
+    </nav>
   );
 }
 
@@ -373,18 +418,22 @@ export function PickerTruncated({ what }: { what: string }) {
   return (
     <div style={{ marginTop: 6, fontSize: 12, color: "var(--warn)", display: "flex", alignItems: "center", gap: 6 }}>
       <Icon name="alert" size={12} sw={2.2} />
-      Showing the first {PICKER_PAGE * PICKER_MAX_PAGES} {what} — the list is longer than this picker can hold.
+      Showing the first {WALK_PAGE * WALK_MAX_PAGES} {what} — the list is longer than this picker can hold.
     </div>
   );
 }
 
-/** How much of a paged list is on screen: the server's scoped total, and how far
- * into it the caller has walked. Renders nothing when the API sent no total. */
+/** Which rows of a paged list are on screen: the range this page covers, out of
+ * the server's scoped total. It names the range rather than a count, because on
+ * page 3 a bare "50" reads as the first 50. Renders nothing when the API sent no
+ * total. */
 export function PageCount({ list, noun }: { list: PagedView; noun: string }) {
   if (list.total === null) return null;
-  const shown = list.items.length;
   const label = `${list.total} ${list.total === 1 ? noun : noun + "s"}`;
-  return <span className="badge gray">{shown < list.total ? `${shown} of ${label}` : label}</span>;
+  if (list.items.length === 0 || list.items.length >= list.total) return <span className="badge gray">{label}</span>;
+
+  const first = (list.page - 1) * list.pageSize + 1;
+  return <span className="badge gray">{`${first}–${first + list.items.length - 1} of ${label}`}</span>;
 }
 
 /* ---------- Small helpers ---------- */

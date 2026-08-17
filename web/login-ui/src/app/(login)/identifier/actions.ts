@@ -14,7 +14,7 @@ export type CheckResult = { ok: true; methods: string[] } | { ok: false; error: 
 export async function checkIdentifier(identifier: string): Promise<CheckResult> {
   const host = (await headers()).get("host") ?? ""
 
-  const { status, data } = await callLoginAPI("/check", {
+  const { status, data } = await callLoginAPI("/identifier", {
     host,
     body: { identifier: identifier ?? "" },
   })

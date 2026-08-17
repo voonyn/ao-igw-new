@@ -297,7 +297,7 @@ func InitConfig() (*Config, error) {
 
 func SetDefaultValue() {
 	// OIDC endpoints (except discovery) are namespaced under this prefix.
-	viper.SetDefault("oidc.path_prefix", "/oidc")
+	viper.SetDefault("oidc.path_prefix", "/oidc/v1")
 	// Trust only an on-host reverse proxy by default. Widen to the real LB CIDR
 	// in production; never to 0.0.0.0/0.
 	viper.SetDefault("server.trusted_proxies", []string{"127.0.0.1/32", "::1/128"})
