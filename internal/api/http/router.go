@@ -35,6 +35,9 @@ const loginPrefix = "/api/v1/login"
 // adminPrefix is where the console reaches the admin management API.
 const adminPrefix = "/api/v1/admin"
 
+// accountPrefix is where the portal reaches the self-service account API.
+const accountPrefix = "/api/v1/account"
+
 func Routes(app *fiber.App, cfg *config.Config, bdb *bun.DB, rdb cache.Client, log logger.Logger) error {
 	app.Use(requestid.New())
 	app.Use(middlewares.RequestLog(log))
@@ -89,8 +92,8 @@ func Routes(app *fiber.App, cfg *config.Config, bdb *bun.DB, rdb cache.Client, l
 	mountOIDCRoutes(app, cfg, bdb, storage, scopes, claims, recorder, cipher, sessions, tenantMW, tx.RunInTx, log)
 	mountLogin(app, cfg, bdb, cipher, storage, scopes, recorder, sessions, tenantMW, tx.RunInTx, log)
 	mountAdmin(app, bdb, rdb, cipher, storage, recorder, cfg.Notification, tenantMW, tx.RunInTx, log)
+	mountAccount(app, bdb, cipher, recorder, tenantMW, tx.RunInTx, log)
 
-	// mountAccount(rootPath, "/api/v1/account", cfg, bdb, rdb, log, auditRec)
 	return nil
 }
 
@@ -420,6 +423,38 @@ func mountAdmin(
 	notification.AdminRoutes(group, notification.NewHandler(notificationSvc))
 	audit.AdminRoutes(group, audit.NewHandler(auditSvc, auditActor),
 		middlewares.Paginate(audit.SortKeys...))
+}
+
+// mountAccount builds the self-service account API the portal drives.
+//
+// The group carries the tenant lookup and then the bearer guard, the same way
+// the admin management API does. The portal calls the issuer origin, so the host
+// of the request already names the tenant.
+//
+// The guard admits only a token minted for the account resource identifier, so a
+// token of the admin API never reaches these routes. There is no role gate:
+// every route acts on the subject of the caller's own token and on nothing else.
+//
+// Every write runs in one transaction and records one audit event on it, so the
+// group takes the same recorder and the same transaction runner the other stacks
+// take.
+func mountAccount(
+	app *fiber.App, bdb *bun.DB, cipher *crypto.Cipher, recorder *audit.Recorder,
+	tenantMW fiber.Handler, tx db.TxRunner, log logger.Logger,
+) {
+	keys := oidc.NewKeyService(oidc.NewKeyRepository(bdb, log), cipher, log)
+	bearer := middlewares.Bearer(keys.PublicKeySet, oidc.ResourceAccountAPI, log)
+
+	users := user.NewRepository(bdb, log)
+	accountSvc := user.NewAccountService(user.AccountDeps{
+		UpdateProfile: users.UpdateProfile,
+		InTx:          tx,
+		Audit:         recorder,
+		Log:           log,
+	})
+
+	group := app.Group(accountPrefix, tenantMW, bearer)
+	user.AccountRoutes(group, user.NewAccountHandler(accountSvc))
 }
 
 // tenantActor, providerActor, and auditActor read the person behind one admin
