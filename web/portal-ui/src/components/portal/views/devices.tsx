@@ -23,7 +23,7 @@ export function DevicesView({ A }: { A: Actions }) {
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<AccountErr>("");
   // A 404 on the listing means the gateway sub-feature is not mounted → degrade to
-  // a static "unavailable" line rather than surfacing a failure, like passkeys.
+  // a static "unavailable" line rather than surfacing a failure.
   const [unavailable, setUnavailable] = useState(false);
   const [confirming, setConfirming] = useState("");
   const [busy, setBusy] = useState("");

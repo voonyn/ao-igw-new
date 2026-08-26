@@ -7,19 +7,18 @@
 // outlived every other fixture around it.
 //
 // Every input is nullable and null means "we could not find out": the endpoint
-// failed, or its optional gateway sub-feature was never mounted (see
-// mountAccount). A check resting on an unknown input is itself `unknown` and is
-// excluded from BOTH sides of the score, so a gateway that never mounted TOTP
+// failed. A check resting on an unknown input is itself `unknown` and is excluded
+// from BOTH sides of the score, so an endpoint this deployment cannot answer
 // cannot depress a score the user has no way to raise — and is never silently
 // counted as passing either.
+//
+// The checks are only the ones this deployment can serve. Passkey and
+// authenticator enrolment have no self-service API here, so no check rests on
+// them: a checklist row the user cannot act on is worse than no row.
 
-import type { AccountHealth, ActivityEventWire, HealthCheck, Passkey } from "./types"
+import type { AccountHealth, ActivityEventWire, HealthCheck } from "./types"
 
 export interface HealthInputs {
-  /** TOTP enrolment; null when /totp failed or is not mounted. */
-  totpEnabled: boolean | null
-  /** The caller's passkeys; null when /passkeys failed or is not mounted. */
-  passkeys: Passkey[] | null
   /** The `email_verified` claim; null when the OP asserted nothing either way. */
   emailVerified: boolean | null
   /** One page of the caller's audit feed; null when /activity failed. */
@@ -42,32 +41,11 @@ function plural(n: number, one: string, many: string): string {
 }
 
 export function deriveHealth(i: HealthInputs): AccountHealth {
-  const passkeys = i.passkeys === null ? null : i.passkeys.length
-  const hasPasskey: Tri = passkeys === null ? null : passkeys > 0
-
-  // Three-valued OR: a known "yes" on either side wins even when the other is
-  // unknown (the factor genuinely exists), and only two known "no"s make a fail.
-  const secondFactor: Tri =
-    i.totpEnabled === true || hasPasskey === true ? true
-      : i.totpEnabled === null || hasPasskey === null ? null
-        : false
-
   const failed = i.activity === null
     ? null
     : i.activity.filter(function (e) { return e.action === "login.failed" }).length
 
-  const active = [
-    i.totpEnabled === true ? "Authenticator app" : "",
-    passkeys ? plural(passkeys, "passkey", "passkeys") : "",
-  ].filter(Boolean).join(" · ")
-
   const checks: HealthCheck[] = [
-    row("2fa", "Two-factor authentication", "security", secondFactor,
-      active || "No second step when you sign in",
-      "Couldn’t check your second factor"),
-    row("passkey", "Passkey enrolled", "security", hasPasskey,
-      passkeys ? plural(passkeys, "passkey", "passkeys") + " registered" : "Add one to sign in without a password",
-      "Passkeys aren’t available on this server"),
     row("email", "Email verified", "profile", i.emailVerified,
       i.emailVerified ? "Your sign-in email is verified" : "Verify it so account recovery reaches you",
       "Couldn’t check your email"),

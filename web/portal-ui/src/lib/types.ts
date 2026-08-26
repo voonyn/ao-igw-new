@@ -52,63 +52,7 @@ export interface SecurityData {
   passwordStrength: string
   recoveryEmail: boolean
   recoveryPhone: boolean
-  backupCodes: { total: number; remaining: number }
   breachAlerts: boolean
-}
-
-export interface MfaMethod {
-  id: string
-  type: string
-  name: string
-  detail: string
-  added: string
-  primary: boolean
-  icon: string
-  empty?: boolean
-}
-
-// Passkey mirrors the gateway dto.AccountPasskey returned by the BFF
-// (/api/account/passkeys). Metadata only — the credential id (base64url, used to
-// delete it), an optional label, and ISO timestamps. lastUsedAt is "" until first use.
-export interface Passkey {
-  id: string
-  name: string
-  createdAt: string
-  lastUsedAt: string
-}
-
-// TOTP wire types mirror the gateway account DTOs returned by the BFF
-// (/api/account/totp*). Status is a boolean only; begin discloses the secret + the
-// otpauth:// provisioning URI (the client renders the QR); finish returns the
-// one-time recovery codes. The `code` request bodies carry only a string, so no
-// separate request type is defined here.
-export interface TotpStatus {
-  enabled: boolean
-  // How many recovery codes remain unused — a count, never the codes. Drives the
-  // portal's prompt to replace them before the last one is spent.
-  recoveryCodesRemaining: number
-}
-
-export interface TotpEnrollBegin {
-  secret: string
-  otpauthUri: string
-}
-
-export interface TotpEnrollFinish {
-  recoveryCodes: string[]
-}
-
-export interface SessionRow {
-  id: string
-  device: string
-  browser: string
-  os: string
-  loc: string
-  ip: string
-  current: boolean
-  last: string
-  flagged?: boolean
-  icon: string
 }
 
 export interface DeviceRow {
@@ -136,28 +80,6 @@ export interface ConnectedAppWire {
   active: boolean
   connectedAt: string
   updatedAt: string
-}
-
-export interface AppEntitlement {
-  id: string
-  name: string
-  space: string
-  cat: string
-  status: "active" | "requestable" | "pending"
-  desc: string
-  hue: number
-  letter: string
-}
-
-export interface AccessRequest {
-  id: string
-  app: string
-  role: string
-  space: string
-  status: "pending" | "draft" | "approved" | "denied"
-  submitted: string
-  approver: string
-  step: string
 }
 
 // ActivityEvent is the *rendered* timeline row the view draws. Live events are
@@ -232,23 +154,6 @@ export interface NotificationItem {
   tone: "warn" | "accent" | "good" | "neutral"
   unread: boolean
   action: string
-}
-
-export interface Ticket {
-  id: string
-  subject: string
-  cat: string
-  status: "open" | "pending" | "resolved"
-  updated: string
-  agent: string
-  msgs: number
-}
-
-export interface HelpTopic {
-  id: string
-  icon: string
-  title: string
-  desc: string
 }
 
 // The action bundle threaded through views (mirrors the design's `A`).

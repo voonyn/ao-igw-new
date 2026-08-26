@@ -4,12 +4,11 @@
 // NOT WIRED: everything here is placeholder/illustrative. The ONLY values backed
 // by a real backend today are a few `user` fields, overridden at request time
 // from the OIDC /userinfo claims by `mergeUserinfo`. Every other collection
-// (security, sessions, devices, apps, activity, notifications, tickets, spaces,
-// ...) has no self-service API yet and is shown with a "Not Wired" marker.
+// (security, sessions, devices, notifications, spaces, ...) has no self-service
+// API yet and is shown with a "Not Wired" marker.
 
 import type {
-  AccessRequest, AppEntitlement, DeviceRow, HelpTopic,
-  MfaMethod, NotificationItem, PortalUser, SecurityData, SessionRow, Space, Ticket,
+  DeviceRow, NotificationItem, PortalUser, SecurityData, Space,
 } from "./types"
 import type { UserinfoClaims } from "./server/userinfo"
 
@@ -78,49 +77,13 @@ export const security: SecurityData = {
   passwordStrength: "Strong",
   recoveryEmail: true,
   recoveryPhone: true,
-  backupCodes: { total: 10, remaining: 8 },
   breachAlerts: true,
 }
-
-export const mfaMethods: MfaMethod[] = [
-  { id: "m1", type: "passkey", name: "iPhone 15 Pro", detail: "Face ID · Apple", added: "Apr 2, 2026", primary: true, icon: "fingerprint" },
-  { id: "m2", type: "authenticator", name: "Authenticator app", detail: "Time-based codes (TOTP)", added: "Jan 18, 2026", primary: false, icon: "phone" },
-  { id: "m3", type: "sms", name: "SMS to ••• 0148", detail: "Text message codes", added: "Mar 9, 2025", primary: false, icon: "mail" },
-  { id: "m4", type: "securitykey", name: "YubiKey 5C", detail: "Hardware security key", added: "Not enrolled", primary: false, icon: "key", empty: true },
-]
-
-export const sessions: SessionRow[] = [
-  { id: "s1", device: "MacBook Pro", browser: "Chrome 128", os: "macOS 15", loc: "San Francisco, US", ip: "24.18.xx.xx", current: true, last: "Active now", icon: "laptop" },
-  { id: "s2", device: "iPhone 15 Pro", browser: "AlphaOmega App", os: "iOS 18", loc: "San Francisco, US", ip: "24.18.xx.xx", current: false, last: "2 hours ago", icon: "phone" },
-  { id: "s3", device: "iPad Air", browser: "Safari", os: "iPadOS 18", loc: "San Francisco, US", ip: "24.18.xx.xx", current: false, last: "Yesterday, 9:14 PM", icon: "phone" },
-  { id: "s4", device: "Windows PC", browser: "Edge 128", os: "Windows 11", loc: "Austin, US", ip: "70.114.xx.xx", current: false, last: "3 days ago", flagged: true, icon: "laptop" },
-]
 
 export const devices: DeviceRow[] = [
   { id: "d1", name: "Marcus’s MacBook Pro", kind: "Laptop", os: "macOS 15.1", trusted: true, lastSeen: "Active now", loc: "San Francisco", icon: "laptop" },
   { id: "d2", name: "iPhone 15 Pro", kind: "Phone", os: "iOS 18.1", trusted: true, lastSeen: "2 hours ago", loc: "San Francisco", icon: "phone" },
   { id: "d3", name: "iPad Air", kind: "Tablet", os: "iPadOS 18.1", trusted: true, lastSeen: "Yesterday", loc: "San Francisco", icon: "phone" },
-]
-
-export const apps: AppEntitlement[] = [
-  { id: "a1", name: "AlphaOmega Wallet", space: "personal", cat: "Finance", status: "active", desc: "Payments & digital cards", hue: 18, letter: "W" },
-  { id: "a2", name: "CloudVault", space: "personal", cat: "Storage", status: "active", desc: "Personal file storage", hue: 200, letter: "C" },
-  { id: "a3", name: "StreamOne", space: "personal", cat: "Media", status: "active", desc: "Music & video", hue: 332, letter: "S" },
-  { id: "a4", name: "ShopHub Plus", space: "personal", cat: "Shopping", status: "requestable", desc: "Premium membership tier", hue: 62, letter: "S" },
-  { id: "a5", name: "Workday", space: "northwind", cat: "HR", status: "active", desc: "HR & payroll", hue: 232, letter: "W" },
-  { id: "a6", name: "Salesforce", space: "northwind", cat: "CRM", status: "active", desc: "Customer records", hue: 200, letter: "S" },
-  { id: "a7", name: "Jira", space: "northwind", cat: "Engineering", status: "active", desc: "Issue tracking", hue: 232, letter: "J" },
-  { id: "a8", name: "AWS Console", space: "northwind", cat: "Infrastructure", status: "pending", desc: "Production access — under review", hue: 38, letter: "A" },
-  { id: "a9", name: "Datadog", space: "northwind", cat: "Observability", status: "requestable", desc: "Monitoring & APM", hue: 282, letter: "D" },
-  { id: "a10", name: "Brightwater Permits", space: "brightwater", cat: "Government", status: "active", desc: "Building & parking permits", hue: 152, letter: "B" },
-  { id: "a11", name: "City Tax Portal", space: "brightwater", cat: "Government", status: "active", desc: "Property & income tax", hue: 152, letter: "C" },
-]
-
-export const accessRequests: AccessRequest[] = [
-  { id: "r1", app: "AWS Console", role: "Production — Read/Write", space: "northwind", status: "pending", submitted: "Jun 11, 2026", approver: "Dana Whitfield", step: "Manager approval" },
-  { id: "r2", app: "Datadog", role: "Standard viewer", space: "northwind", status: "draft", submitted: "—", approver: "—", step: "Not submitted" },
-  { id: "r3", app: "Salesforce", role: "Sales Ops", space: "northwind", status: "approved", submitted: "May 28, 2026", approver: "Dana Whitfield", step: "Granted" },
-  { id: "r4", app: "ShopHub Plus", role: "Premium tier", space: "personal", status: "denied", submitted: "May 14, 2026", approver: "Auto-policy", step: "Payment required" },
 ]
 
 // The activity fixture is gone: the Activity view now renders the caller's real
@@ -129,24 +92,7 @@ export const accessRequests: AccessRequest[] = [
 
 export const notifications: NotificationItem[] = [
   { id: "n1", title: "New sign-in from Austin, US", detail: "Was this you? Review your activity.", time: "3d", tone: "warn", unread: true, action: "activity" },
-  { id: "n2", title: "Access request awaiting approval", detail: "AWS Console · with Dana Whitfield", time: "3d", tone: "accent", unread: true, action: "apps" },
-  { id: "n3", title: "2 backup codes used", detail: "8 of 10 remaining", time: "1w", tone: "neutral", unread: false, action: "security" },
   { id: "n4", title: "Welcome to AlphaOmega ID", detail: "Your identity is now unified across 3 spaces.", time: "2w", tone: "good", unread: false, action: "home" },
-]
-
-export const tickets: Ticket[] = [
-  { id: "TK-2041", subject: "Can’t receive SMS verification codes", cat: "Security", status: "open", updated: "2 hours ago", agent: "Priya R.", msgs: 3 },
-  { id: "TK-1987", subject: "Request access to AWS production", cat: "Access", status: "pending", updated: "Yesterday", agent: "Dana W.", msgs: 5 },
-  { id: "TK-1950", subject: "Update name on citizen profile", cat: "Profile", status: "resolved", updated: "Jun 2, 2026", agent: "Sam T.", msgs: 4 },
-]
-
-export const helpTopics: HelpTopic[] = [
-  { id: "h1", icon: "lock", title: "Reset your password", desc: "Step-by-step recovery" },
-  { id: "h2", icon: "shield", title: "Set up two-factor", desc: "Authenticator, SMS & keys" },
-  { id: "h3", icon: "fingerprint", title: "Sign in with a passkey", desc: "Passwordless on any device" },
-  { id: "h4", icon: "key", title: "Request app access", desc: "How approvals work" },
-  { id: "h5", icon: "laptop", title: "Manage trusted devices", desc: "Review & remove devices" },
-  { id: "h6", icon: "idcard", title: "Verify your identity", desc: "Citizen & workforce IDs" },
 ]
 
 // The sign-in fixture is gone: Home's chart now buckets the caller's real
@@ -154,6 +100,5 @@ export const helpTopics: HelpTopic[] = [
 
 // Aggregate mirroring the mockup's `window.AOP` so ported views can do `const d = AOP`.
 export const AOP = {
-  user: MOCK_USER, spaces, security, mfaMethods, sessions, devices,
-  apps, accessRequests, notifications, tickets, helpTopics,
+  user: MOCK_USER, spaces, security, devices, notifications,
 }

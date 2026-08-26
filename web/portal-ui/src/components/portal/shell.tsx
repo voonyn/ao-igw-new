@@ -5,16 +5,14 @@ import { useRef, useState } from "react";
 import { Icon, BrandMark } from "./icons";
 import { Avatar, Drawer, Menu, ToastHost, type ToastItem } from "./primitives";
 import { UserProvider, useUser } from "./flow-context";
-import { spaces as ALL_SPACES, accessRequests, notifications as NOTIFS } from "@/lib/portal-data";
+import { spaces as ALL_SPACES, notifications as NOTIFS } from "@/lib/portal-data";
 import type { Actions, PortalUser, Space } from "@/lib/types";
 
 import { HomeView } from "./views/home";
 import { ProfileView } from "./views/profile";
 import { SecurityView } from "./views/security";
-import { AppsView } from "./views/apps";
 import { DevicesView } from "./views/devices";
 import { ActivityView } from "./views/activity";
-import { SupportView } from "./views/support";
 
 // App root — mirrors the mockup's PortalApp (portal/app.jsx). The design's
 // "tweaks" panel and sidebar/topbar toggle were mockup-only; this ships the
@@ -57,23 +55,20 @@ function PortalShell() {
   }
 
   const unread = NOTIFS.filter((n) => n.unread).length;
-  const pendingReqs = accessRequests.filter((r) => r.status === "pending").length;
 
   return (
     <div className="shell shell-top">
       <div className="main">
         <TopNav page={page} onNav={A.nav} spaceId={spaceId} spaces={spaces}
-          onSpace={switchSpace} unread={unread} pendingReqs={pendingReqs}
+          onSpace={switchSpace} unread={unread}
           onBell={() => setNotifOpen(true)} />
         <div className="content" ref={contentRef}>
           <div className="content-inner">
             {page === "home" && <HomeView spaceId={spaceId} spaces={spaces} A={A} heroStyle="spotlight" />}
             {page === "profile" && <ProfileView A={A} spaceId={spaceId} spaces={spaces} />}
             {page === "security" && <SecurityView A={A} />}
-            {page === "apps" && <AppsView A={A} spaceId={spaceId} spaces={spaces} />}
             {page === "devices" && <DevicesView A={A} />}
             {page === "activity" && <ActivityView A={A} />}
-            {page === "support" && <SupportView A={A} />}
           </div>
         </div>
       </div>
@@ -85,7 +80,7 @@ function PortalShell() {
 }
 
 /* ---------- Top navigation ---------- */
-function TopNav({ page, onNav, spaceId, spaces, onSpace, unread, onBell, pendingReqs }: {
+function TopNav({ page, onNav, spaceId, spaces, onSpace, unread, onBell }: {
   page: string;
   onNav: (p: string) => void;
   spaceId: string;
@@ -93,7 +88,6 @@ function TopNav({ page, onNav, spaceId, spaces, onSpace, unread, onBell, pending
   onSpace: (id: string) => void;
   unread: number;
   onBell: () => void;
-  pendingReqs: number;
 }) {
   const [switcherOpen, setSwitcherOpen] = useState(false);
   const [acctOpen, setAcctOpen] = useState(false);
@@ -113,14 +107,12 @@ function TopNav({ page, onNav, spaceId, spaces, onSpace, unread, onBell, pending
     try { localStorage.setItem("ao-portal-theme", next); } catch { /* ignore */ }
   }
 
-  const NAV: { id: string; label: string; icon: string; count?: number; dot?: boolean }[] = [
+  const NAV: { id: string; label: string; icon: string; dot?: boolean }[] = [
     { id: "home", label: "Home", icon: "home" },
     { id: "profile", label: "Profile", icon: "idcard" },
     { id: "security", label: "Security", icon: "shield" },
-    { id: "apps", label: "Apps", icon: "apps", count: pendingReqs },
     { id: "devices", label: "Devices", icon: "laptop" },
     { id: "activity", label: "Activity", icon: "clock", dot: unread > 0 },
-    { id: "support", label: "Support", icon: "help" },
   ];
 
   return (
@@ -136,8 +128,7 @@ function TopNav({ page, onNav, spaceId, spaces, onSpace, unread, onBell, pending
             <button key={it.id} type="button" className={"tn-item" + (page === it.id ? " active" : "")} onClick={() => onNav(it.id)}>
               <Icon name={it.icon} size={16} sw={2} />
               <span className="tn-label">{it.label}</span>
-              {it.count != null && it.count > 0 && <span className="count">{it.count}</span>}
-              {it.dot && !it.count && <span className="dot-badge"></span>}
+              {it.dot && <span className="dot-badge"></span>}
             </button>
           ))}
         </nav>

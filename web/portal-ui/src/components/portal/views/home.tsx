@@ -7,17 +7,16 @@ import { SecurityRing, KV, AppLogo, NotWired } from "../primitives";
 import { useUser } from "../flow-context";
 import { accountErrorFrom, appHue, appLetter, eventTime, type AccountErr } from "@/lib/format";
 import { deriveHealth } from "@/lib/health";
-import { apps as ALL_APPS } from "@/lib/portal-data";
-import type { Actions, ActivityEventWire, ConnectedAppWire, Passkey, Space } from "@/lib/types";
+import type { Actions, ActivityEventWire, ConnectedAppWire, Space } from "@/lib/types";
 
 // Home dashboard, ported from portal/views-home.jsx.
 //
 // LIVE: the greeting (OIDC /userinfo + the viewer's own clock), the account-health
 // checklist and its score, "needs attention", the sign-in chart and connected apps
 // — all derived on the client from self-service account endpoints that already
-// exist (/totp, /passkeys, /sessions, /activity, /connected-apps), one request
-// each per page load. Each card degrades on its own: a failing or unmounted
-// endpoint leaves that card stating why, never the dashboard blank.
+// exist (/sessions, /activity, /connected-apps), one request each per page load.
+// Each card degrades on its own: a failing endpoint leaves that card stating why,
+// never the dashboard blank.
 //
 // NOT WIRED: the "Active space" card only. Org/space membership has no
 // self-service API, so it keeps its fixture and its <NotWired/> marker.
@@ -29,7 +28,7 @@ const ACTIVITY_PAGE = 100;
 // the card then says so rather than claiming a window it never read.
 const CHART_DAYS = 14;
 
-const CHECK_ICON: Record<string, string> = { "2fa": "shield", passkey: "fingerprint", email: "mail", signins: "alert" };
+const CHECK_ICON: Record<string, string> = { email: "mail", signins: "alert" };
 
 // readCard performs one BFF read for one card: 200 hands the parsed body to
 // `onOk`, anything else classifies through the shared mapper. It never throws, so
@@ -101,10 +100,6 @@ export function HomeView({ spaceId, spaces, A, heroStyle }: { spaceId: string; s
   const greet = useGreeting();
 
   // Per-card state: the data (null until it arrives) plus its own error status.
-  const [totpEnabled, setTotpEnabled] = useState<boolean | null>(null);
-  const [totpErr, setTotpErr] = useState<AccountErr>("");
-  const [passkeys, setPasskeys] = useState<Passkey[] | null>(null);
-  const [pkErr, setPkErr] = useState<AccountErr>("");
   const [sessionCount, setSessionCount] = useState<number | null>(null);
   const [sessionsErr, setSessionsErr] = useState<AccountErr>("");
   const [activity, setActivity] = useState<ActivityEventWire[] | null>(null);
@@ -112,7 +107,7 @@ export function HomeView({ spaceId, spaces, A, heroStyle }: { spaceId: string; s
   const [connApps, setConnApps] = useState<ConnectedAppWire[] | null>(null);
   const [appsErr, setAppsErr] = useState<AccountErr>("");
 
-  // One fan-out on mount: five parallel reads, exactly one request per endpoint,
+  // One fan-out on mount: three parallel reads, exactly one request per endpoint,
   // no polling and no refetch-on-focus. Each lands in its own card's state, so a
   // slow or failing endpoint never holds up the ones that already answered.
   // The whole body sits in an async IIFE so no setState runs synchronously in the
@@ -120,13 +115,6 @@ export function HomeView({ spaceId, spaces, A, heroStyle }: { spaceId: string; s
   useEffect(function () {
     void (async function () {
       await Promise.allSettled([
-        readCard("/api/account/totp", function (d) {
-          setTotpEnabled(Boolean((d as { enabled?: unknown }).enabled));
-        }, setTotpErr),
-        readCard("/api/account/passkeys", function (d) {
-          const p = (d as { passkeys?: unknown }).passkeys;
-          setPasskeys(Array.isArray(p) ? (p as Passkey[]) : []);
-        }, setPkErr),
         readCard("/api/account/sessions", function (d) {
           const s = (d as { sessions?: unknown }).sessions;
           setSessionCount(Array.isArray(s) ? s.length : 0);
@@ -153,12 +141,11 @@ export function HomeView({ spaceId, spaces, A, heroStyle }: { spaceId: string; s
   // its check goes `unknown` — excluded from the score rather than counted
   // against a user who cannot act on it.
   const health = useMemo(function () {
-    return deriveHealth({ totpEnabled, passkeys, emailVerified: u.emailVerified, activity, sessionCount });
-  }, [totpEnabled, passkeys, u.emailVerified, activity, sessionCount]);
+    return deriveHealth({ emailVerified: u.emailVerified, activity, sessionCount });
+  }, [u.emailVerified, activity, sessionCount]);
 
-  const healthLoading = pending(totpEnabled, totpErr) || pending(passkeys, pkErr) || pending(activity, activityErr);
+  const healthLoading = pending(activity, activityErr);
   const failing = health.checks.filter((c) => c.state === "warn");
-  const twoFactor = health.checks.find((c) => c.id === "2fa");
 
   const chart = useMemo(function () { return activity ? buildChart(activity) : null; }, [activity]);
   const chartMax = chart ? Math.max(1, ...chart.map((d) => d.v)) : 1;
@@ -172,15 +159,10 @@ export function HomeView({ spaceId, spaces, A, heroStyle }: { spaceId: string; s
     }).slice(0, 4);
   }, [connApps]);
 
-  const spaceApps = ALL_APPS.filter((a) => a.space === spaceId && a.status === "active");
-
   const QUICK = [
     { id: "q1", icon: "lock", ttl: "Reset password", sub: "Change your password", nav: "security", label: "Manage" },
-    {
-      id: "q2", icon: "shield", ttl: "Two-factor", nav: "security", label: "Configure",
-      sub: healthLoading ? "Checking…" : twoFactor && twoFactor.state === "good" ? twoFactor.detail : "No second step yet",
-    },
-    { id: "q3", icon: "apps", ttl: "Request access", sub: "Apps & entitlements", nav: "apps", label: "Browse" },
+    { id: "q2", icon: "laptop", ttl: "Where you're signed in", sub: "Review active sessions", nav: "security", label: "Review" },
+    { id: "q3", icon: "link", ttl: "Connected apps", sub: "Apps with access to your account", nav: "devices", label: "Manage" },
     { id: "q4", icon: "idcard", ttl: "Edit profile", sub: "Personal details", nav: "profile", label: "Update" },
   ];
 
@@ -201,8 +183,8 @@ export function HomeView({ spaceId, spaces, A, heroStyle }: { spaceId: string; s
               <button type="button" className="btn lg white-hero" onClick={() => A.nav("security")}>
                 <Icon name="shield" size={16} sw={2} />Review security
               </button>
-              <button type="button" className="btn lg on-hero" onClick={() => A.nav("apps")}>
-                <Icon name="apps" size={16} sw={2} />My applications
+              <button type="button" className="btn lg on-hero" onClick={() => A.nav("devices")}>
+                <Icon name="link" size={16} sw={2} />Connected apps
               </button>
             </div>
           </div>
@@ -234,7 +216,7 @@ export function HomeView({ spaceId, spaces, A, heroStyle }: { spaceId: string; s
               <div className="card-sub">
                 {healthLoading ? "Checking your account…"
                   : health.scored === 0 ? "Couldn’t check your account right now"
-                    : health.passing + " of " + health.scored + " checks passing"}
+                    : health.passing + " of " + health.scored + " check" + (health.scored === 1 ? "" : "s") + " passing"}
               </div>
             </div>
             <span className="spacer"></span>
@@ -291,7 +273,6 @@ export function HomeView({ spaceId, spaces, A, heroStyle }: { spaceId: string; s
             </div>
             <div style={{ marginTop: 14 }}>
               <KV k="Type" v={<span className="badge accent">{space.type}</span>} />
-              <KV k="Apps available" v={spaceApps.length} />
               <KV k="Member since" v={u.memberSince} />
             </div>
           </div>
