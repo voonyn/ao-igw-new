@@ -502,8 +502,23 @@ func mountAccount(
 		Log:  log,
 	})
 
+	// The applications that hold the person's consent, and the disconnect that
+	// takes one back. The withdraw and the grant delete land on one transaction,
+	// so an application can never keep a refresh token of a consent that is
+	// already withdrawn.
+	consents := oidc.NewConsentRepository(bdb, log)
+	connectionSvc := oidc.NewAccountService(oidc.AccountDeps{
+		List:     consents.ListBySubject,
+		Withdraw: consents.DeleteForSubject,
+		Revoke:   storage.DeleteGrantsBySubjectClient,
+		InTx:     tx,
+		Audit:    recorder,
+		Log:      log,
+	})
+
 	group := app.Group(accountPrefix, tenantMW, bearer)
 	user.AccountRoutes(group, user.NewAccountHandler(accountSvc))
+	oidc.AccountRoutes(group, oidc.NewAccountHandler(connectionSvc, accountActor))
 	session.AccountRoutes(group, session.NewAccountHandler(sessionSvc))
 	audit.AccountRoutes(group, audit.NewAccountHandler(activitySvc, auditActor),
 		middlewares.Paginate(audit.SortKeys...))
@@ -529,6 +544,8 @@ func tenantActor(c fiber.Ctx) tenant.Actor { return tenant.Actor(middlewares.Act
 func auditActor(c fiber.Ctx) audit.Actor { return audit.Actor(middlewares.ActorFrom(c)) }
 
 func providerActor(c fiber.Ctx) oidc.AdminActor { return oidc.AdminActor(middlewares.ActorFrom(c)) }
+
+func accountActor(c fiber.Ctx) oidc.AccountActor { return oidc.AccountActor(middlewares.ActorFrom(c)) }
 
 // newSessionService builds the login session service both stacks share.
 //

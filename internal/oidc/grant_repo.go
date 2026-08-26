@@ -24,6 +24,9 @@ var grantSortColumns = map[string]string{
 const grantClientJoin = `LEFT JOIN application_oidc_configs AS c
 	ON c.tenant_id = g.tenant_id AND c.client_id = g.client_id AND c.deleted_at IS NULL`
 
+// grantAppJoin reads the application one client belongs to. It joins from the
+// alias c, so every caller must have joined application_oidc_configs as c
+// first. The connected applications read of the account API reuses it.
 const grantAppJoin = `LEFT JOIN applications AS a
 	ON a.id = c.app_id AND a.tenant_id = c.tenant_id AND a.deleted_at IS NULL`
 
@@ -115,7 +118,9 @@ func (r *StorageRepository) DeleteGrantsByLoginSession(
 	if sessionID == "" {
 		return 0, nil
 	}
-	return r.deleteGrants(ctx, tenantID, "login_session_id", sessionID)
+	return r.deleteGrants(ctx, tenantID, "login_session_id", func(q *bun.SelectQuery) *bun.SelectQuery {
+		return q.Where("g.login_session_id = ?", sessionID)
+	})
 }
 
 // DeleteGrantsBySubject hard deletes every grant one person holds, whatever
@@ -129,28 +134,51 @@ func (r *StorageRepository) DeleteGrantsBySubject(
 	if subject == "" {
 		return 0, nil
 	}
-	return r.deleteGrants(ctx, tenantID, "subject", subject)
+	return r.deleteGrants(ctx, tenantID, "subject", func(q *bun.SelectQuery) *bun.SelectQuery {
+		return q.Where("g.subject = ?", subject)
+	})
 }
 
-// deleteGrants removes the grants one indexed column names, and the superseded
-// refresh token digests that belonged to them.
+// DeleteGrantsBySubjectClient hard deletes every grant one person holds for one
+// client, and answers how many went. It is the second half of a disconnect: the
+// consent is withdrawn, and what the consent already produced goes with it.
+//
+// No refresh token of that client survives, so the application cannot mint a new
+// access token for the person. An access token already issued is a signed value
+// no store holds, and it lives out its lifetime at the relying party.
+//
+// An empty subject or an empty client answers nothing. Either one would widen
+// the match to rows the caller never named.
+func (r *StorageRepository) DeleteGrantsBySubjectClient(
+	ctx context.Context, tenantID, subject, clientID string,
+) (int, error) {
+	if subject == "" || clientID == "" {
+		return 0, nil
+	}
+	return r.deleteGrants(ctx, tenantID, "subject and client_id", func(q *bun.SelectQuery) *bun.SelectQuery {
+		return q.Where("g.subject = ?", subject).Where("g.client_id = ?", clientID)
+	})
+}
+
+// deleteGrants removes the grants narrow selects, and the superseded refresh
+// token digests that belonged to them. by names the narrowing for the log line
+// and for the error, and never reaches the SQL.
 //
 // The digests go too, because a grant that no longer exists has nothing left to
 // detect: they are kept only to recognise a replay against a live grant.
 func (r *StorageRepository) deleteGrants(
-	ctx context.Context, tenantID, column, value string,
+	ctx context.Context, tenantID, by string, narrow func(*bun.SelectQuery) *bun.SelectQuery,
 ) (int, error) {
 	r.log.Debug("revoke grants",
-		logger.String("tenant_id", tenantID), logger.String("by", column), logger.RequestID(ctx))
+		logger.String("tenant_id", tenantID), logger.String("by", by), logger.RequestID(ctx))
 
 	var ids []string
-	if err := db.Conn(ctx, r.db).NewSelect().
+	if err := narrow(db.Conn(ctx, r.db).NewSelect().
 		Model((*GrantRecord)(nil)).
 		Column("id").
-		Where("g.tenant_id = ?", tenantID).
-		Where("? = ?", bun.Ident("g."+column), value).
+		Where("g.tenant_id = ?", tenantID)).
 		Scan(ctx, &ids); err != nil {
-		return 0, fmt.Errorf("read the grants of tenant %s by %s: %w", tenantID, column, err)
+		return 0, fmt.Errorf("read the grants of tenant %s by %s: %w", tenantID, by, err)
 	}
 	if len(ids) == 0 {
 		return 0, nil
@@ -169,12 +197,12 @@ func (r *StorageRepository) deleteGrants(
 		Where("tenant_id = ?", tenantID).
 		Where("id IN (?)", bun.In(ids)).
 		Exec(ctx); err != nil {
-		return 0, fmt.Errorf("revoke the grants of tenant %s by %s: %w", tenantID, column, err)
+		return 0, fmt.Errorf("revoke the grants of tenant %s by %s: %w", tenantID, by, err)
 	}
 
 	r.log.Debug("revoked grants",
 		logger.String("tenant_id", tenantID),
-		logger.String("by", column),
+		logger.String("by", by),
 		logger.Int("grants", len(ids)), logger.RequestID(ctx))
 	return len(ids), nil
 }

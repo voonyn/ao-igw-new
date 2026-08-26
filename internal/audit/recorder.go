@@ -20,6 +20,7 @@ const (
 	ActionLoginFailed        Action = "login.failed"
 	ActionConsentGranted     Action = "consent.granted"
 	ActionConsentDenied      Action = "consent.denied"
+	ActionConsentRevoked     Action = "consent.revoked"
 	ActionTokenIssued        Action = "token.issued"
 	ActionTokenRefreshReused Action = "token.refresh_reused"
 	ActionTokenRevoked       Action = "token.revoked"
@@ -164,6 +165,7 @@ var actionResults = map[Action]string{
 	ActionLoginFailed:        ResultFailure,
 	ActionConsentGranted:     ResultSuccess,
 	ActionConsentDenied:      ResultFailure,
+	ActionConsentRevoked:     ResultSuccess,
 	ActionTokenIssued:        ResultSuccess,
 	ActionTokenRefreshReused: ResultFailure,
 	ActionTokenRevoked:       ResultSuccess,

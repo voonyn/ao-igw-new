@@ -80,6 +80,28 @@ type UserConsent struct {
 	DeletedAt time.Time `bun:",soft_delete,nullzero"`
 }
 
+// ConnectionRecord is one remembered consent as the account API projects it: the
+// client the person consented to, the application behind that client, the scopes
+// they allowed, and whether a live grant of that pair exists right now.
+//
+// AppName is empty when the client or its application is gone. The client
+// identifier is still answered, so the row names the connection either way.
+//
+// The row carries DeletedAt, so bun filters a withdrawn consent out of the read.
+type ConnectionRecord struct {
+	bun.BaseModel `bun:"table:oidc_user_consents,alias:uc"`
+
+	ClientID  string    `bun:"client_id"`
+	Scopes    string    `bun:"scopes"`
+	CreatedAt time.Time `bun:"created_at,nullzero"`
+	UpdatedAt time.Time `bun:"updated_at,nullzero"`
+
+	AppName  string `bun:"app_name,scanonly"`
+	HasGrant bool   `bun:"has_grant,scanonly"`
+
+	DeletedAt time.Time `bun:",soft_delete,nullzero"`
+}
+
 // GrantRecord is one row of oidc_grants as an administrative read projects it.
 //
 // The sealed grant is not projected. The list answers from the extracted columns
