@@ -49,14 +49,14 @@ func testAdminService(t *testing.T, d adminDeps) *AdminService {
 		List: func(context.Context, string, Query) ([]Record, int64, error) {
 			return d.rows, int64(len(d.rows)), nil
 		},
-		Revoke: func(_ context.Context, _, sessionID string) (Revoked, error) {
+		Revoke: func(_ context.Context, _, _, sessionID string) (Revoked, error) {
 			if d.revokeFails {
 				return Revoked{}, ErrNoSuchSession
 			}
 			revokedSessions = append(revokedSessions, sessionID)
 			return Revoked{SessionID: sessionID, UserID: secondUserID, TokenHash: "a-digest"}, nil
 		},
-		RevokeUser: func(_ context.Context, _, userID string) ([]Revoked, error) {
+		RevokeUser: func(_ context.Context, _, userID, _ string) ([]Revoked, error) {
 			revokedUsers = append(revokedUsers, userID)
 			return []Revoked{
 				{SessionID: liveSessionID, UserID: userID},

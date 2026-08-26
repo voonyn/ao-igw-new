@@ -32,12 +32,15 @@ type (
 	SessionLister func(ctx context.Context, tenantID string, q Query) ([]Record, int64, error)
 
 	// SessionRevoker hard deletes one login session, from the database and from
-	// the cache. It returns ErrNoSuchSession when no row carries the id.
-	SessionRevoker func(ctx context.Context, tenantID, sessionID string) (Revoked, error)
+	// the cache. ownerID narrows the delete to the person who holds the session,
+	// and an empty value reaches the session of anybody in the tenant. It answers
+	// ErrNoSuchSession when no row carries the id under that narrowing.
+	SessionRevoker func(ctx context.Context, tenantID, ownerID, sessionID string) (Revoked, error)
 
-	// UserSessionRevoker hard deletes every login session of one person. A
-	// person with no session is not an error.
-	UserSessionRevoker func(ctx context.Context, tenantID, userID string) ([]Revoked, error)
+	// UserSessionRevoker hard deletes every login session of one person, except
+	// the one exceptID names. An empty value spares nothing. A person with no
+	// session is not an error.
+	UserSessionRevoker func(ctx context.Context, tenantID, userID, exceptID string) ([]Revoked, error)
 
 	// GrantRevoker hard deletes every grant one login session produced, and
 	// answers how many went. The oidc domain owns the table, so it arrives as a
@@ -117,7 +120,9 @@ func (s *AdminService) Revoke(ctx context.Context, a Actor, sessionID string) (R
 
 	var out RevokedView
 	err := s.deps.InTx(ctx, func(ctx context.Context) error {
-		revoked, err := s.deps.Revoke(ctx, a.TenantID, sessionID)
+		// The operator names no owner: a force-logout reaches the session of
+		// anybody in the tenant, which is what the tenant role admits.
+		revoked, err := s.deps.Revoke(ctx, a.TenantID, "", sessionID)
 		if err != nil {
 			return err
 		}
@@ -170,7 +175,8 @@ func (s *AdminService) RevokeForUser(ctx context.Context, a Actor, userID string
 
 	var out RevokedView
 	err := s.deps.InTx(ctx, func(ctx context.Context) error {
-		revoked, err := s.deps.RevokeUser(ctx, a.TenantID, userID)
+		// Nothing is spared: the operator signs the person out of everything.
+		revoked, err := s.deps.RevokeUser(ctx, a.TenantID, userID, "")
 		if err != nil {
 			return err
 		}

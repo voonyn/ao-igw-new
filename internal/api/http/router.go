@@ -92,7 +92,7 @@ func Routes(app *fiber.App, cfg *config.Config, bdb *bun.DB, rdb cache.Client, l
 	mountOIDCRoutes(app, cfg, bdb, storage, scopes, claims, recorder, cipher, sessions, tenantMW, tx.RunInTx, log)
 	mountLogin(app, cfg, bdb, cipher, storage, scopes, recorder, sessions, tenantMW, tx.RunInTx, log)
 	mountAdmin(app, bdb, rdb, cipher, storage, recorder, cfg.Notification, tenantMW, tx.RunInTx, log)
-	mountAccount(app, bdb, cipher, recorder, tenantMW, tx.RunInTx, log)
+	mountAccount(app, bdb, rdb, cipher, storage, recorder, tenantMW, tx.RunInTx, log)
 
 	return nil
 }
@@ -439,7 +439,8 @@ func mountAdmin(
 // group takes the same recorder and the same transaction runner the other stacks
 // take.
 func mountAccount(
-	app *fiber.App, bdb *bun.DB, cipher *crypto.Cipher, recorder *audit.Recorder,
+	app *fiber.App, bdb *bun.DB, rdb cache.Client, cipher *crypto.Cipher,
+	storage *oidc.StorageRepository, recorder *audit.Recorder,
 	tenantMW fiber.Handler, tx db.TxRunner, log logger.Logger,
 ) {
 	keys := oidc.NewKeyService(oidc.NewKeyRepository(bdb, log), cipher, log)
@@ -453,8 +454,24 @@ func mountAccount(
 		Log:           log,
 	})
 
+	// A person's own login sessions, and the grants each of them fanned out to.
+	// The revoke hard deletes both, from the database and from the cache, the
+	// same way the console force-logout does: a session and a grant are consumed
+	// rows, and neither is recoverable once it ends.
+	loginSessions := session.NewRepository(bdb, cipher, log)
+	sessionSvc := session.NewAccountService(session.AccountDeps{
+		List:         loginSessions.ListSessions,
+		Revoke:       session.CachingRevoker(rdb, loginSessions.DeleteSession, log),
+		RevokeOthers: session.CachingUserRevoker(rdb, loginSessions.DeleteUserSessions, log),
+		RevokeGrants: storage.DeleteGrantsByLoginSession,
+		InTx:         tx,
+		Audit:        recorder,
+		Log:          log,
+	})
+
 	group := app.Group(accountPrefix, tenantMW, bearer)
 	user.AccountRoutes(group, user.NewAccountHandler(accountSvc))
+	session.AccountRoutes(group, session.NewAccountHandler(sessionSvc))
 }
 
 // tenantActor, providerActor, and auditActor read the person behind one admin

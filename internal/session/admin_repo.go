@@ -169,23 +169,37 @@ func (r *Repository) attachLinks(ctx context.Context, tenantID string, rows []Re
 
 // DeleteSession hard deletes one login session and answers with what it held.
 //
-// A login session is a consumed row, so an administrative revoke removes it
-// instead of marking it. The token digest comes back, because the cache is keyed
-// by it and the row is the only place it is known.
+// A login session is a consumed row, so a revoke removes it instead of marking
+// it. The token digest comes back, because the cache is keyed by it and the row
+// is the only place it is known.
 //
-// A session that is already gone answers ErrNoSuchSession. A terminated session
-// is deleted like any other: the operator asked for the row to go.
-func (r *Repository) DeleteSession(ctx context.Context, tenantID, sessionID string) (Revoked, error) {
+// ownerID narrows the delete to the person who holds the session. A self-service
+// revoke names the caller, so the query itself is the ownership rule and no read
+// of it can be stale by the time the delete runs. An administrative revoke names
+// nobody, because an operator ends the session of anybody in the tenant.
+//
+// A session that is already gone answers ErrNoSuchSession, and so does a session
+// that belongs to somebody else. The two refusals read alike, so the answer never
+// says which login sessions another person holds.
+//
+// A terminated session is deleted like any other: the caller asked for the row
+// to go.
+func (r *Repository) DeleteSession(
+	ctx context.Context, tenantID, ownerID, sessionID string,
+) (Revoked, error) {
 	r.log.Debug("revoke login session",
 		logger.String("tenant_id", tenantID), logger.String("session_id", sessionID), logger.RequestID(ctx))
 
 	var row Row
-	err := db.Conn(ctx, r.db).NewSelect().
+	sel := db.Conn(ctx, r.db).NewSelect().
 		Model(&row).
 		Column("id", "user_id", "token_hash").
 		Where("tenant_id = ?", tenantID).
-		Where("id = ?", sessionID).
-		Scan(ctx)
+		Where("id = ?", sessionID)
+	if ownerID != "" {
+		sel = sel.Where("user_id = ?", ownerID)
+	}
+	err := sel.Scan(ctx)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Revoked{}, fmt.Errorf("%w: tenant %s, session %s", ErrNoSuchSession, tenantID, sessionID)
 	}
@@ -209,30 +223,48 @@ func (r *Repository) DeleteSession(ctx context.Context, tenantID, sessionID stri
 // DeleteUserSessions hard deletes every login session of one person, and answers
 // with what each of them held.
 //
-// A person with no session answers an empty list and no error. The force-logout
-// says that nothing of theirs is signed in, which is what the operator asked
-// for.
-func (r *Repository) DeleteUserSessions(ctx context.Context, tenantID, userID string) ([]Revoked, error) {
+// exceptID spares one session. A person who signs their other devices out keeps
+// the browser they clicked in, and the portal names it from the sid of its own
+// ID token. An empty value spares nothing, which is the sign-out-everywhere
+// control and the administrative force-logout.
+//
+// The delete names the person, so it reaches every session they hold, however
+// many that is. A read that paged them first would end only the page it read.
+//
+// A person with no session answers an empty list and no error. The revoke says
+// that nothing of theirs is signed in, which is what the caller asked for.
+func (r *Repository) DeleteUserSessions(
+	ctx context.Context, tenantID, userID, exceptID string,
+) ([]Revoked, error) {
 	r.log.Debug("revoke the login sessions of one person",
 		logger.String("tenant_id", tenantID), logger.String("user_id", userID), logger.RequestID(ctx))
 
 	var rows []Row
-	if err := db.Conn(ctx, r.db).NewSelect().
+	sel := db.Conn(ctx, r.db).NewSelect().
 		Model(&rows).
 		Column("id", "user_id", "token_hash").
 		Where("tenant_id = ?", tenantID).
-		Where("user_id = ?", userID).
-		Scan(ctx); err != nil {
+		Where("user_id = ?", userID)
+	if exceptID != "" {
+		sel = sel.Where("id <> ?", exceptID)
+	}
+	if err := sel.Scan(ctx); err != nil {
 		return nil, fmt.Errorf("read the login sessions of user %s of tenant %s: %w", userID, tenantID, err)
 	}
 	if len(rows) == 0 {
 		return nil, nil
 	}
 
+	// The ids the select read are what goes. They already carry the narrowing by
+	// person and the spared session, so the delete repeats neither.
+	ids := make([]string, 0, len(rows))
+	for _, row := range rows {
+		ids = append(ids, row.ID)
+	}
 	if _, err := db.Conn(ctx, r.db).NewDelete().
 		Model((*Row)(nil)).
 		Where("tenant_id = ?", tenantID).
-		Where("user_id = ?", userID).
+		Where("id IN (?)", bun.In(ids)).
 		Exec(ctx); err != nil {
 		return nil, fmt.Errorf("revoke the login sessions of user %s of tenant %s: %w", userID, tenantID, err)
 	}

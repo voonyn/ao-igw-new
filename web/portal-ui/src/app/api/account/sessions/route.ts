@@ -33,7 +33,12 @@ export async function GET(req: NextRequest) {
       cache: "no-store",
     })
     if (res.status === 200) {
-      const sessions = await res.json().catch(() => [])
+      // The gateway answers this deployment's one envelope,
+      // `{code, status, message, data}`. The list is `data`; anything else on the
+      // wire is a shape the view cannot render, so it degrades to no sessions
+      // rather than to a crash.
+      const body = await res.json().catch(() => null)
+      const sessions = Array.isArray(body?.data) ? body.data : []
       const currentSid = sidFromIdToken(next?.idToken)
       return await withRotation(NextResponse.json({ sessions, currentSid }), rotated, next)
     }

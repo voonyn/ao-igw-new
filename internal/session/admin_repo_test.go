@@ -250,7 +250,7 @@ func TestListSessionsPages(t *testing.T) {
 func TestDeleteSession(t *testing.T) {
 	repo, ctx := testAdminRepo(t)
 
-	revoked, err := repo.DeleteSession(ctx, adminTenantID, liveSessionID)
+	revoked, err := repo.DeleteSession(ctx, adminTenantID, "", liveSessionID)
 	if err != nil {
 		t.Fatalf("revoke the login session: %v", err)
 	}
@@ -267,13 +267,60 @@ func TestDeleteSession(t *testing.T) {
 	}
 
 	// A row that is already gone is not revoked twice.
-	if _, err := repo.DeleteSession(ctx, adminTenantID, liveSessionID); !errors.Is(err, ErrNoSuchSession) {
+	if _, err := repo.DeleteSession(ctx, adminTenantID, "", liveSessionID); !errors.Is(err, ErrNoSuchSession) {
 		t.Errorf("a second revoke answers %v, want ErrNoSuchSession", err)
 	}
 
 	// The session of another tenant is not reachable through this one.
-	if _, err := repo.DeleteSession(ctx, adminTenantID, foreignSessionID); !errors.Is(err, ErrNoSuchSession) {
+	if _, err := repo.DeleteSession(ctx, adminTenantID, "", foreignSessionID); !errors.Is(err, ErrNoSuchSession) {
 		t.Errorf("the revoke of a foreign session answers %v, want ErrNoSuchSession", err)
+	}
+}
+
+// TestDeleteSessionNarrowsToTheOwner covers the self-service revoke. The owner
+// predicate is the ownership rule, so a session of another person answers the
+// same refusal a session that does not exist answers, and the row survives.
+func TestDeleteSessionNarrowsToTheOwner(t *testing.T) {
+	repo, ctx := testAdminRepo(t)
+
+	if _, err := repo.DeleteSession(ctx, adminTenantID, secondUserID, liveSessionID); !errors.Is(err, ErrNoSuchSession) {
+		t.Fatalf("the revoke of somebody else's session answers %v, want ErrNoSuchSession", err)
+	}
+
+	_, total, err := repo.ListSessions(ctx, adminTenantID, Query{Limit: 20})
+	if err != nil {
+		t.Fatalf("list the login sessions: %v", err)
+	}
+	if total != 3 {
+		t.Errorf("the tenant holds %d sessions, want all 3 after the refusal", total)
+	}
+
+	// The person who holds the session ends it.
+	if _, err := repo.DeleteSession(ctx, adminTenantID, ownerUserID, liveSessionID); err != nil {
+		t.Errorf("the revoke of the caller's own session answers %v, want the row", err)
+	}
+}
+
+// TestDeleteUserSessionsSparesTheNamedSession covers the exception on the bulk
+// revoke: the browser the person clicked in survives, and every other session of
+// theirs goes.
+func TestDeleteUserSessionsSparesTheNamedSession(t *testing.T) {
+	repo, ctx := testAdminRepo(t)
+
+	revoked, err := repo.DeleteUserSessions(ctx, adminTenantID, ownerUserID, liveSessionID)
+	if err != nil {
+		t.Fatalf("revoke every other session of one person: %v", err)
+	}
+	if len(revoked) != 1 || revoked[0].SessionID != brokenSessionID {
+		t.Fatalf("the bulk revoke ended %+v, want only %s", revoked, brokenSessionID)
+	}
+
+	rows, _, err := repo.ListSessions(ctx, adminTenantID, Query{UserID: ownerUserID, Limit: 20})
+	if err != nil {
+		t.Fatalf("list the login sessions: %v", err)
+	}
+	if len(rows) != 1 || rows[0].ID != liveSessionID {
+		t.Errorf("the person reads %+v, want only the session that was spared", rows)
 	}
 }
 
@@ -282,7 +329,7 @@ func TestDeleteSession(t *testing.T) {
 func TestDeleteUserSessions(t *testing.T) {
 	repo, ctx := testAdminRepo(t)
 
-	revoked, err := repo.DeleteUserSessions(ctx, adminTenantID, ownerUserID)
+	revoked, err := repo.DeleteUserSessions(ctx, adminTenantID, ownerUserID, "")
 	if err != nil {
 		t.Fatalf("revoke the sessions of one person: %v", err)
 	}
@@ -300,7 +347,7 @@ func TestDeleteUserSessions(t *testing.T) {
 
 	// A person with nothing signed in is not an error. The answer is that
 	// nothing of theirs is live, which is what the operator asked for.
-	revoked, err = repo.DeleteUserSessions(ctx, adminTenantID, ownerUserID)
+	revoked, err = repo.DeleteUserSessions(ctx, adminTenantID, ownerUserID, "")
 	if err != nil || len(revoked) != 0 {
 		t.Errorf("a second force-logout answers %+v and %v, want nothing and no error", revoked, err)
 	}

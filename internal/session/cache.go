@@ -170,8 +170,8 @@ func CachedFinder(rdb cache.Client, find Finder, cipher *aocrypto.Cipher, log lo
 // refills the cache. The other order would leave a live cache entry for a
 // session the database deleted, and that entry would still sign requests.
 func CachingRevoker(rdb cache.Client, revoke SessionRevoker, log logger.Logger) SessionRevoker {
-	return func(ctx context.Context, tenantID, sessionID string) (Revoked, error) {
-		revoked, err := revoke(ctx, tenantID, sessionID)
+	return func(ctx context.Context, tenantID, ownerID, sessionID string) (Revoked, error) {
+		revoked, err := revoke(ctx, tenantID, ownerID, sessionID)
 		if err != nil {
 			return Revoked{}, err
 		}
@@ -183,8 +183,8 @@ func CachingRevoker(rdb cache.Client, revoke SessionRevoker, log logger.Logger) 
 // CachingUserRevoker hard deletes every login session of one person and then
 // drops each cached copy.
 func CachingUserRevoker(rdb cache.Client, revoke UserSessionRevoker, log logger.Logger) UserSessionRevoker {
-	return func(ctx context.Context, tenantID, userID string) ([]Revoked, error) {
-		revoked, err := revoke(ctx, tenantID, userID)
+	return func(ctx context.Context, tenantID, userID, exceptID string) ([]Revoked, error) {
+		revoked, err := revoke(ctx, tenantID, userID, exceptID)
 		if err != nil {
 			return nil, err
 		}
