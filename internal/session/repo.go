@@ -18,30 +18,6 @@ import (
 // token digest. An expired session and a terminated one answer alike.
 var ErrLoginSessionNotFound = errors.New("login session not found")
 
-// Row is one row of login_sessions. Data holds the sealed LoginSession, which
-// is the authority. The other columns are extracted copies, so the database can
-// find the row and an operator can read it.
-//
-// TokenHash holds a SHA-256 digest, never the token. A leaked row cannot
-// credential a request.
-//
-// The table records the fact of a login, so a row is terminated, never soft
-// deleted. See the ao-db-migration skill.
-type Row struct {
-	bun.BaseModel `bun:"table:login_sessions"`
-
-	ID       string `bun:"id,pk"`
-	TenantID string `bun:"tenant_id,pk"`
-	UserID   string `bun:"user_id,nullzero"`
-	State    int    `bun:"state"`
-
-	TokenHash string `bun:"token_hash"`
-	Data      []byte `bun:"data"`
-
-	ExpiresAt    time.Time `bun:"expires_at"`
-	TerminatedAt time.Time `bun:"terminated_at,nullzero"`
-}
-
 // Repository holds the login sessions of every tenant. The cipher seals the
 // session at rest. A nil cipher matches the development bootstrap, which stores
 // the session as plain JSON.
@@ -64,7 +40,7 @@ func NewRepository(bdb *bun.DB, cipher *aocrypto.Cipher, log logger.Logger) *Rep
 // told, and CachingSaver does that.
 func (r *Repository) Save(ctx context.Context, live LoginSession, tokenHash, _ string) error {
 	r.log.Debug("save login session",
-		logger.String("tenant_id", live.TenantID), logger.String("session_id", live.ID))
+		logger.String("tenant_id", live.TenantID), logger.String("session_id", live.ID), logger.RequestID(ctx))
 
 	// The service logs this failure where it stops bubbling, so the repository
 	// only wraps it.
@@ -81,7 +57,7 @@ func (r *Repository) Save(ctx context.Context, live LoginSession, tokenHash, _ s
 	}
 
 	r.log.Debug("saved login session",
-		logger.String("tenant_id", live.TenantID), logger.String("session_id", live.ID))
+		logger.String("tenant_id", live.TenantID), logger.String("session_id", live.ID), logger.RequestID(ctx))
 	return nil
 }
 
@@ -89,7 +65,7 @@ func (r *Repository) Save(ctx context.Context, live LoginSession, tokenHash, _ s
 // terminated session and an expired one are misses, so a dead token never
 // resolves.
 func (r *Repository) FindByTokenHash(ctx context.Context, tenantID, tokenHash string) (LoginSession, error) {
-	r.log.Debug("read login session", logger.String("tenant_id", tenantID))
+	r.log.Debug("read login session", logger.String("tenant_id", tenantID), logger.RequestID(ctx))
 
 	var row Row
 	err := db.Conn(ctx, r.db).NewSelect().
@@ -114,7 +90,7 @@ func (r *Repository) FindByTokenHash(ctx context.Context, tenantID, tokenHash st
 	}
 
 	r.log.Debug("read login session",
-		logger.String("tenant_id", tenantID), logger.String("session_id", row.ID))
+		logger.String("tenant_id", tenantID), logger.String("session_id", row.ID), logger.RequestID(ctx))
 	return live, nil
 }
 
@@ -127,7 +103,7 @@ func (r *Repository) FindByTokenHash(ctx context.Context, tenantID, tokenHash st
 // there is nothing left to end.
 func (r *Repository) Terminate(ctx context.Context, tenantID, sessionID string) (string, error) {
 	r.log.Debug("terminate login session",
-		logger.String("tenant_id", tenantID), logger.String("session_id", sessionID))
+		logger.String("tenant_id", tenantID), logger.String("session_id", sessionID), logger.RequestID(ctx))
 
 	var row Row
 	err := db.Conn(ctx, r.db).NewSelect().
@@ -155,7 +131,7 @@ func (r *Repository) Terminate(ctx context.Context, tenantID, sessionID string) 
 	}
 
 	r.log.Debug("terminated login session",
-		logger.String("tenant_id", tenantID), logger.String("session_id", sessionID))
+		logger.String("tenant_id", tenantID), logger.String("session_id", sessionID), logger.RequestID(ctx))
 	return row.TokenHash, nil
 }
 

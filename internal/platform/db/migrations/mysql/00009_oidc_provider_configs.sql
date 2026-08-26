@@ -1,5 +1,5 @@
 -- +goose Up
--- One OpenID Provider configuration per instance. Drives the document
+-- One OpenID Provider configuration per tenant. Drives the document
 -- served at /.well-known/openid-configuration (OIDC Discovery 1.0 +
 -- RFC 8414 OAuth 2.0 Authorization Server Metadata) and the runtime
 -- defaults the authorization server enforces.

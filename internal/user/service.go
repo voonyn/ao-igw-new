@@ -7,6 +7,7 @@ import (
 	"slices"
 	"time"
 
+	"alphaomega/identitygateway/internal/actor"
 	"alphaomega/identitygateway/internal/audit"
 	"alphaomega/identitygateway/internal/organization"
 	"alphaomega/identitygateway/internal/platform/crypto"
@@ -42,12 +43,7 @@ const inviteTokenTTL = 7 * 24 * time.Hour
 
 // Actor is the person behind one admin request. The IP and the user agent reach
 // the audit trail, so a change is traceable to where it came from.
-type Actor struct {
-	TenantID  string
-	UserID    string
-	IP        string
-	UserAgent string
-}
+type Actor actor.Actor
 
 // Query is the window and the narrowing one list read asks for. Sort names a
 // column of the route's allowlist, and a zero State or UserType means every one.
@@ -182,7 +178,7 @@ func NewService(deps Deps) *Service {
 // the portal.
 func (s *Service) Me(ctx context.Context, tenantID, userID string) (Me, error) {
 	s.log.Debug("read admin me",
-		logger.String("tenant_id", tenantID), logger.String("user_id", userID))
+		logger.String("tenant_id", tenantID), logger.String("user_id", userID), logger.RequestID(ctx))
 
 	person, err := s.deps.Find(ctx, tenantID, userID)
 	if err != nil {
@@ -227,7 +223,7 @@ func (s *Service) Me(ctx context.Context, tenantID, userID string) (Me, error) {
 	s.log.Debug("read admin me",
 		logger.String("tenant_id", tenantID),
 		logger.String("user_id", userID),
-		logger.Bool("tenant_manager", tenantManager))
+		logger.Bool("tenant_manager", tenantManager), logger.RequestID(ctx))
 
 	return Me{
 		UserID:          person.ID,
@@ -244,6 +240,13 @@ func (s *Service) Me(ctx context.Context, tenantID, userID string) (Me, error) {
 
 // rights is what one person may do in this tenant: administer all of it, or
 // administer the organizations named here.
+//
+// This package keeps its own rule and does not use organization.Rights, which
+// the project, organization, and application services share. Those three admit
+// an ORG_OWNER only. An ORG_USER_MANAGER administers the people of an
+// organization, so canWrite below admits it too. Widening the shared type to
+// match would let an ORG_USER_MANAGER write projects and applications, which it
+// must never do.
 type rights struct {
 	tenantManager bool
 	orgRoles      map[string][]string
@@ -278,7 +281,7 @@ func (r rights) admits() bool {
 // console narrows the page to one organization with the orgId filter.
 func (s *Service) List(ctx context.Context, a Actor, q Query) ([]View, int64, error) {
 	s.log.Debug("list users",
-		logger.String("tenant_id", a.TenantID), logger.String("user_id", a.UserID))
+		logger.String("tenant_id", a.TenantID), logger.String("user_id", a.UserID), logger.RequestID(ctx))
 
 	if _, err := s.admitted(ctx, a); err != nil {
 		return nil, 0, err
@@ -295,7 +298,7 @@ func (s *Service) List(ctx context.Context, a Actor, q Query) ([]View, int64, er
 	}
 
 	s.log.Debug("listed users",
-		logger.String("tenant_id", a.TenantID), logger.Int("count", len(views)))
+		logger.String("tenant_id", a.TenantID), logger.Int("count", len(views)), logger.RequestID(ctx))
 	return views, total, nil
 }
 
@@ -303,7 +306,7 @@ func (s *Service) List(ctx context.Context, a Actor, q Query) ([]View, int64, er
 // ErrNoSuchUser.
 func (s *Service) Find(ctx context.Context, a Actor, userID string) (View, error) {
 	s.log.Debug("read user",
-		logger.String("tenant_id", a.TenantID), logger.String("user_id", userID))
+		logger.String("tenant_id", a.TenantID), logger.String("user_id", userID), logger.RequestID(ctx))
 
 	if _, err := s.admitted(ctx, a); err != nil {
 		return View{}, err
@@ -327,7 +330,7 @@ func (s *Service) Find(ctx context.Context, a Actor, userID string) (View, error
 // it is not in the answer, and only its bcrypt hash is written.
 func (s *Service) Create(ctx context.Context, a Actor, body CreateBody) (View, error) {
 	s.log.Debug("create user",
-		logger.String("tenant_id", a.TenantID), logger.String("org_id", body.OrgID))
+		logger.String("tenant_id", a.TenantID), logger.String("org_id", body.OrgID), logger.RequestID(ctx))
 
 	held, err := s.admitted(ctx, a)
 	if err != nil {
@@ -421,7 +424,7 @@ func (s *Service) Create(ctx context.Context, a Actor, body CreateBody) (View, e
 // password: only the person the link reaches can set one.
 func (s *Service) Invite(ctx context.Context, a Actor, body InviteBody) (InviteView, error) {
 	s.log.Debug("invite a person",
-		logger.String("tenant_id", a.TenantID), logger.String("org_id", body.OrgID))
+		logger.String("tenant_id", a.TenantID), logger.String("org_id", body.OrgID), logger.RequestID(ctx))
 
 	held, err := s.admitted(ctx, a)
 	if err != nil {
@@ -537,7 +540,7 @@ func (s *Service) Invite(ctx context.Context, a Actor, body InviteBody) (InviteV
 // them.
 func (s *Service) Update(ctx context.Context, a Actor, userID string, body UpdateBody) (View, error) {
 	s.log.Debug("update user",
-		logger.String("tenant_id", a.TenantID), logger.String("user_id", userID))
+		logger.String("tenant_id", a.TenantID), logger.String("user_id", userID), logger.RequestID(ctx))
 
 	row, err := s.writable(ctx, a, userID, "update a user")
 	if err != nil {
@@ -594,7 +597,7 @@ func (s *Service) setState(
 	ctx context.Context, a Actor, userID string, state int, action audit.Action, what string,
 ) error {
 	s.log.Debug(what,
-		logger.String("tenant_id", a.TenantID), logger.String("user_id", userID))
+		logger.String("tenant_id", a.TenantID), logger.String("user_id", userID), logger.RequestID(ctx))
 
 	if _, err := s.writable(ctx, a, userID, what); err != nil {
 		return err
@@ -629,7 +632,7 @@ func (s *Service) setState(
 // The person can sign in again at once, with the password they already hold.
 func (s *Service) Unlock(ctx context.Context, a Actor, userID string) error {
 	s.log.Debug("unlock user",
-		logger.String("tenant_id", a.TenantID), logger.String("user_id", userID))
+		logger.String("tenant_id", a.TenantID), logger.String("user_id", userID), logger.RequestID(ctx))
 
 	if _, err := s.writable(ctx, a, userID, "unlock a user"); err != nil {
 		return err
@@ -656,7 +659,7 @@ func (s *Service) Unlock(ctx context.Context, a Actor, userID string) error {
 // console never shows it again.
 func (s *Service) Delete(ctx context.Context, a Actor, userID string) error {
 	s.log.Debug("delete user",
-		logger.String("tenant_id", a.TenantID), logger.String("user_id", userID))
+		logger.String("tenant_id", a.TenantID), logger.String("user_id", userID), logger.RequestID(ctx))
 
 	if _, err := s.writable(ctx, a, userID, "delete a user"); err != nil {
 		return err
@@ -691,7 +694,7 @@ func (s *Service) Delete(ctx context.Context, a Actor, userID string) error {
 // again, and the stored password is unchanged either way.
 func (s *Service) ResetPassword(ctx context.Context, a Actor, userID string) (ResetView, error) {
 	s.log.Debug("reset the password of a user",
-		logger.String("tenant_id", a.TenantID), logger.String("user_id", userID))
+		logger.String("tenant_id", a.TenantID), logger.String("user_id", userID), logger.RequestID(ctx))
 
 	if _, err := s.writable(ctx, a, userID, "reset the password of a user"); err != nil {
 		return ResetView{}, err
@@ -738,7 +741,7 @@ func (s *Service) ResetPassword(ctx context.Context, a Actor, userID string) (Re
 // until they enrol again.
 func (s *Service) ResetMFA(ctx context.Context, a Actor, userID string) error {
 	s.log.Debug("reset the second factors of a user",
-		logger.String("tenant_id", a.TenantID), logger.String("user_id", userID))
+		logger.String("tenant_id", a.TenantID), logger.String("user_id", userID), logger.RequestID(ctx))
 
 	if _, err := s.writable(ctx, a, userID, "reset the second factors of a user"); err != nil {
 		return err
@@ -769,7 +772,7 @@ func (s *Service) ResetMFA(ctx context.Context, a Actor, userID string) error {
 // user list of a tenant is.
 func (s *Service) Memberships(ctx context.Context, a Actor, userID string) (MembershipsView, error) {
 	s.log.Debug("read the memberships of a user",
-		logger.String("tenant_id", a.TenantID), logger.String("user_id", userID))
+		logger.String("tenant_id", a.TenantID), logger.String("user_id", userID), logger.RequestID(ctx))
 
 	if _, err := s.admitted(ctx, a); err != nil {
 		return MembershipsView{}, err

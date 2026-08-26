@@ -5,68 +5,10 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"time"
-
-	"github.com/uptrace/bun"
 
 	"alphaomega/identitygateway/internal/platform/db"
 	"alphaomega/identitygateway/internal/platform/logger"
 )
-
-// ScopeRow is one row of oidc_scopes.
-//
-// The protocol read has its own Scope struct, which carries the three words the
-// consent screen renders and nothing else. This one is the whole row, because
-// the console writes it.
-//
-// MapperCount is not a column. It is counted by the list read, so the scopes
-// page names how many claims each scope releases without a request per row.
-type ScopeRow struct {
-	bun.BaseModel `bun:"table:oidc_scopes,alias:s"`
-
-	ID          string `bun:"id,pk"`
-	TenantID    string `bun:"tenant_id"`
-	Name        string `bun:"name"`
-	DisplayName string `bun:"display_name,nullzero"`
-	Description string `bun:"description,nullzero"`
-
-	IsEnabled bool `bun:"is_enabled"`
-	IsDefault bool `bun:"is_default"`
-	IsBuiltin bool `bun:"is_builtin"`
-
-	CreatedAt time.Time `bun:"created_at,nullzero"`
-	UpdatedAt time.Time `bun:"updated_at,nullzero"`
-	DeletedAt time.Time `bun:"deleted_at,soft_delete,nullzero"`
-
-	MapperCount int `bun:"mapper_count,scanonly"`
-}
-
-// ClaimMapperRow is one row of oidc_claim_mappers. The claims service has its
-// own ClaimMapper, which carries what a token build reads; this one is the whole
-// row, because the console writes it.
-//
-// SourceValue is the JSON column of a static mapper. It is bound as a string and
-// not as bytes: the column is MySQL JSON, and the driver sends a []byte as a
-// binary string, which MySQL refuses to read as JSON.
-type ClaimMapperRow struct {
-	bun.BaseModel `bun:"table:oidc_claim_mappers,alias:m"`
-
-	ID          string `bun:"id,pk"`
-	TenantID    string `bun:"tenant_id"`
-	ScopeID     string `bun:"scope_id"`
-	ClaimName   string `bun:"claim_name"`
-	SourceType  int    `bun:"source_type"`
-	SourceKey   string `bun:"source_key,nullzero"`
-	SourceValue string `bun:"source_value,nullzero"`
-
-	InIDToken     bool `bun:"in_id_token"`
-	InUserInfo    bool `bun:"in_userinfo"`
-	InAccessToken bool `bun:"in_access_token"`
-
-	CreatedAt time.Time `bun:"created_at,nullzero"`
-	UpdatedAt time.Time `bun:"updated_at,nullzero"`
-	DeletedAt time.Time `bun:"deleted_at,soft_delete,nullzero"`
-}
 
 // ListScopes reads every live scope of the tenant, the disabled ones included,
 // with the number of claims each one releases.
@@ -75,7 +17,7 @@ type ClaimMapperRow struct {
 // so it drops a disabled scope; this one answers what the tenant holds, and an
 // operator who cannot see a disabled scope cannot switch it back on.
 func (r *ScopeRepository) ListScopes(ctx context.Context, tenantID string) ([]ScopeRow, error) {
-	r.log.Debug("read every scope", logger.String("tenant_id", tenantID))
+	r.log.Debug("read every scope", logger.String("tenant_id", tenantID), logger.RequestID(ctx))
 
 	var rows []ScopeRow
 	err := db.Conn(ctx, r.db).NewSelect().
@@ -97,7 +39,7 @@ func (r *ScopeRepository) ListScopes(ctx context.Context, tenantID string) ([]Sc
 // tenant boundary.
 func (r *ScopeRepository) FindScope(ctx context.Context, tenantID, id string) (ScopeRow, error) {
 	r.log.Debug("read one scope",
-		logger.String("tenant_id", tenantID), logger.String("scope_id", id))
+		logger.String("tenant_id", tenantID), logger.String("scope_id", id), logger.RequestID(ctx))
 
 	var row ScopeRow
 	err := db.Conn(ctx, r.db).NewSelect().
@@ -120,7 +62,7 @@ func (r *ScopeRepository) FindScope(ctx context.Context, tenantID, id string) (S
 func (r *ScopeRepository) FindScopeByName(
 	ctx context.Context, tenantID, name string,
 ) (ScopeRow, error) {
-	r.log.Debug("read one scope by name", logger.String("tenant_id", tenantID))
+	r.log.Debug("read one scope by name", logger.String("tenant_id", tenantID), logger.RequestID(ctx))
 
 	var row ScopeRow
 	err := db.Conn(ctx, r.db).NewSelect().
@@ -142,6 +84,10 @@ func (r *ScopeRepository) FindScopeByName(
 // is_builtin is not written here. Only the migration writes that mark, so a
 // scope an operator wrote can always be deleted.
 func (r *ScopeRepository) InsertScope(ctx context.Context, row ScopeRow) error {
+	r.log.Debug("write scope",
+		logger.String("tenant_id", row.TenantID), logger.String("scope_id", row.ID),
+		logger.RequestID(ctx))
+
 	_, err := db.Conn(ctx, r.db).NewInsert().
 		Model(&row).
 		Column("id", "tenant_id", "name", "display_name", "description",
@@ -150,6 +96,9 @@ func (r *ScopeRepository) InsertScope(ctx context.Context, row ScopeRow) error {
 	if err != nil {
 		return fmt.Errorf("write scope %s of tenant %s: %w", row.Name, row.TenantID, err)
 	}
+	r.log.Debug("wrote scope",
+		logger.String("tenant_id", row.TenantID), logger.String("scope_id", row.ID),
+		logger.RequestID(ctx))
 	return nil
 }
 
@@ -159,6 +108,10 @@ func (r *ScopeRepository) InsertScope(ctx context.Context, row ScopeRow) error {
 // is_builtin is not in the list, so no write can make a scope permanent or take
 // the mark off a seeded one.
 func (r *ScopeRepository) UpdateScope(ctx context.Context, row ScopeRow) error {
+	r.log.Debug("update scope",
+		logger.String("tenant_id", row.TenantID), logger.String("scope_id", row.ID),
+		logger.RequestID(ctx))
+
 	res, err := db.Conn(ctx, r.db).NewUpdate().
 		Model(&row).
 		Column("name", "display_name", "description", "is_enabled", "is_default").
@@ -168,6 +121,9 @@ func (r *ScopeRepository) UpdateScope(ctx context.Context, row ScopeRow) error {
 	if err != nil {
 		return fmt.Errorf("write scope %s of tenant %s: %w", row.ID, row.TenantID, err)
 	}
+	r.log.Debug("updated scope",
+		logger.String("tenant_id", row.TenantID), logger.String("scope_id", row.ID),
+		logger.RequestID(ctx))
 	return rowWritten(res, ErrScopeNotFound, row.ID)
 }
 
@@ -177,6 +133,10 @@ func (r *ScopeRepository) UpdateScope(ctx context.Context, row ScopeRow) error {
 // The mappers go with it. A mapper left behind would release a claim for a scope
 // nobody can grant, and it would hold the unique key of its claim name.
 func (r *ScopeRepository) DeleteScope(ctx context.Context, tenantID, id string) error {
+	r.log.Debug("delete scope",
+		logger.String("tenant_id", tenantID), logger.String("scope_id", id),
+		logger.RequestID(ctx))
+
 	conn := db.Conn(ctx, r.db)
 
 	res, err := conn.NewDelete().
@@ -199,6 +159,9 @@ func (r *ScopeRepository) DeleteScope(ctx context.Context, tenantID, id string) 
 	if err != nil {
 		return fmt.Errorf("delete the claims of scope %s: %w", id, err)
 	}
+	r.log.Debug("deleted scope",
+		logger.String("tenant_id", tenantID), logger.String("scope_id", id),
+		logger.RequestID(ctx))
 	return nil
 }
 
@@ -211,7 +174,7 @@ func (r *ScopeRepository) DeleteScope(ctx context.Context, tenantID, id string) 
 func (r *ScopeRepository) CountClientsWithScope(
 	ctx context.Context, tenantID, name string,
 ) (int, error) {
-	r.log.Debug("count the clients of one scope", logger.String("tenant_id", tenantID))
+	r.log.Debug("count the clients of one scope", logger.String("tenant_id", tenantID), logger.RequestID(ctx))
 
 	count, err := db.Conn(ctx, r.db).NewSelect().
 		TableExpr("application_oidc_configs AS c").
@@ -232,7 +195,7 @@ func (r *ScopeRepository) ListMappers(
 	ctx context.Context, tenantID, scopeID string,
 ) ([]ClaimMapperRow, error) {
 	r.log.Debug("read the claim mappers of one scope",
-		logger.String("tenant_id", tenantID), logger.String("scope_id", scopeID))
+		logger.String("tenant_id", tenantID), logger.String("scope_id", scopeID), logger.RequestID(ctx))
 
 	var rows []ClaimMapperRow
 	err := db.Conn(ctx, r.db).NewSelect().
@@ -252,7 +215,7 @@ func (r *ScopeRepository) FindMapper(
 	ctx context.Context, tenantID, id string,
 ) (ClaimMapperRow, error) {
 	r.log.Debug("read one claim mapper",
-		logger.String("tenant_id", tenantID), logger.String("mapper_id", id))
+		logger.String("tenant_id", tenantID), logger.String("mapper_id", id), logger.RequestID(ctx))
 
 	var row ClaimMapperRow
 	err := db.Conn(ctx, r.db).NewSelect().
@@ -285,6 +248,10 @@ func (r *ScopeRepository) CountMappers(ctx context.Context, tenantID, scopeID st
 
 // InsertMapper writes one new claim mapper. It runs on the caller's transaction.
 func (r *ScopeRepository) InsertMapper(ctx context.Context, row ClaimMapperRow) error {
+	r.log.Debug("write claim mapper",
+		logger.String("tenant_id", row.TenantID), logger.String("mapper_id", row.ID), logger.String("scope_id", row.ScopeID),
+		logger.RequestID(ctx))
+
 	_, err := db.Conn(ctx, r.db).NewInsert().
 		Model(&row).
 		Column("id", "tenant_id", "scope_id", "claim_name", "source_type",
@@ -293,6 +260,9 @@ func (r *ScopeRepository) InsertMapper(ctx context.Context, row ClaimMapperRow) 
 	if err != nil {
 		return fmt.Errorf("write a claim of scope %s: %w", row.ScopeID, err)
 	}
+	r.log.Debug("wrote claim mapper",
+		logger.String("tenant_id", row.TenantID), logger.String("mapper_id", row.ID), logger.String("scope_id", row.ScopeID),
+		logger.RequestID(ctx))
 	return nil
 }
 
@@ -302,6 +272,10 @@ func (r *ScopeRepository) InsertMapper(ctx context.Context, row ClaimMapperRow) 
 // source_value is written whatever it holds, so a mapper that stops being static
 // leaves no value behind for the claims service to read.
 func (r *ScopeRepository) UpdateMapper(ctx context.Context, row ClaimMapperRow) error {
+	r.log.Debug("update claim mapper",
+		logger.String("tenant_id", row.TenantID), logger.String("mapper_id", row.ID), logger.String("scope_id", row.ScopeID),
+		logger.RequestID(ctx))
+
 	res, err := db.Conn(ctx, r.db).NewUpdate().
 		Model(&row).
 		Column("claim_name", "source_type", "source_key", "source_value",
@@ -312,12 +286,19 @@ func (r *ScopeRepository) UpdateMapper(ctx context.Context, row ClaimMapperRow) 
 	if err != nil {
 		return fmt.Errorf("write claim mapper %s of tenant %s: %w", row.ID, row.TenantID, err)
 	}
+	r.log.Debug("updated claim mapper",
+		logger.String("tenant_id", row.TenantID), logger.String("mapper_id", row.ID), logger.String("scope_id", row.ScopeID),
+		logger.RequestID(ctx))
 	return rowWritten(res, ErrMapperNotFound, row.ID)
 }
 
 // DeleteMapper marks one claim mapper of a tenant deleted. It runs on the
 // caller's transaction.
 func (r *ScopeRepository) DeleteMapper(ctx context.Context, tenantID, id string) error {
+	r.log.Debug("delete claim mapper",
+		logger.String("tenant_id", tenantID), logger.String("mapper_id", id),
+		logger.RequestID(ctx))
+
 	res, err := db.Conn(ctx, r.db).NewDelete().
 		Model((*ClaimMapperRow)(nil)).
 		Where("m.tenant_id = ?", tenantID).
@@ -326,6 +307,9 @@ func (r *ScopeRepository) DeleteMapper(ctx context.Context, tenantID, id string)
 	if err != nil {
 		return fmt.Errorf("delete claim mapper %s of tenant %s: %w", id, tenantID, err)
 	}
+	r.log.Debug("deleted claim mapper",
+		logger.String("tenant_id", tenantID), logger.String("mapper_id", id),
+		logger.RequestID(ctx))
 	return rowWritten(res, ErrMapperNotFound, id)
 }
 

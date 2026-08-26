@@ -82,7 +82,7 @@ func (s *ClaimsService) Claims(
 ) (Claims, error) {
 	s.log.Debug("resolve claims",
 		logger.String("tenant_id", tenantID),
-		logger.String("user_id", userID))
+		logger.String("user_id", userID), logger.RequestID(ctx))
 
 	mappers, err := s.deps.Mappers(ctx, tenantID, scopes)
 	if err != nil {
@@ -119,7 +119,7 @@ func (s *ClaimsService) Claims(
 
 	s.log.Debug("resolved claims",
 		logger.String("tenant_id", tenantID),
-		logger.String("user_id", userID))
+		logger.String("user_id", userID), logger.RequestID(ctx))
 	return out, nil
 }
 

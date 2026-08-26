@@ -4,16 +4,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"slices"
 	"time"
 
+	"alphaomega/identitygateway/internal/actor"
 	"alphaomega/identitygateway/internal/audit"
+	"alphaomega/identitygateway/internal/oidc"
 	"alphaomega/identitygateway/internal/organization"
 	"alphaomega/identitygateway/internal/platform/crypto"
 	"alphaomega/identitygateway/internal/platform/db"
 	"alphaomega/identitygateway/internal/platform/logger"
 	"alphaomega/identitygateway/internal/project"
-	"alphaomega/identitygateway/internal/tenant"
 	"alphaomega/identitygateway/internal/utils"
 )
 
@@ -36,24 +36,18 @@ var ErrPublicClient = errors.New("a public client holds no secret")
 
 // Actor is the person behind one admin request. The IP and the user agent reach
 // the audit trail, so a change is traceable to where it came from.
-type Actor struct {
-	TenantID  string
-	UserID    string
-	IP        string
-	UserAgent string
-}
+type Actor actor.Actor
 
 // Query is the window and the narrowing one list read asks for. Sort names a
 // column of the route's allowlist, and a zero State means every state.
 type Query struct {
-	Search    string
-	State     int
-	OrgID     string
-	ProjectID string
-	Sort      string
-	Desc      bool
-	Limit     int
-	Offset    int
+	Search string
+	State  int
+	OrgID  string
+	Sort   string
+	Desc   bool
+	Limit  int
+	Offset int
 }
 
 // The reads and writes the service composes its answers from. Each one is a
@@ -67,7 +61,7 @@ type (
 
 	// ConfigLister reads the clients of the applications it is given. An
 	// application without a client is absent from the answer.
-	ConfigLister func(ctx context.Context, tenantID string, appIDs []string) ([]OIDCConfig, error)
+	ConfigLister func(ctx context.Context, tenantID string, appIDs []string) ([]oidc.Client, error)
 
 	// ProjectFinder reads the project one application sits in. The project
 	// names the organization the write gate reads.
@@ -84,13 +78,13 @@ type (
 	Inserter func(ctx context.Context, row Application) error
 
 	// ConfigInserter writes the client of one new application.
-	ConfigInserter func(ctx context.Context, row OIDCConfig) error
+	ConfigInserter func(ctx context.Context, row oidc.Client) error
 
 	// Updater writes the name of one application.
 	Updater func(ctx context.Context, row Application) error
 
 	// ConfigUpdater writes the settings of one client.
-	ConfigUpdater func(ctx context.Context, row OIDCConfig) error
+	ConfigUpdater func(ctx context.Context, row oidc.Client) error
 
 	// SecretSetter writes the bcrypt hash of one rotated client secret.
 	SecretSetter func(ctx context.Context, tenantID, appID, hash string) error
@@ -128,34 +122,6 @@ func NewService(deps Deps) *Service {
 	return &Service{deps: deps, log: deps.Log}
 }
 
-// rights is what one person may do in this tenant: administer all of it, or
-// administer the organizations named here.
-type rights struct {
-	tenantManager bool
-	orgRoles      map[string][]string
-}
-
-// canWrite reports whether the person may write the applications of one
-// organization. A tenant manager writes any of them, and an ORG_OWNER writes
-// those of its own organization.
-func (r rights) canWrite(orgID string) bool {
-	return r.tenantManager || slices.Contains(r.orgRoles[orgID], organization.RoleOrgOwner)
-}
-
-// admits reports whether the person administers anything at all.
-func (r rights) admits() bool {
-	if r.tenantManager {
-		return true
-	}
-	for _, roles := range r.orgRoles {
-		if slices.Contains(roles, organization.RoleOrgOwner) ||
-			slices.Contains(roles, organization.RoleOrgUserManager) {
-			return true
-		}
-	}
-	return false
-}
-
 // List reads one page of the applications of the tenant.
 //
 // Every administrator of the tenant reads the whole list, the same way the
@@ -163,7 +129,7 @@ func (r rights) admits() bool {
 // the page to one organization with the orgId filter.
 func (s *Service) List(ctx context.Context, a Actor, q Query) ([]View, int64, error) {
 	s.log.Debug("list applications",
-		logger.String("tenant_id", a.TenantID), logger.String("user_id", a.UserID))
+		logger.String("tenant_id", a.TenantID), logger.String("user_id", a.UserID), logger.RequestID(ctx))
 
 	if _, err := s.admitted(ctx, a); err != nil {
 		return nil, 0, err
@@ -182,7 +148,7 @@ func (s *Service) List(ctx context.Context, a Actor, q Query) ([]View, int64, er
 	if err != nil {
 		return nil, 0, s.fail(a, "read clients", err)
 	}
-	byApp := make(map[string]OIDCConfig, len(configs))
+	byApp := make(map[string]oidc.Client, len(configs))
 	for _, cfg := range configs {
 		byApp[cfg.AppID] = cfg
 	}
@@ -198,7 +164,7 @@ func (s *Service) List(ctx context.Context, a Actor, q Query) ([]View, int64, er
 	}
 
 	s.log.Debug("listed applications",
-		logger.String("tenant_id", a.TenantID), logger.Int("count", len(views)))
+		logger.String("tenant_id", a.TenantID), logger.Int("count", len(views)), logger.RequestID(ctx))
 	return views, total, nil
 }
 
@@ -206,7 +172,7 @@ func (s *Service) List(ctx context.Context, a Actor, q Query) ([]View, int64, er
 // answers ErrNotFound.
 func (s *Service) Find(ctx context.Context, a Actor, appID string) (View, error) {
 	s.log.Debug("read application",
-		logger.String("tenant_id", a.TenantID), logger.String("app_id", appID))
+		logger.String("tenant_id", a.TenantID), logger.String("app_id", appID), logger.RequestID(ctx))
 
 	if _, err := s.admitted(ctx, a); err != nil {
 		return View{}, err
@@ -236,7 +202,7 @@ func (s *Service) Find(ctx context.Context, a Actor, appID string) (View, error)
 // rotation.
 func (s *Service) Create(ctx context.Context, a Actor, body CreateBody) (View, error) {
 	s.log.Debug("create application",
-		logger.String("tenant_id", a.TenantID), logger.String("project_id", body.ProjectID))
+		logger.String("tenant_id", a.TenantID), logger.String("project_id", body.ProjectID), logger.RequestID(ctx))
 
 	held, err := s.admitted(ctx, a)
 	if err != nil {
@@ -252,7 +218,7 @@ func (s *Service) Create(ctx context.Context, a Actor, body CreateBody) (View, e
 		}
 		return View{}, s.fail(a, "read project", err)
 	}
-	if !held.canWrite(parent.OrgID) {
+	if !held.CanWrite(parent.OrgID) {
 		return View{}, s.refuse(a, "", "create an application")
 	}
 
@@ -269,7 +235,7 @@ func (s *Service) Create(ctx context.Context, a Actor, body CreateBody) (View, e
 		CreatedAt:   now,
 	}
 
-	var cfg *OIDCConfig
+	var cfg *oidc.Client
 	if body.OIDC != nil {
 		written := body.OIDC.config(a.TenantID, row.ID)
 		written.CreatedAt = now
@@ -312,7 +278,7 @@ func (s *Service) Create(ctx context.Context, a Actor, body CreateBody) (View, e
 // is.
 func (s *Service) Update(ctx context.Context, a Actor, appID string, body UpdateBody) (View, error) {
 	s.log.Debug("update application",
-		logger.String("tenant_id", a.TenantID), logger.String("app_id", appID))
+		logger.String("tenant_id", a.TenantID), logger.String("app_id", appID), logger.RequestID(ctx))
 
 	row, err := s.writable(ctx, a, appID, "update an application")
 	if err != nil {
@@ -325,7 +291,7 @@ func (s *Service) Update(ctx context.Context, a Actor, appID string, body Update
 		return View{}, err
 	}
 
-	var cfg *OIDCConfig
+	var cfg *oidc.Client
 	if body.OIDC != nil && stored != nil {
 		written := body.OIDC.config(a.TenantID, appID)
 		// The client id, the stored secret, and the first-party flag are not
@@ -371,7 +337,7 @@ func (s *Service) Update(ctx context.Context, a Actor, appID string, body Update
 // database, and the console never shows them again.
 func (s *Service) Delete(ctx context.Context, a Actor, appID string) error {
 	s.log.Debug("delete application",
-		logger.String("tenant_id", a.TenantID), logger.String("app_id", appID))
+		logger.String("tenant_id", a.TenantID), logger.String("app_id", appID), logger.RequestID(ctx))
 
 	if _, err := s.writable(ctx, a, appID, "delete an application"); err != nil {
 		return err
@@ -402,7 +368,7 @@ func (s *Service) Delete(ctx context.Context, a Actor, appID string) error {
 // moment the transaction commits.
 func (s *Service) RotateSecret(ctx context.Context, a Actor, appID string) (SecretView, error) {
 	s.log.Debug("rotate client secret",
-		logger.String("tenant_id", a.TenantID), logger.String("app_id", appID))
+		logger.String("tenant_id", a.TenantID), logger.String("app_id", appID), logger.RequestID(ctx))
 
 	if _, err := s.writable(ctx, a, appID, "rotate a client secret"); err != nil {
 		return SecretView{}, err
@@ -415,7 +381,7 @@ func (s *Service) RotateSecret(ctx context.Context, a Actor, appID string) (Secr
 	if cfg == nil {
 		return SecretView{}, fmt.Errorf("%w: %s", ErrNoClient, appID)
 	}
-	if cfg.isPublic() {
+	if cfg.IsPublic() {
 		return SecretView{}, fmt.Errorf("%w: %s", ErrPublicClient, cfg.ClientID)
 	}
 
@@ -463,7 +429,7 @@ func (s *Service) writable(ctx context.Context, a Actor, appID, what string) (Ap
 	if err != nil {
 		return Application{}, err
 	}
-	if !held.canWrite(row.OrgID) {
+	if !held.CanWrite(row.OrgID) {
 		return Application{}, s.refuse(a, appID, what)
 	}
 	return row, nil
@@ -507,7 +473,7 @@ func (s *Service) find(ctx context.Context, a Actor, appID string) (Application,
 
 // client reads the client of one application. An application without one
 // answers nil, which is what a SAML application holds.
-func (s *Service) client(ctx context.Context, a Actor, appID string) (*OIDCConfig, error) {
+func (s *Service) client(ctx context.Context, a Actor, appID string) (*oidc.Client, error) {
 	rows, err := s.deps.Configs(ctx, a.TenantID, []string{appID})
 	if err != nil {
 		return nil, s.fail(a, "read client", err)
@@ -520,29 +486,22 @@ func (s *Service) client(ctx context.Context, a Actor, appID string) (*OIDCConfi
 
 // admitted reads what the person may do here, and refuses a person who
 // administers nothing.
-func (s *Service) admitted(ctx context.Context, a Actor) (rights, error) {
+func (s *Service) admitted(ctx context.Context, a Actor) (organization.Rights, error) {
 	tenantRoles, err := s.deps.TenantRoles(ctx, a.TenantID, a.UserID)
 	if err != nil {
-		return rights{}, s.fail(a, "read tenant roles", err)
+		return organization.Rights{}, s.fail(a, "read tenant roles", err)
 	}
 	memberships, err := s.deps.Memberships(ctx, a.TenantID, a.UserID)
 	if err != nil {
-		return rights{}, s.fail(a, "read organization memberships", err)
+		return organization.Rights{}, s.fail(a, "read organization memberships", err)
 	}
 
-	held := rights{
-		tenantManager: slices.Contains(tenantRoles, tenant.RoleIAMOwner) ||
-			slices.Contains(tenantRoles, tenant.RoleIAMAdmin),
-		orgRoles: make(map[string][]string, len(memberships)),
-	}
-	for _, m := range memberships {
-		held.orgRoles[m.OrgID] = m.Roles
-	}
+	held := organization.NewRights(tenantRoles, memberships)
 
-	if !held.admits() {
+	if !held.Admits() {
 		s.log.Warn("refused a person without an administrative role",
 			logger.String("tenant_id", a.TenantID), logger.String("user_id", a.UserID))
-		return rights{}, fmt.Errorf("%w: tenant %s, user %s", ErrNotAdmin, a.TenantID, a.UserID)
+		return organization.Rights{}, fmt.Errorf("%w: tenant %s, user %s", ErrNotAdmin, a.TenantID, a.UserID)
 	}
 	return held, nil
 }

@@ -1,12 +1,14 @@
 -- +goose Up
--- Asymmetric key pairs for the instance OpenID Provider. Public halves are
+-- Asymmetric key pairs for the tenant OpenID Provider. Public halves are
 -- published at the JWKS endpoint (jwks_uri in oidc_provider_configs); private
 -- halves are ENCRYPTED at the app layer (reversible, NOT hashed) before insert.
--- Material is produced by internal/platform/crypto.Generate: both halves are
--- JWK JSON (RFC 7517 / RFC 7518), so a row needs no decoding to reach a
--- goidc.JSONWebKey. algorithm duplicates the JWK `alg` value
--- (RS256/RS384/RS512, ES256/ES384/ES512, PS256/PS384/PS512) so the signer can
--- be selected without parsing the key. The row id doubles as the JWKS `kid`.
+-- algorithm is the JOSE `alg` value (RS256/RS384/RS512, ES256/ES384/ES512,
+-- EdDSA). The row id doubles as the JWKS `kid`.
+--
+-- The key material below is the shape this migration created, and it is not the
+-- shape the gateway reads today. Migration 00040 turned public_key into JWK
+-- JSON, dropped key_config, and dropped deleted_at. Read 00040 for the current
+-- columns. internal/platform/crypto produces both halves as JWK JSON.
 CREATE TABLE oidc_keys (
     -- ── Identity & lifecycle ──────────────────────────────────
     id            CHAR(36)     NOT NULL,                /* also published as the JWKS `kid` */
@@ -16,8 +18,12 @@ CREATE TABLE oidc_keys (
     state         TINYINT      NOT NULL DEFAULT 1,      /* 1=active 2=inactive 3=retired */
 
     -- ── Key material ──────────────────────────────────────────
-    public_key    JSON         NOT NULL,                /* public JWK — served via JWKS */
-    private_key   BLOB         NOT NULL,                /* private JWK — ENCRYPTED at app layer */
+    public_key    BLOB         NOT NULL,                /* PKIX DER — public, served via JWKS */
+    private_key   BLOB         NOT NULL,                /* PKCS8 DER — ENCRYPTED at app layer */
+
+    -- Extra JWK attributes not derivable from algorithm (e.g. kid override,
+    -- crv, x5c chain, key_ops). NULL for the common case.
+    key_config    JSON         NULL DEFAULT NULL,
 
     -- ── Rotation window ───────────────────────────────────────
     active_at     DATETIME(3)  NULL DEFAULT NULL,       /* when the key starts signing */

@@ -13,9 +13,9 @@ export function BootstrapView() {
       <div className="fade-in">
         <PageHead
           page="bootstrap"
-          sub="One-time, instance-wide initialization."
+          sub="One-time, deployment-wide initialization."
         />
-        <div className="card card-pad">No bootstrap record is available for this instance.</div>
+        <div className="card card-pad">No bootstrap record is available for this deployment.</div>
       </div>
     );
   }
@@ -23,7 +23,7 @@ export function BootstrapView() {
     <div className="fade-in">
       <PageHead
         page="bootstrap"
-        sub="One-time, instance-wide initialization. The singleton row makes it run exactly once across the IAM lifecycle."
+        sub="One-time, deployment-wide initialization. The singleton row makes it run exactly once across the IAM lifecycle."
       />
 
       <div className="dash-row" style={{ alignItems: "start" }}>

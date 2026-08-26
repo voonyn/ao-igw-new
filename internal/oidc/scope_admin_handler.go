@@ -4,7 +4,6 @@ import (
 	"github.com/gofiber/fiber/v3"
 
 	"alphaomega/identitygateway/internal/api/http/response"
-	"alphaomega/identitygateway/internal/platform/logger"
 )
 
 // The sentinels the scope routes answer with. ErrForbidden is registered by the
@@ -43,13 +42,12 @@ func init() {
 type ScopeAdminHandler struct {
 	svc   *ScopeAdminService
 	actor AdminActorReader
-	log   logger.Logger
 }
 
 func NewScopeAdminHandler(
-	svc *ScopeAdminService, actor AdminActorReader, log logger.Logger,
+	svc *ScopeAdminService, actor AdminActorReader,
 ) *ScopeAdminHandler {
-	return &ScopeAdminHandler{svc: svc, actor: actor, log: log}
+	return &ScopeAdminHandler{svc: svc, actor: actor}
 }
 
 // ScopeAdminRoutes mounts the scope routes. The caller mounts the tenant

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 
+	"alphaomega/identitygateway/internal/actor"
 	"alphaomega/identitygateway/internal/platform/logger"
 )
 
@@ -14,11 +15,8 @@ import (
 var ErrForbidden = errors.New("only a tenant manager reads the audit trail")
 
 // Actor is the person behind one read of the feed. A read records nothing, so
-// the address and the agent of the request are not needed here.
-type Actor struct {
-	TenantID string
-	UserID   string
-}
+// the address and the agent it carries are not read here.
+type Actor actor.Actor
 
 // The reads the service composes its answer from. Each one is a function value,
 // so the logic is testable without a database.
@@ -57,7 +55,7 @@ func NewService(deps Deps) *Service {
 // List reads one page of the audit trail of the tenant.
 func (s *Service) List(ctx context.Context, a Actor, q Query) ([]EventView, int64, error) {
 	s.log.Debug("list audit events",
-		logger.String("tenant_id", a.TenantID), logger.String("user_id", a.UserID))
+		logger.String("tenant_id", a.TenantID), logger.String("user_id", a.UserID), logger.RequestID(ctx))
 
 	if err := s.authorize(ctx, a); err != nil {
 		return nil, 0, err
@@ -74,7 +72,7 @@ func (s *Service) List(ctx context.Context, a Actor, q Query) ([]EventView, int6
 	}
 
 	s.log.Debug("listed audit events",
-		logger.String("tenant_id", a.TenantID), logger.Int("rows", len(views)))
+		logger.String("tenant_id", a.TenantID), logger.Int("rows", len(views)), logger.RequestID(ctx))
 	return views, total, nil
 }
 

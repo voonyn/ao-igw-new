@@ -7,7 +7,6 @@ import (
 	"alphaomega/identitygateway/internal/api/http/middlewares"
 	"alphaomega/identitygateway/internal/api/http/response"
 	"alphaomega/identitygateway/internal/oidc"
-	"alphaomega/identitygateway/internal/platform/logger"
 )
 
 // GrantHandler serves the grants of a tenant to the console. It binds the
@@ -20,11 +19,10 @@ import (
 // out from, and terminating a session revokes them.
 type GrantHandler struct {
 	svc *oidc.GrantService
-	log logger.Logger
 }
 
-func NewGrantHandler(svc *oidc.GrantService, log logger.Logger) *GrantHandler {
-	return &GrantHandler{svc: svc, log: log}
+func NewGrantHandler(svc *oidc.GrantService) *GrantHandler {
+	return &GrantHandler{svc: svc}
 }
 
 // GrantRoutes mounts the grant route. The caller mounts the tenant middleware
@@ -60,7 +58,6 @@ func grantQueryFrom(c fiber.Ctx) oidc.GrantQuery {
 		UserID: c.Query("userId"),
 		Sort:   sort,
 		Desc:   desc,
-		Limit:  1,
 	}
 	if info, ok := paginate.FromContext(c); ok && info != nil {
 		q.Limit, q.Offset = info.Limit, info.Start()

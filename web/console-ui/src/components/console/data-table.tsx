@@ -479,7 +479,7 @@ export function DataTable<T>({
  * surname into a username search deserves to be told why it missed rather than
  * to conclude the record is gone.
  */
-function SearchControl({
+export function SearchControl({
   value,
   fields,
   placeholder,

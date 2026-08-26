@@ -45,7 +45,7 @@ var sortColumns = map[string]string{
 // soft-deleted organization never does.
 func (r *Repository) List(ctx context.Context, tenantID string, q Query) ([]Organization, int64, error) {
 	r.log.Debug("list organizations",
-		logger.String("tenant_id", tenantID), logger.Int("offset", q.Offset))
+		logger.String("tenant_id", tenantID), logger.Int("offset", q.Offset), logger.RequestID(ctx))
 
 	var rows []Organization
 	sel := db.Conn(ctx, r.db).NewSelect().
@@ -88,7 +88,7 @@ func orderBy(q Query) string {
 // FindByID reads one live organization of a tenant. A miss returns ErrNotFound.
 func (r *Repository) FindByID(ctx context.Context, tenantID, orgID string) (Organization, error) {
 	r.log.Debug("read organization",
-		logger.String("tenant_id", tenantID), logger.String("org_id", orgID))
+		logger.String("tenant_id", tenantID), logger.String("org_id", orgID), logger.RequestID(ctx))
 
 	var row Organization
 	err := db.Conn(ctx, r.db).NewSelect().
@@ -107,9 +107,16 @@ func (r *Repository) FindByID(ctx context.Context, tenantID, orgID string) (Orga
 
 // Insert writes one new organization. It runs on the caller's transaction.
 func (r *Repository) Insert(ctx context.Context, row Organization) error {
+	r.log.Debug("write organization",
+		logger.String("tenant_id", row.TenantID), logger.String("org_id", row.ID),
+		logger.RequestID(ctx))
+
 	if _, err := db.Conn(ctx, r.db).NewInsert().Model(&row).Exec(ctx); err != nil {
 		return fmt.Errorf("write organization %s of tenant %s: %w", row.ID, row.TenantID, err)
 	}
+	r.log.Debug("wrote organization",
+		logger.String("tenant_id", row.TenantID), logger.String("org_id", row.ID),
+		logger.RequestID(ctx))
 	return nil
 }
 
@@ -120,10 +127,17 @@ func (r *Repository) Insert(ctx context.Context, row Organization) error {
 // The organization owns this table, so the write lives here and every domain
 // that needs it takes this method.
 func (r *Repository) InsertMembership(ctx context.Context, row Membership) error {
+	r.log.Debug("write organization membership",
+		logger.String("tenant_id", row.TenantID), logger.String("org_id", row.OrgID), logger.String("user_id", row.UserID),
+		logger.RequestID(ctx))
+
 	if _, err := db.Conn(ctx, r.db).NewInsert().Model(&row).Exec(ctx); err != nil {
 		return fmt.Errorf("write membership of user %s in organization %s of tenant %s: %w",
 			row.UserID, row.OrgID, row.TenantID, err)
 	}
+	r.log.Debug("wrote organization membership",
+		logger.String("tenant_id", row.TenantID), logger.String("org_id", row.OrgID), logger.String("user_id", row.UserID),
+		logger.RequestID(ctx))
 	return nil
 }
 
@@ -141,7 +155,7 @@ func (r *Repository) ListMembers(
 	r.log.Debug("list organization members",
 		logger.String("tenant_id", tenantID),
 		logger.String("org_id", orgID),
-		logger.Int("offset", offset))
+		logger.Int("offset", offset), logger.RequestID(ctx))
 
 	order := "m.created_at ASC"
 	if desc {
@@ -183,6 +197,10 @@ func (r *Repository) ListMembers(
 // created_at is not written again, so the column keeps naming when the person
 // first entered the organization.
 func (r *Repository) SaveMembership(ctx context.Context, row Membership) error {
+	r.log.Debug("save organization membership",
+		logger.String("tenant_id", row.TenantID), logger.String("org_id", row.OrgID), logger.String("user_id", row.UserID),
+		logger.RequestID(ctx))
+
 	_, err := db.Conn(ctx, r.db).NewInsert().
 		Model(&row).
 		On("DUPLICATE KEY UPDATE").
@@ -193,6 +211,9 @@ func (r *Repository) SaveMembership(ctx context.Context, row Membership) error {
 		return fmt.Errorf("write the membership of user %s in organization %s of tenant %s: %w",
 			row.UserID, row.OrgID, row.TenantID, err)
 	}
+	r.log.Debug("saved organization membership",
+		logger.String("tenant_id", row.TenantID), logger.String("org_id", row.OrgID), logger.String("user_id", row.UserID),
+		logger.RequestID(ctx))
 	return nil
 }
 
@@ -202,6 +223,10 @@ func (r *Repository) SaveMembership(ctx context.Context, row Membership) error {
 // A membership nobody holds returns ErrMemberNotFound, so a revoke of a row
 // that already went answers 404 and not a silent success.
 func (r *Repository) DeleteMembership(ctx context.Context, tenantID, orgID, userID string) error {
+	r.log.Debug("delete organization membership",
+		logger.String("tenant_id", tenantID), logger.String("org_id", orgID), logger.String("user_id", userID),
+		logger.RequestID(ctx))
+
 	res, err := db.Conn(ctx, r.db).NewDelete().
 		Model((*Membership)(nil)).
 		Where("tenant_id = ?", tenantID).
@@ -221,12 +246,19 @@ func (r *Repository) DeleteMembership(ctx context.Context, tenantID, orgID, user
 	if rows == 0 {
 		return fmt.Errorf("%w: %s", ErrMemberNotFound, userID)
 	}
+	r.log.Debug("deleted organization membership",
+		logger.String("tenant_id", tenantID), logger.String("org_id", orgID), logger.String("user_id", userID),
+		logger.RequestID(ctx))
 	return nil
 }
 
 // Rename writes the new name of one live organization. It runs on the caller's
 // transaction. A row that went in the meantime returns ErrNotFound.
 func (r *Repository) Rename(ctx context.Context, tenantID, orgID, name string) error {
+	r.log.Debug("rename organization",
+		logger.String("tenant_id", tenantID), logger.String("org_id", orgID),
+		logger.RequestID(ctx))
+
 	res, err := db.Conn(ctx, r.db).NewUpdate().
 		Model((*Organization)(nil)).
 		Set("name = ?", name).
@@ -237,12 +269,19 @@ func (r *Repository) Rename(ctx context.Context, tenantID, orgID, name string) e
 	if err != nil {
 		return fmt.Errorf("rename organization %s of tenant %s: %w", orgID, tenantID, err)
 	}
+	r.log.Debug("renamed organization",
+		logger.String("tenant_id", tenantID), logger.String("org_id", orgID),
+		logger.RequestID(ctx))
 	return oneRow(res, tenantID, orgID, "rename")
 }
 
 // SoftDelete marks one organization deleted. The row stays in the database, and
 // every read filters it out. It runs on the caller's transaction.
 func (r *Repository) SoftDelete(ctx context.Context, tenantID, orgID string) error {
+	r.log.Debug("delete organization",
+		logger.String("tenant_id", tenantID), logger.String("org_id", orgID),
+		logger.RequestID(ctx))
+
 	res, err := db.Conn(ctx, r.db).NewDelete().
 		Model((*Organization)(nil)).
 		Where("tenant_id = ?", tenantID).
@@ -251,6 +290,9 @@ func (r *Repository) SoftDelete(ctx context.Context, tenantID, orgID string) err
 	if err != nil {
 		return fmt.Errorf("delete organization %s of tenant %s: %w", orgID, tenantID, err)
 	}
+	r.log.Debug("deleted organization",
+		logger.String("tenant_id", tenantID), logger.String("org_id", orgID),
+		logger.RequestID(ctx))
 	return oneRow(res, tenantID, orgID, "delete")
 }
 
@@ -271,7 +313,7 @@ func oneRow(res sql.Result, tenantID, orgID, what string) error {
 // inactive organization and a soft-deleted one never come back, so the console
 // never lists an organization the tenant deactivated.
 func (r *Repository) ListByTenant(ctx context.Context, tenantID string) ([]Organization, error) {
-	r.log.Debug("read organizations", logger.String("tenant_id", tenantID))
+	r.log.Debug("read organizations", logger.String("tenant_id", tenantID), logger.RequestID(ctx))
 
 	var rows []Organization
 	err := db.Conn(ctx, r.db).NewSelect().
@@ -291,7 +333,7 @@ func (r *Repository) ListByTenant(ctx context.Context, tenantID string) ([]Organ
 // case, so an empty answer is not an error.
 func (r *Repository) ListMemberships(ctx context.Context, tenantID, userID string) ([]Membership, error) {
 	r.log.Debug("read organization members",
-		logger.String("tenant_id", tenantID), logger.String("user_id", userID))
+		logger.String("tenant_id", tenantID), logger.String("user_id", userID), logger.RequestID(ctx))
 
 	var rows []Membership
 	err := db.Conn(ctx, r.db).NewSelect().

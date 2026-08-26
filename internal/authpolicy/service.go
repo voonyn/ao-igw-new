@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"slices"
 
+	"alphaomega/identitygateway/internal/actor"
 	"alphaomega/identitygateway/internal/audit"
 	"alphaomega/identitygateway/internal/organization"
 	"alphaomega/identitygateway/internal/platform/db"
@@ -25,12 +26,7 @@ var ErrTenantScope = errors.New("the tenant default has nothing to inherit")
 
 // Actor is the person behind one administrative request. The IP and the user
 // agent reach the audit trail, and nothing else here reads them.
-type Actor struct {
-	TenantID  string
-	UserID    string
-	IP        string
-	UserAgent string
-}
+type Actor actor.Actor
 
 // The reads and writes the service composes its answers from. Each one is a
 // function value, so the logic is testable without a database.
@@ -91,7 +87,7 @@ func (s *Service) Read(ctx context.Context, a Actor, orgID string) (View, error)
 	s.log.Debug("read the auth policy",
 		logger.String("tenant_id", a.TenantID),
 		logger.String("user_id", a.UserID),
-		logger.String("org_id", orgID))
+		logger.String("org_id", orgID), logger.RequestID(ctx))
 
 	if err := s.authorize(ctx, a, orgID, "read the auth policy"); err != nil {
 		return View{}, err
@@ -103,7 +99,7 @@ func (s *Service) Read(ctx context.Context, a Actor, orgID string) (View, error)
 	}
 
 	s.log.Debug("read the auth policy",
-		logger.String("tenant_id", a.TenantID), logger.String("org_id", orgID))
+		logger.String("tenant_id", a.TenantID), logger.String("org_id", orgID), logger.RequestID(ctx))
 	return view, nil
 }
 
@@ -116,7 +112,7 @@ func (s *Service) Write(ctx context.Context, a Actor, orgID string, body Body) (
 	s.log.Debug("write the auth policy",
 		logger.String("tenant_id", a.TenantID),
 		logger.String("user_id", a.UserID),
-		logger.String("org_id", orgID))
+		logger.String("org_id", orgID), logger.RequestID(ctx))
 
 	if err := s.authorize(ctx, a, orgID, "write the auth policy"); err != nil {
 		return View{}, err
@@ -158,7 +154,7 @@ func (s *Service) Reset(ctx context.Context, a Actor, orgID string) error {
 	s.log.Debug("remove the auth policy override",
 		logger.String("tenant_id", a.TenantID),
 		logger.String("user_id", a.UserID),
-		logger.String("org_id", orgID))
+		logger.String("org_id", orgID), logger.RequestID(ctx))
 
 	if orgID == "" {
 		return ErrTenantScope

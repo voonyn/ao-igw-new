@@ -1,7 +1,7 @@
 -- +goose Up
 -- Per-tenant outbound-mail delivery settings. One row per tenant (tenant_id is
--- the PK), overriding the instance-level AO_NOTIFICATION_* config. Absent a row,
--- the instance default applies; absent any usable transport, the log transport
+-- the PK), overriding the deployment-wide AO_NOTIFICATION_* config. Absent a row,
+-- the deployment default applies; absent any usable transport, the log transport
 -- does. smtp_password is stored encrypted (AES-256-GCM via cryptokey.Cipher) and
 -- is never returned on admin reads — the console sees only a passwordSet flag.
 CREATE TABLE notification_settings (

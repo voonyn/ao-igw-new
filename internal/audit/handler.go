@@ -9,7 +9,6 @@ import (
 	"github.com/gofiber/fiber/v3/middleware/paginate"
 
 	"alphaomega/identitygateway/internal/api/http/response"
-	"alphaomega/identitygateway/internal/platform/logger"
 )
 
 // The sentinel the feed answers with. A domain registers its own, so no other
@@ -38,11 +37,10 @@ type ActorReader func(c fiber.Ctx) Actor
 type Handler struct {
 	svc   *Service
 	actor ActorReader
-	log   logger.Logger
 }
 
-func NewHandler(svc *Service, actor ActorReader, log logger.Logger) *Handler {
-	return &Handler{svc: svc, actor: actor, log: log}
+func NewHandler(svc *Service, actor ActorReader) *Handler {
+	return &Handler{svc: svc, actor: actor}
 }
 
 // AdminRoutes mounts the audit route. The caller mounts the tenant middleware
@@ -92,7 +90,6 @@ func queryFrom(c fiber.Ctx) (Query, error) {
 		EntityID:   c.Query("entity_id"),
 		From:       from,
 		To:         to,
-		Limit:      1,
 	}
 
 	// The sort is read from Fiber's own middleware, and the direction from the

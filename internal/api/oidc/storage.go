@@ -169,7 +169,7 @@ func (m *StorageManager) recordRevocation(ctx context.Context, grant *goidc.Gran
 	m.log.Debug("grant revoked",
 		logger.String("tenant_id", m.tenantID),
 		logger.String("grant_id", grant.ID),
-		RequestID(ctx))
+		logger.RequestID(ctx))
 
 	return m.audit.Record(ctx, audit.Entry{
 		TenantID:   m.tenantID,

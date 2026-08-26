@@ -1,9 +1,9 @@
 // CSV writing for the console's exports.
 //
-// There is no export endpoint. Every export is the same page walk the pickers
-// already do, under the same declared bound, with the file assembled here — so
-// the rows in the file are the rows the API answered under the filters the
-// operator is looking at, and a bounded walk can say so.
+// There is no export endpoint. Every export is a page walk to the end of the
+// collection, with the file assembled here — so the rows in the file are the
+// rows the API answered under the filters the operator is looking at. A walk
+// that fails part way reports the file as partial rather than as complete.
 
 /**
  * Renders one CSV field.

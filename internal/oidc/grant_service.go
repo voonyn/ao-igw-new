@@ -6,9 +6,6 @@ import (
 	"fmt"
 	"slices"
 
-	"github.com/gofiber/fiber/v3"
-
-	"alphaomega/identitygateway/internal/api/http/response"
 	"alphaomega/identitygateway/internal/platform/logger"
 	"alphaomega/identitygateway/internal/tenant"
 )
@@ -16,13 +13,6 @@ import (
 // ErrForbidden reports that the person does not administer this tenant. A grant
 // reaches every organization, so only a tenant manager reads one.
 var ErrForbidden = errors.New("only a tenant manager reads a grant")
-
-// The sentinel the grant routes answer with. A domain registers its own, so no
-// other package maps an error it does not declare, and the handler that serves
-// the route maps nothing itself.
-func init() {
-	response.Map(ErrForbidden, fiber.StatusForbidden, "forbidden", "Forbidden")
-}
 
 // GrantActor is the person behind one administrative grant read.
 type GrantActor struct {
@@ -68,7 +58,7 @@ func (s *GrantService) List(
 	ctx context.Context, a GrantActor, q GrantQuery,
 ) ([]GrantView, int64, error) {
 	s.log.Debug("list grants",
-		logger.String("tenant_id", a.TenantID), logger.String("user_id", a.UserID))
+		logger.String("tenant_id", a.TenantID), logger.String("user_id", a.UserID), logger.RequestID(ctx))
 
 	roles, err := s.deps.TenantRoles(ctx, a.TenantID, a.UserID)
 	if err != nil {

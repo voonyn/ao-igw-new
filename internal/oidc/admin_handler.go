@@ -4,7 +4,6 @@ import (
 	"github.com/gofiber/fiber/v3"
 
 	"alphaomega/identitygateway/internal/api/http/response"
-	"alphaomega/identitygateway/internal/platform/logger"
 )
 
 // The sentinels the provider routes answer with. ErrForbidden is registered by
@@ -16,6 +15,19 @@ func init() {
 	response.Map(ErrProviderConfigNotFound, fiber.StatusNotFound, "not_found", "Not Found")
 	response.Map(ErrOpaqueAccessToken, fiber.StatusUnprocessableEntity, "invalid_input",
 		"An opaque access token is not served by this gateway.")
+
+	// ErrForbidden belongs to the grant read of this package. Its route is
+	// served from internal/session, because the grant hangs off the session the
+	// person holds. The sentinel is declared here, so it is registered here: no
+	// package maps an error it does not declare.
+	response.Map(ErrForbidden, fiber.StatusForbidden, "forbidden", "Forbidden")
+
+	// ErrSessionNotFound belongs to the authn session store of this package. Its
+	// routes are served from internal/api/oidc, and it is registered here for
+	// the same reason as ErrForbidden. A login step that names an authorization
+	// request the gateway does not hold gets 400: the request is bad, and the
+	// credentials are not.
+	response.Map(ErrSessionNotFound, fiber.StatusBadRequest, "session_not_found", "Bad Request")
 }
 
 // AdminActorReader reads the person behind one request.
@@ -33,11 +45,10 @@ type AdminActorReader func(c fiber.Ctx) AdminActor
 type AdminHandler struct {
 	svc   *AdminService
 	actor AdminActorReader
-	log   logger.Logger
 }
 
-func NewAdminHandler(svc *AdminService, actor AdminActorReader, log logger.Logger) *AdminHandler {
-	return &AdminHandler{svc: svc, actor: actor, log: log}
+func NewAdminHandler(svc *AdminService, actor AdminActorReader) *AdminHandler {
+	return &AdminHandler{svc: svc, actor: actor}
 }
 
 // AdminRoutes mounts the provider routes. The caller mounts the tenant

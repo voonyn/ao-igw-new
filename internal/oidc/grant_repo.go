@@ -3,7 +3,6 @@ package oidc
 import (
 	"context"
 	"fmt"
-	"time"
 
 	"github.com/uptrace/bun"
 
@@ -36,30 +35,6 @@ const grantSubjectJoin = `LEFT JOIN users AS u
 const grantProfileJoin = `LEFT JOIN user_humans AS h
 	ON h.user_id = g.subject AND h.tenant_id = g.tenant_id`
 
-// GrantRecord is one row of oidc_grants as an administrative read projects it.
-//
-// The sealed grant is not projected. The list answers from the extracted columns
-// alone, so a page of 100 rows costs no decryption, and the secrets the blob
-// carries never reach the read.
-//
-// HasRefreshToken reports that the digest column is set. It says that a refresh
-// token exists, never what it is.
-type GrantRecord struct {
-	bun.BaseModel `bun:"table:oidc_grants,alias:g"`
-
-	ID             string    `bun:"id"`
-	TenantID       string    `bun:"tenant_id"`
-	ClientID       string    `bun:"client_id"`
-	Subject        string    `bun:"subject,nullzero"`
-	LoginSessionID string    `bun:"login_session_id,nullzero"`
-	CreatedAt      time.Time `bun:"created_at,nullzero"`
-	ExpiresAt      time.Time `bun:"expires_at,nullzero"`
-
-	HasRefreshToken bool   `bun:"has_refresh_token,scanonly"`
-	AppName         string `bun:"app_name,scanonly"`
-	SubjectName     string `bun:"subject_name,scanonly"`
-}
-
 // Kind names what the grant is, derived from the columns. A grant that no person
 // authorized is a client-credentials grant, one that carries a refresh token
 // digest is a refresh-token grant, and the rest came from an authorization code.
@@ -79,7 +54,7 @@ func (r *StorageRepository) ListGrants(
 	ctx context.Context, tenantID string, q GrantQuery,
 ) ([]GrantRecord, int64, error) {
 	r.log.Debug("list grants",
-		logger.String("tenant_id", tenantID), logger.Int("offset", q.Offset))
+		logger.String("tenant_id", tenantID), logger.Int("offset", q.Offset), logger.RequestID(ctx))
 
 	var rows []GrantRecord
 	sel := db.Conn(ctx, r.db).NewSelect().
@@ -166,7 +141,7 @@ func (r *StorageRepository) deleteGrants(
 	ctx context.Context, tenantID, column, value string,
 ) (int, error) {
 	r.log.Debug("revoke grants",
-		logger.String("tenant_id", tenantID), logger.String("by", column))
+		logger.String("tenant_id", tenantID), logger.String("by", column), logger.RequestID(ctx))
 
 	var ids []string
 	if err := db.Conn(ctx, r.db).NewSelect().
@@ -200,6 +175,6 @@ func (r *StorageRepository) deleteGrants(
 	r.log.Debug("revoked grants",
 		logger.String("tenant_id", tenantID),
 		logger.String("by", column),
-		logger.Int("grants", len(ids)))
+		logger.Int("grants", len(ids)), logger.RequestID(ctx))
 	return len(ids), nil
 }

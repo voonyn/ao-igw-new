@@ -259,7 +259,7 @@ func NewRecorder(write EventWriter, log logger.Logger) *Recorder {
 func (r *Recorder) Record(ctx context.Context, entry Entry) error {
 	r.log.Debug("record audit event",
 		logger.String("tenant_id", entry.TenantID),
-		logger.String("action", string(entry.Action)))
+		logger.String("action", string(entry.Action)), logger.RequestID(ctx))
 
 	event, err := newEvent(entry, r.log)
 	if err != nil {
@@ -281,7 +281,7 @@ func (r *Recorder) Record(ctx context.Context, entry Entry) error {
 	r.log.Debug("recorded audit event",
 		logger.String("tenant_id", entry.TenantID),
 		logger.String("action", string(entry.Action)),
-		logger.String("event_id", event.ID))
+		logger.String("event_id", event.ID), logger.RequestID(ctx))
 	return nil
 }
 

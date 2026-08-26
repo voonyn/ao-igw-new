@@ -5,25 +5,10 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"time"
-
-	"github.com/uptrace/bun"
 
 	"alphaomega/identitygateway/internal/platform/db"
 	"alphaomega/identitygateway/internal/platform/logger"
 )
-
-// Bootstrap is the singleton row of system_bootstrap: the marker the bootstrap
-// command wrote when it created the first tenant. The table holds one row of the
-// deployment, so the read takes no tenant id.
-type Bootstrap struct {
-	bun.BaseModel `bun:"table:system_bootstrap"`
-
-	ID        int       `bun:"id,pk"`
-	TenantID  string    `bun:"tenant_id"`
-	Version   string    `bun:"version"`
-	AppliedAt time.Time `bun:"applied_at,nullzero"`
-}
 
 // ListAllDomains reads every hostname of one tenant, the primary one first and
 // the removed ones included.
@@ -33,7 +18,7 @@ type Bootstrap struct {
 // renders a removed host as removed, and an operator who cannot see it cannot
 // take it back.
 func (r *Repository) ListAllDomains(ctx context.Context, tenantID string) ([]Domain, error) {
-	r.log.Debug("read every tenant domain", logger.String("tenant_id", tenantID))
+	r.log.Debug("read every tenant domain", logger.String("tenant_id", tenantID), logger.RequestID(ctx))
 
 	var rows []Domain
 	err := db.Conn(ctx, r.db).NewSelect().
@@ -56,7 +41,7 @@ func (r *Repository) ListAllDomains(ctx context.Context, tenantID string) ([]Dom
 // insert on that host would fail, and the caller needs to know the host is
 // spoken for.
 func (r *Repository) FindDomain(ctx context.Context, domain string) (Domain, error) {
-	r.log.Debug("read one tenant domain", logger.String("domain", domain))
+	r.log.Debug("read one tenant domain", logger.String("domain", domain), logger.RequestID(ctx))
 
 	var row Domain
 	err := db.Conn(ctx, r.db).NewSelect().
@@ -76,9 +61,16 @@ func (r *Repository) FindDomain(ctx context.Context, domain string) (Domain, err
 // InsertDomain maps one new host to a tenant. It runs on the caller's
 // transaction.
 func (r *Repository) InsertDomain(ctx context.Context, row Domain) error {
+	r.log.Debug("write tenant domain",
+		logger.String("tenant_id", row.TenantID), logger.String("domain", row.Domain),
+		logger.RequestID(ctx))
+
 	if _, err := db.Conn(ctx, r.db).NewInsert().Model(&row).Exec(ctx); err != nil {
 		return fmt.Errorf("map domain %s to tenant %s: %w", row.Domain, row.TenantID, err)
 	}
+	r.log.Debug("wrote tenant domain",
+		logger.String("tenant_id", row.TenantID), logger.String("domain", row.Domain),
+		logger.RequestID(ctx))
 	return nil
 }
 
@@ -89,6 +81,10 @@ func (r *Repository) InsertDomain(ctx context.Context, row Domain) error {
 // way comes back. The tenant id is in the clause, so one tenant can never
 // restore the host of another.
 func (r *Repository) RestoreDomain(ctx context.Context, tenantID, domain string) error {
+	r.log.Debug("restore tenant domain",
+		logger.String("tenant_id", tenantID), logger.String("domain", domain),
+		logger.RequestID(ctx))
+
 	_, err := db.Conn(ctx, r.db).NewUpdate().
 		Model((*Domain)(nil)).
 		Set("state = ?", DomainStateActive).
@@ -100,6 +96,9 @@ func (r *Repository) RestoreDomain(ctx context.Context, tenantID, domain string)
 	if err != nil {
 		return fmt.Errorf("restore domain %s of tenant %s: %w", domain, tenantID, err)
 	}
+	r.log.Debug("restored tenant domain",
+		logger.String("tenant_id", tenantID), logger.String("domain", domain),
+		logger.RequestID(ctx))
 	return nil
 }
 
@@ -110,6 +109,10 @@ func (r *Repository) RestoreDomain(ctx context.Context, tenantID, domain string)
 // free the host for another tenant to claim, and the removal could not be
 // undone.
 func (r *Repository) DeactivateDomain(ctx context.Context, tenantID, domain string) error {
+	r.log.Debug("deactivate tenant domain",
+		logger.String("tenant_id", tenantID), logger.String("domain", domain),
+		logger.RequestID(ctx))
+
 	res, err := db.Conn(ctx, r.db).NewUpdate().
 		Model((*Domain)(nil)).
 		Set("state = ?", DomainStateInactive).
@@ -127,13 +130,16 @@ func (r *Repository) DeactivateDomain(ctx context.Context, tenantID, domain stri
 	if rows == 0 {
 		return fmt.Errorf("%w: %s", ErrDomainNotFound, domain)
 	}
+	r.log.Debug("deactivated tenant domain",
+		logger.String("tenant_id", tenantID), logger.String("domain", domain),
+		logger.RequestID(ctx))
 	return nil
 }
 
 // ReadBootstrap reads the singleton bootstrap record. A deployment whose schema
 // was migrated but never bootstrapped returns ErrNoBootstrapRecord.
 func (r *Repository) ReadBootstrap(ctx context.Context) (Bootstrap, error) {
-	r.log.Debug("read the bootstrap record")
+	r.log.Debug("read the bootstrap record", logger.RequestID(ctx))
 
 	var row Bootstrap
 	err := db.Conn(ctx, r.db).NewSelect().Model(&row).Limit(1).Scan(ctx)

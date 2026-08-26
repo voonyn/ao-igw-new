@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"slices"
 
+	"alphaomega/identitygateway/internal/actor"
 	"alphaomega/identitygateway/internal/audit"
 	"alphaomega/identitygateway/internal/organization"
 	"alphaomega/identitygateway/internal/platform/db"
@@ -25,12 +26,7 @@ var ErrSendFailed = errors.New("the transport refused the message")
 
 // Actor is the person behind one administrative request. The IP and the user
 // agent reach the audit trail, and nothing else here reads them.
-type Actor struct {
-	TenantID  string
-	UserID    string
-	IP        string
-	UserAgent string
-}
+type Actor actor.Actor
 
 // Message is one outbound mail, rendered and ready for a transport.
 type Message struct {
@@ -90,7 +86,7 @@ type Deps struct {
 
 	Send Sender
 
-	// Defaults is the instance-level delivery of the deployment, from the
+	// Defaults is the delivery the deployment configured, from the
 	// AO_NOTIFICATION_* configuration. A tenant that stores no row sends with
 	// these, so the read and the test send answer them.
 	Defaults Settings
@@ -119,7 +115,7 @@ func NewService(deps Deps) *Service {
 // nothing reads the defaults, and the answer never carries the SMTP password.
 func (s *Service) ReadSettings(ctx context.Context, a Actor) (SettingsView, error) {
 	s.log.Debug("read the delivery settings",
-		logger.String("tenant_id", a.TenantID), logger.String("user_id", a.UserID))
+		logger.String("tenant_id", a.TenantID), logger.String("user_id", a.UserID), logger.RequestID(ctx))
 
 	if err := s.authorizeTenant(ctx, a, "read the delivery settings"); err != nil {
 		return SettingsView{}, err
@@ -139,7 +135,7 @@ func (s *Service) ReadSettings(ctx context.Context, a Actor) (SettingsView, erro
 // stored.
 func (s *Service) WriteSettings(ctx context.Context, a Actor, body SettingsBody) (SettingsView, error) {
 	s.log.Debug("write the delivery settings",
-		logger.String("tenant_id", a.TenantID), logger.String("user_id", a.UserID))
+		logger.String("tenant_id", a.TenantID), logger.String("user_id", a.UserID), logger.RequestID(ctx))
 
 	if err := s.authorizeTenant(ctx, a, "write the delivery settings"); err != nil {
 		return SettingsView{}, err
@@ -185,7 +181,7 @@ func (s *Service) SendTest(ctx context.Context, a Actor, body TestBody) error {
 	s.log.Debug("send a test message",
 		logger.String("tenant_id", a.TenantID),
 		logger.String("user_id", a.UserID),
-		logger.String("template_key", body.Template))
+		logger.String("template_key", body.Template), logger.RequestID(ctx))
 
 	if err := s.authorizeTenant(ctx, a, "send a test message"); err != nil {
 		return err
@@ -245,7 +241,7 @@ func (s *Service) ListTemplates(ctx context.Context, a Actor, orgID string) ([]T
 	s.log.Debug("list the message templates",
 		logger.String("tenant_id", a.TenantID),
 		logger.String("user_id", a.UserID),
-		logger.String("org_id", orgID))
+		logger.String("org_id", orgID), logger.RequestID(ctx))
 
 	if err := s.authorize(ctx, a, orgID, "list the message templates"); err != nil {
 		return nil, err
@@ -276,7 +272,7 @@ func (s *Service) ReadTemplate(ctx context.Context, a Actor, orgID, key string) 
 	s.log.Debug("read a message template",
 		logger.String("tenant_id", a.TenantID),
 		logger.String("org_id", orgID),
-		logger.String("template_key", key))
+		logger.String("template_key", key), logger.RequestID(ctx))
 
 	found, err := s.readable(ctx, a, orgID, key, "read a message template")
 	if err != nil {
@@ -300,7 +296,7 @@ func (s *Service) PreviewTemplate(ctx context.Context, a Actor, orgID, key strin
 	s.log.Debug("render a message template",
 		logger.String("tenant_id", a.TenantID),
 		logger.String("org_id", orgID),
-		logger.String("template_key", key))
+		logger.String("template_key", key), logger.RequestID(ctx))
 
 	found, err := s.readable(ctx, a, orgID, key, "render a message template")
 	if err != nil {
@@ -325,7 +321,7 @@ func (s *Service) WriteTemplate(ctx context.Context, a Actor, orgID, key string,
 		logger.String("tenant_id", a.TenantID),
 		logger.String("user_id", a.UserID),
 		logger.String("org_id", orgID),
-		logger.String("template_key", key))
+		logger.String("template_key", key), logger.RequestID(ctx))
 
 	if !known(key) {
 		return TemplateView{}, fmt.Errorf("%w: %s", ErrUnknownTemplate, key)
@@ -378,7 +374,7 @@ func (s *Service) ResetTemplate(ctx context.Context, a Actor, orgID, key string)
 		logger.String("tenant_id", a.TenantID),
 		logger.String("user_id", a.UserID),
 		logger.String("org_id", orgID),
-		logger.String("template_key", key))
+		logger.String("template_key", key), logger.RequestID(ctx))
 
 	if !known(key) {
 		return fmt.Errorf("%w: %s", ErrUnknownTemplate, key)
@@ -479,17 +475,17 @@ func (s *Service) override(ctx context.Context, tenantID, orgID, key string) (*T
 }
 
 // settings answers how this tenant sends today: the row it stores, or the
-// instance-level configuration of the deployment when it stores none.
+// configuration of the deployment when it stores none.
 //
 // The read and the test send both go through here, so the console reports the
 // relay that mail actually leaves by.
 func (s *Service) settings(ctx context.Context, tenantID string) (Settings, error) {
-	return s.find(ctx, tenantID, s.instance(tenantID))
+	return s.find(ctx, tenantID, s.deployment(tenantID))
 }
 
 // base answers the row one write starts from. A tenant that stores none starts
-// from the table defaults and not from the instance configuration: the
-// instance credential belongs to the deployment, and a write that omits a
+// from the table defaults and not from the deployment configuration: the
+// deployment credential is not the tenant's, and a write that omits a
 // password must not copy it into a tenant row.
 func (s *Service) base(ctx context.Context, tenantID string) (Settings, error) {
 	return s.find(ctx, tenantID, defaultSettings(tenantID))
@@ -509,10 +505,10 @@ func (s *Service) find(ctx context.Context, tenantID string, fallback Settings) 
 	}
 }
 
-// instance is the delivery the deployment configured, named for this tenant. A
+// deployment is the delivery the deployment configured, named for this tenant. A
 // deployment that configured nothing carries the table defaults, which the
 // configuration layer already fills in.
-func (s *Service) instance(tenantID string) Settings {
+func (s *Service) deployment(tenantID string) Settings {
 	row := s.deps.Defaults
 	if row.Transport == "" {
 		row = defaultSettings(tenantID)

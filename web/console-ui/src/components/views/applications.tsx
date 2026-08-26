@@ -5,7 +5,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Icon } from "@/components/console/icons";
 import { AppTypeBadge, Btn, confirmAction, EntityStateBadge, Field, KV, MonoChip, OptChip, PickerTruncated, ProtoBanner, Seg, SelectInput, Toggle, Ts } from "@/components/console/primitives";
-import { DataTable, type Column } from "@/components/console/data-table";
+import { DataTable, SearchControl, type Column } from "@/components/console/data-table";
 import { useTabParam } from "@/components/console/detail-route";
 import { PageHead } from "@/components/console/page-head";
 import { EntityAuditTab } from "@/components/views/audit";
@@ -444,10 +444,13 @@ export function AppDetailPage({
 export function CreateAppPage({ onClose }: { onClose: () => void }) {
   const projectId = useId();
   const { me } = useConsole();
-  // ponytail: the project picker reads every page to exhaustion under a page
-  // bound rather than offering a pager nobody can reach inside a <select>,
-  // and says so when the bound cuts the list short. Swap in a typeahead over a
-  // filtered read if a tenant ever outgrows it.
+  // The project picker holds one short page and narrows it by search. The search
+  // term reaches the request, so a project outside the page is still reachable.
+  //
+  // ponytail: the two client-side rules below narrow the page after it arrives,
+  // so a page of ten can show fewer than ten. The gateway has no "projects I may
+  // register in" filter to send instead. Add one if an operator ever has to
+  // search for a project the first page should have offered.
   const projectPage = usePagedList(pages.projects, "projects", { picker: true });
   const projects = projectPage.items.filter((p) => p.state === 1 && canWriteOrg(me, p.orgId, APP_WRITE_ROLES));
   const [name, setName] = useState("");
@@ -502,14 +505,28 @@ export function CreateAppPage({ onClose }: { onClose: () => void }) {
           <label className="field-label" htmlFor={projectId}>
             Project
           </label>
+          <div style={{ marginBottom: 8 }}>
+            <SearchControl
+              value={projectPage.query.q ?? ""}
+              fields="name"
+              placeholder="Search projects…"
+              onChange={(v) => projectPage.setQuery({ q: v })}
+            />
+          </div>
           {projects.length ? (
             <>
               <SelectInput id={projectId} value={proj?.name ?? ""} options={projects.map((p) => p.name)} onChange={setProjName} />
-              {projectPage.truncated && <PickerTruncated what="projects" />}
+              {projectPage.truncated && (
+                <PickerTruncated what="projects" shown={projects.length} total={projectPage.total ?? projects.length} />
+              )}
             </>
           ) : (
             <div style={{ fontSize: 13, color: "var(--muted)" }}>
-              {projectPage.loading ? "Loading projects…" : "No project you can register applications in."}
+              {projectPage.loading
+                ? "Loading projects…"
+                : projectPage.query.q
+                  ? "No project matches that search."
+                  : "No project you can register applications in."}
             </div>
           )}
         </div>

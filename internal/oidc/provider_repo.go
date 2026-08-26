@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"time"
 
 	"github.com/uptrace/bun"
 
@@ -39,32 +38,6 @@ const (
 	AccessTokenTypeOpaque = 2
 )
 
-// ProviderConfig is one row of oidc_provider_configs: the protocol settings of
-// one tenant. Every OIDC knob comes from here, never from the environment.
-// RefreshTokenLifetimeSecs is nil when the tenant disables the refresh grant.
-type ProviderConfig struct {
-	bun.BaseModel `bun:"table:oidc_provider_configs"`
-
-	TenantID string `bun:"tenant_id,pk"`
-	Issuer   string `bun:"issuer"`
-	State    int    `bun:"state"`
-
-	RequirePKCE          bool `bun:"require_pkce"`
-	RefreshTokenRotation bool `bun:"refresh_token_rotation"`
-
-	AuthorizationCodeLifetimeSecs int  `bun:"authorization_code_lifetime_secs"`
-	AccessTokenType               int  `bun:"access_token_type"`
-	AccessTokenLifetimeSecs       int  `bun:"access_token_lifetime_secs"`
-	IDTokenLifetimeSecs           int  `bun:"id_token_lifetime_secs"`
-	RefreshTokenLifetimeSecs      *int `bun:"refresh_token_lifetime_secs"`
-
-	// ResourceIndicators lists the RFC 8707 resource identifiers a client of this
-	// tenant can ask for. Empty means the tenant runs without the indicator.
-	ResourceIndicators []string `bun:"resource_indicators,nullzero"`
-
-	DeletedAt time.Time `bun:",soft_delete,nullzero"`
-}
-
 // ProviderRepository reads the provider config of one tenant.
 type ProviderRepository struct {
 	db  *bun.DB
@@ -78,7 +51,7 @@ func NewProviderRepository(bdb *bun.DB, log logger.Logger) *ProviderRepository {
 // FindByTenant reads the active provider config of one tenant. A miss returns
 // ErrProviderConfigNotFound.
 func (r *ProviderRepository) FindByTenant(ctx context.Context, tenantID string) (ProviderConfig, error) {
-	r.log.Debug("read provider config", logger.String("tenant_id", tenantID))
+	r.log.Debug("read provider config", logger.String("tenant_id", tenantID), logger.RequestID(ctx))
 
 	var cfg ProviderConfig
 	err := db.Conn(ctx, r.db).NewSelect().
@@ -94,7 +67,7 @@ func (r *ProviderRepository) FindByTenant(ctx context.Context, tenantID string) 
 	}
 
 	r.log.Debug("read provider config",
-		logger.String("tenant_id", tenantID), logger.String("issuer", cfg.Issuer))
+		logger.String("tenant_id", tenantID), logger.String("issuer", cfg.Issuer), logger.RequestID(ctx))
 	return cfg, nil
 }
 
@@ -104,7 +77,7 @@ func (r *ProviderRepository) FindByTenant(ctx context.Context, tenantID string) 
 // whose provider is switched off must still read the row. A soft-deleted row
 // never comes back, because that tenant has no provider config at all.
 func (r *ProviderRepository) ReadByTenant(ctx context.Context, tenantID string) (ProviderConfig, error) {
-	r.log.Debug("read provider config", logger.String("tenant_id", tenantID))
+	r.log.Debug("read provider config", logger.String("tenant_id", tenantID), logger.RequestID(ctx))
 
 	var cfg ProviderConfig
 	err := db.Conn(ctx, r.db).NewSelect().
@@ -132,6 +105,10 @@ func (r *ProviderRepository) ReadByTenant(ctx context.Context, tenantID string) 
 func (r *ProviderRepository) Update(
 	ctx context.Context, tenantID string, body ProviderConfigBody,
 ) error {
+	r.log.Debug("update provider config",
+		logger.String("tenant_id", tenantID),
+		logger.RequestID(ctx))
+
 	q := db.Conn(ctx, r.db).NewUpdate().
 		Model((*ProviderConfig)(nil)).
 		Where("tenant_id = ?", tenantID)
@@ -163,6 +140,9 @@ func (r *ProviderRepository) Update(
 	if _, err := q.Exec(ctx); err != nil {
 		return fmt.Errorf("write the provider config of tenant %s: %w", tenantID, err)
 	}
+	r.log.Debug("updated provider config",
+		logger.String("tenant_id", tenantID),
+		logger.RequestID(ctx))
 	return nil
 }
 

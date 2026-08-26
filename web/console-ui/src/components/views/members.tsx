@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { Icon } from "@/components/console/icons";
 import { Avatar, Btn, confirmAction, Field, OptChip, PickerTruncated, Seg, SelectInput, Ts } from "@/components/console/primitives";
-import { DataTable, type BulkAction, type Column } from "@/components/console/data-table";
+import { DataTable, SearchControl, type BulkAction, type Column } from "@/components/console/data-table";
 import { FullPage, Menu, SectionCard } from "@/components/console/overlays";
 import { useConsole, usePagedList, usePending, type PagedList } from "@/components/console/store";
 import { PageHead } from "@/components/console/page-head";
@@ -89,9 +89,9 @@ function RoleEditor({
 }
 
 /** The user ids already holding a membership at this scope, so the picker cannot
- * offer a duplicate. Walks the pages on the same bound as the picker itself:
- * an exclusion set that stops early would offer a duplicate the write then
- * refuses. */
+ * offer a duplicate. It walks the roster to the end, with no page bound: an
+ * exclusion set that stopped early would offer a duplicate the write then
+ * refuses, which is the one failure this set exists to prevent. */
 function useExistingMembers(scope: "tenant" | "org", orgId: string | null): Set<string> {
   const { dataVersion } = useConsole();
   const [ids, setIds] = useState<Set<string>>(new Set());
@@ -121,10 +121,15 @@ function AddMemberPage({
   onClose: () => void;
 }) {
   const { accessibleOrgs, me } = useConsole();
-  // ponytail: the candidate picker walks the users and the memberships it must
-  // exclude to a bounded page count, rather than offering a *Load more* nobody
-  // can reach inside a <select>. Swap in a typeahead over a server-side user
-  // search if a tenant ever outgrows the bound.
+  // The candidate picker holds one short page and narrows it by search. The
+  // search term reaches the request, so an account outside the page is still
+  // reachable, which is what a <select> with no pager could not do before.
+  //
+  // ponytail: the exclusion below removes sitting members after the page
+  // arrives, so a page of ten can show fewer than ten candidates. The gateway
+  // has no "users without a membership here" filter to send instead. Add one if
+  // an operator ever has to search for somebody the first page should have
+  // offered.
   const userPage = usePagedList(pages.users, "users", {
     picker: true,
     orgId: scope === "tenant" ? null : orgId,
@@ -150,7 +155,7 @@ function AddMemberPage({
 
   // Pre-emptive SMTP gate: with no notifier the gateway answers an invitation
   // with 422 "invalid input", blaming a perfectly good email for unwired SMTP.
-  // `null` is *unknown* and never disables — the read is instance-manager-only,
+  // `null` is *unknown* and never disables — the read is tenant-manager-only,
   // and a stored settings row still can't prove the notifier built at startup.
   const [smtpConfigured, setSmtpConfigured] = useState<boolean | null>(null);
   useEffect(() => {
@@ -245,14 +250,34 @@ function AddMemberPage({
               </div>
             )}
           </div>
-        ) : candidates.length === 0 ? (
-          <div style={{ fontSize: 13.5, color: "var(--muted)" }}>All eligible users already hold a membership here.</div>
         ) : (
           <div>
-            <Field label="User">
-              <SelectInput value={userName} options={candidates.map((c) => userDisplay(c))} onChange={setUserName} />
-            </Field>
-            {userPage.truncated && <PickerTruncated what="users" />}
+            <div style={{ marginBottom: 8 }}>
+              <SearchControl
+                value={userPage.query.q ?? ""}
+                fields="username"
+                placeholder="Search users…"
+                onChange={(v) => userPage.setQuery({ q: v })}
+              />
+            </div>
+            {candidates.length === 0 ? (
+              <div style={{ fontSize: 13.5, color: "var(--muted)" }}>
+                {userPage.loading
+                  ? "Loading users…"
+                  : userPage.query.q
+                    ? "No account matches that search, or every match already holds a membership here."
+                    : "All eligible users already hold a membership here."}
+              </div>
+            ) : (
+              <>
+                <Field label="User">
+                  <SelectInput value={userName} options={candidates.map((c) => userDisplay(c))} onChange={setUserName} />
+                </Field>
+                {userPage.truncated && (
+                  <PickerTruncated what="users" shown={candidates.length} total={userPage.total ?? candidates.length} />
+                )}
+              </>
+            )}
           </div>
         )}
         <div>

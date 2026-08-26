@@ -6,7 +6,6 @@ import (
 
 	"alphaomega/identitygateway/internal/api/http/middlewares"
 	"alphaomega/identitygateway/internal/api/http/response"
-	"alphaomega/identitygateway/internal/platform/logger"
 )
 
 // The sentinels the membership half of this domain answers with. ErrNotAdmin
@@ -28,11 +27,10 @@ func init() {
 // the service, and writes the envelope. No rule lives here.
 type MemberHandler struct {
 	svc *MemberService
-	log logger.Logger
 }
 
-func NewMemberHandler(svc *MemberService, log logger.Logger) *MemberHandler {
-	return &MemberHandler{svc: svc, log: log}
+func NewMemberHandler(svc *MemberService) *MemberHandler {
+	return &MemberHandler{svc: svc}
 }
 
 // MemberRoutes mounts the membership routes. The caller mounts the tenant

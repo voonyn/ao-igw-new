@@ -6,51 +6,36 @@ package audit
 import (
 	"context"
 	"fmt"
-	"time"
 
 	"github.com/uptrace/bun"
 
 	"alphaomega/identitygateway/internal/platform/db"
+	"alphaomega/identitygateway/internal/platform/logger"
 )
-
-// Event is one row of audit_events. The table is append-only: a row is never
-// updated and never deleted, so the model carries no soft-delete column.
-//
-// Metadata holds non-secret context only. The recorder decides what reaches it.
-type Event struct {
-	bun.BaseModel `bun:"table:audit_events"`
-
-	ID         string `bun:"id,pk"`
-	TenantID   string `bun:"tenant_id"`
-	ActorID    string `bun:"actor_id,nullzero"`
-	Action     string `bun:"action"`
-	EntityType string `bun:"entity_type"`
-	EntityID   string `bun:"entity_id,nullzero"`
-	Result     string `bun:"result"`
-	IP         string `bun:"ip,nullzero"`
-	UserAgent  string `bun:"user_agent,nullzero"`
-	// Metadata is bound as a string, not as bytes. The column is MySQL JSON,
-	// and the driver sends a []byte as a binary string, which MySQL refuses to
-	// read as JSON.
-	Metadata  string    `bun:"metadata,nullzero"`
-	CreatedAt time.Time `bun:"created_at"`
-}
 
 // Repository writes the audit trail.
 type Repository struct {
-	db *bun.DB
+	db  *bun.DB
+	log logger.Logger
 }
 
-func NewRepository(bdb *bun.DB) *Repository {
-	return &Repository{db: bdb}
+func NewRepository(bdb *bun.DB, log logger.Logger) *Repository {
+	return &Repository{db: bdb, log: log}
 }
 
 // Insert writes one event. It runs on the caller's transaction, because
 // db.Conn returns the transaction the context carries.
 func (r *Repository) Insert(ctx context.Context, event Event) error {
+	r.log.Debug("write audit event",
+		logger.String("tenant_id", event.TenantID), logger.String("event_id", event.ID),
+		logger.RequestID(ctx))
+
 	if _, err := db.Conn(ctx, r.db).NewInsert().Model(&event).Exec(ctx); err != nil {
 		return fmt.Errorf("write audit event %s of tenant %s: %w", event.Action, event.TenantID, err)
 	}
+	r.log.Debug("wrote audit event",
+		logger.String("tenant_id", event.TenantID), logger.String("event_id", event.ID),
+		logger.RequestID(ctx))
 	return nil
 }
 
@@ -64,6 +49,9 @@ func (r *Repository) Insert(ctx context.Context, event Event) error {
 // The count is of the whole match and not of the page, because the console
 // renders its pager from it.
 func (r *Repository) ListEvents(ctx context.Context, tenantID string, q Query) ([]Event, int64, error) {
+	r.log.Debug("list audit events",
+		logger.String("tenant_id", tenantID), logger.Int("offset", q.Offset), logger.RequestID(ctx))
+
 	var rows []Event
 	sel := db.Conn(ctx, r.db).NewSelect().
 		Model(&rows).
@@ -98,6 +86,9 @@ func (r *Repository) ListEvents(ctx context.Context, tenantID string, q Query) (
 	if err != nil {
 		return nil, 0, fmt.Errorf("list the audit events of tenant %s: %w", tenantID, err)
 	}
+
+	r.log.Debug("listed audit events",
+		logger.String("tenant_id", tenantID), logger.Int("count", len(rows)), logger.RequestID(ctx))
 	return rows, int64(total), nil
 }
 

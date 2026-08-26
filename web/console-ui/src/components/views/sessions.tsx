@@ -6,9 +6,9 @@ import { Avatar, Btn, confirmAction, KV, MonoChip, Seg, SelectInput, Ts } from "
 import { DataTable, type BulkAction, type Column } from "@/components/console/data-table";
 import { Drawer } from "@/components/console/overlays";
 import { usePagedList, usePending } from "@/components/console/store";
-import { canManageTenant, pages, sessionsApi, type Me } from "@/lib/console-api";
+import { canManageTenant, pages, sessionsApi, type Me, type Outcome } from "@/lib/console-api";
 import { nameOr, orUnknown } from "@/lib/helpers";
-import type { Grant, LoginSession } from "@/lib/types";
+import type { Grant, LoginSession, Page } from "@/lib/types";
 import { useConsole } from "@/components/console/store";
 import { PageHead } from "@/components/console/page-head";
 
@@ -255,7 +255,14 @@ export function terminateBulk(me: Me): BulkAction<LoginSession> {
   };
 }
 
-export function SessionsView() {
+/** The two first pages, read on the server during the render. The route passes
+ * them; every later page, sort and filter reads from the browser. */
+export interface SessionsSeed {
+  sessions?: Outcome<Page<LoginSession>>;
+  grants?: Outcome<Page<Grant>>;
+}
+
+export function SessionsView({ initial }: { initial?: SessionsSeed } = {}) {
   const { me, A } = useConsole();
   const [tab, setTab] = useState("Login sessions");
   const [openId, setOpenId] = useState<string | null>(null);
@@ -263,8 +270,8 @@ export function SessionsView() {
   // not throw away the pages the other one already walked. Only the sessions
   // half claims the URL: two mounted lists writing the same `sort` would each
   // read the other's.
-  const sessions = usePagedList(pages.sessions, "sessions", { urlSync: true });
-  const grants = usePagedList(pages.grants, "grants");
+  const sessions = usePagedList(pages.sessions, "sessions", { urlSync: true, initial: initial?.sessions });
+  const grants = usePagedList(pages.grants, "grants", { initial: initial?.grants });
   const isSessions = tab === "Login sessions";
   const open = sessions.items.find((s) => s.id === openId);
   const stateLabel = SESSION_STATES.find((s) => s.value === sessions.query.state)?.label ?? "All states";

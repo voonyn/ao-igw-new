@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/uptrace/bun"
 
@@ -14,23 +13,6 @@ import (
 	"alphaomega/identitygateway/internal/platform/logger"
 	"alphaomega/identitygateway/internal/utils"
 )
-
-// UserConsent is one row of oidc_user_consents: the cumulative set of scopes one
-// person allows one client. Scopes is space-delimited, as the protocol writes
-// it.
-type UserConsent struct {
-	bun.BaseModel `bun:"table:oidc_user_consents,alias:uc"`
-
-	ID        string    `bun:"id,pk"`
-	TenantID  string    `bun:"tenant_id"`
-	UserID    string    `bun:"user_id"`
-	ClientID  string    `bun:"client_id"`
-	Scopes    string    `bun:"scopes"`
-	CreatedAt time.Time `bun:"created_at,nullzero"`
-	UpdatedAt time.Time `bun:"updated_at,nullzero"`
-
-	DeletedAt time.Time `bun:",soft_delete,nullzero"`
-}
 
 // ConsentRepository reads and writes the remembered consent of one tenant.
 type ConsentRepository struct {
@@ -52,7 +34,7 @@ func (r *ConsentRepository) Find(
 	ctx context.Context, tenantID, userID, clientID string,
 ) (ConsentState, error) {
 	r.log.Debug("read consent",
-		logger.String("tenant_id", tenantID), logger.String("client_id", clientID))
+		logger.String("tenant_id", tenantID), logger.String("client_id", clientID), logger.RequestID(ctx))
 
 	var row struct {
 		IsFirstParty bool   `bun:"is_first_party"`
@@ -85,7 +67,7 @@ func (r *ConsentRepository) Save(
 	ctx context.Context, tenantID, userID, clientID string, scopes []string,
 ) error {
 	r.log.Debug("write consent",
-		logger.String("tenant_id", tenantID), logger.String("client_id", clientID))
+		logger.String("tenant_id", tenantID), logger.String("client_id", clientID), logger.RequestID(ctx))
 
 	row := &UserConsent{
 		ID:       utils.NewUUIDv7(),

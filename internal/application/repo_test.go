@@ -8,6 +8,7 @@ import (
 
 	"github.com/uptrace/bun"
 
+	"alphaomega/identitygateway/internal/oidc"
 	"alphaomega/identitygateway/internal/platform/db/dbtest"
 	"alphaomega/identitygateway/internal/platform/logger"
 )
@@ -145,7 +146,7 @@ func TestWriteOneApplication(t *testing.T) {
 		t.Fatalf("write the application: %v", err)
 	}
 
-	cfg := OIDCConfig{
+	cfg := oidc.Client{
 		AppID: newAppID, TenantID: testTenantID, ClientID: newClientID, CreatedAt: time.Now().UTC(),
 		TokenAuthnMethod: "client_secret_basic", SubjectType: "public", Scopes: "openid",
 		RedirectURIs: []string{}, GrantTypes: []string{"client_credentials"}, ResponseTypes: []string{},

@@ -100,7 +100,7 @@ func NewScopeAdminService(deps ScopeAdminDeps) *ScopeAdminService {
 // The registry is bounded by what an operator writes, so it is not paged.
 func (s *ScopeAdminService) ListScopes(ctx context.Context, a AdminActor) ([]ScopeView, error) {
 	s.log.Debug("list the scopes",
-		logger.String("tenant_id", a.TenantID), logger.String("user_id", a.UserID))
+		logger.String("tenant_id", a.TenantID), logger.String("user_id", a.UserID), logger.RequestID(ctx))
 
 	if err := s.authorize(ctx, a, "list the scopes"); err != nil {
 		return nil, err
@@ -127,7 +127,7 @@ func (s *ScopeAdminService) CreateScope(
 	ctx context.Context, a AdminActor, body ScopeBody,
 ) (ScopeView, error) {
 	s.log.Debug("create a scope",
-		logger.String("tenant_id", a.TenantID), logger.String("user_id", a.UserID))
+		logger.String("tenant_id", a.TenantID), logger.String("user_id", a.UserID), logger.RequestID(ctx))
 
 	if err := s.authorize(ctx, a, "create a scope"); err != nil {
 		return ScopeView{}, err
@@ -186,7 +186,7 @@ func (s *ScopeAdminService) UpdateScope(
 	s.log.Debug("write a scope",
 		logger.String("tenant_id", a.TenantID),
 		logger.String("user_id", a.UserID),
-		logger.String("scope_id", id))
+		logger.String("scope_id", id), logger.RequestID(ctx))
 
 	if err := s.authorize(ctx, a, "write a scope"); err != nil {
 		return ScopeView{}, err
@@ -250,7 +250,7 @@ func (s *ScopeAdminService) DeleteScope(ctx context.Context, a AdminActor, id st
 	s.log.Debug("delete a scope",
 		logger.String("tenant_id", a.TenantID),
 		logger.String("user_id", a.UserID),
-		logger.String("scope_id", id))
+		logger.String("scope_id", id), logger.RequestID(ctx))
 
 	if err := s.authorize(ctx, a, "delete a scope"); err != nil {
 		return err

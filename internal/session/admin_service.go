@@ -8,6 +8,7 @@ import (
 	"sort"
 	"time"
 
+	"alphaomega/identitygateway/internal/actor"
 	"alphaomega/identitygateway/internal/audit"
 	"alphaomega/identitygateway/internal/platform/db"
 	"alphaomega/identitygateway/internal/platform/logger"
@@ -21,12 +22,7 @@ var ErrForbidden = errors.New("only a tenant manager reads or revokes a login se
 
 // Actor is the person behind one administrative request. The IP and the agent
 // travel to the audit trail, so the trail names where the revoke came from.
-type Actor struct {
-	TenantID  string
-	UserID    string
-	IP        string
-	UserAgent string
-}
+type Actor actor.Actor
 
 // The reads and writes the administrative service composes its answers from.
 // Each one is a function value, so the logic is testable without a database and
@@ -85,7 +81,7 @@ func NewAdminService(deps AdminDeps) *AdminService {
 // List reads one page of the login sessions of the tenant.
 func (s *AdminService) List(ctx context.Context, a Actor, q Query) ([]SessionView, int64, error) {
 	s.log.Debug("list login sessions",
-		logger.String("tenant_id", a.TenantID), logger.String("user_id", a.UserID))
+		logger.String("tenant_id", a.TenantID), logger.String("user_id", a.UserID), logger.RequestID(ctx))
 
 	if err := s.authorize(ctx, a, "list login sessions"); err != nil {
 		return nil, 0, err
@@ -113,7 +109,7 @@ func (s *AdminService) Revoke(ctx context.Context, a Actor, sessionID string) (R
 	s.log.Debug("revoke a login session",
 		logger.String("tenant_id", a.TenantID),
 		logger.String("user_id", a.UserID),
-		logger.String("session_id", sessionID))
+		logger.String("session_id", sessionID), logger.RequestID(ctx))
 
 	if err := s.authorize(ctx, a, "revoke a login session"); err != nil {
 		return RevokedView{}, err
@@ -166,7 +162,7 @@ func (s *AdminService) RevokeForUser(ctx context.Context, a Actor, userID string
 	s.log.Debug("sign a person out everywhere",
 		logger.String("tenant_id", a.TenantID),
 		logger.String("user_id", a.UserID),
-		logger.String("target_user_id", userID))
+		logger.String("target_user_id", userID), logger.RequestID(ctx))
 
 	if err := s.authorize(ctx, a, "sign a person out everywhere"); err != nil {
 		return RevokedView{}, err

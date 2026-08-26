@@ -3,7 +3,7 @@
 import { useEffect, useId, useRef, useState, type ButtonHTMLAttributes, type CSSProperties, type ReactNode } from "react";
 import { AlertDialog } from "radix-ui";
 import { Icon } from "./icons";
-import { PAGE_SIZES, WALK_MAX_PAGES, WALK_PAGE } from "@/lib/console-api";
+import { PAGE_SIZES } from "@/lib/console-api";
 import { LABELS } from "@/lib/data";
 import { avatarHue, fmtTs, initials, utcTs } from "@/lib/helpers";
 import type { Key } from "@/lib/types";
@@ -411,14 +411,18 @@ export function PageSize({ list }: { list: PagedView }) {
   );
 }
 
-/** A picker that stopped before the end of its collection says so. A short
- * `<select>` that stays quiet is indistinguishable from a complete one — the
- * failure this whole paging contract exists to remove. */
-export function PickerTruncated({ what }: { what: string }) {
+/** A picker that holds a head of its collection says so, and says what to do
+ * about it. A short `<select>` that stays quiet is indistinguishable from a
+ * complete one — the failure this whole paging contract exists to remove.
+ *
+ * The search beside it is a request parameter, so a match on the thousandth row
+ * is found. The sentence has to say that, or an operator reads the short list as
+ * the whole collection and concludes the record is gone. */
+export function PickerTruncated({ what, shown, total }: { what: string; shown: number; total: number }) {
   return (
-    <div style={{ marginTop: 6, fontSize: 12, color: "var(--warn)", display: "flex", alignItems: "center", gap: 6 }}>
+    <div style={{ marginTop: 6, fontSize: 12, color: "var(--muted)", display: "flex", alignItems: "center", gap: 6 }}>
       <Icon name="alert" size={12} sw={2.2} />
-      Showing the first {WALK_PAGE * WALK_MAX_PAGES} {what} — the list is longer than this picker can hold.
+      Showing {shown} of {total} {what} — type above to search the rest.
     </div>
   );
 }

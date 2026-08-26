@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 
+	"alphaomega/identitygateway/internal/actor"
 	"alphaomega/identitygateway/internal/audit"
 	"alphaomega/identitygateway/internal/platform/db"
 	"alphaomega/identitygateway/internal/platform/logger"
@@ -32,12 +33,7 @@ var ErrNoBootstrapRecord = errors.New("no bootstrap record")
 
 // Actor is the person behind one administrative request. The IP and the agent
 // travel to the audit trail, so the trail names where the change came from.
-type Actor struct {
-	TenantID  string
-	UserID    string
-	IP        string
-	UserAgent string
-}
+type Actor actor.Actor
 
 // The reads and writes the administrative service composes its answers from.
 // Each one is a function value, so the logic is testable without a database.
@@ -103,7 +99,7 @@ func NewAdminService(deps AdminDeps) *AdminService {
 // Read answers the tenant of the caller, with every hostname it holds.
 func (s *AdminService) Read(ctx context.Context, a Actor) (View, error) {
 	s.log.Debug("read the tenant",
-		logger.String("tenant_id", a.TenantID), logger.String("user_id", a.UserID))
+		logger.String("tenant_id", a.TenantID), logger.String("user_id", a.UserID), logger.RequestID(ctx))
 
 	if err := s.authorize(ctx, a, false, "read the tenant"); err != nil {
 		return View{}, err
@@ -135,7 +131,7 @@ func (s *AdminService) AddDomain(ctx context.Context, a Actor, domain string) (D
 	s.log.Debug("add a tenant domain",
 		logger.String("tenant_id", a.TenantID),
 		logger.String("user_id", a.UserID),
-		logger.String("domain", host))
+		logger.String("domain", host), logger.RequestID(ctx))
 
 	if err := s.authorize(ctx, a, true, "add a tenant domain"); err != nil {
 		return DomainView{}, err
@@ -201,7 +197,7 @@ func (s *AdminService) RemoveDomain(ctx context.Context, a Actor, domain string)
 	s.log.Debug("remove a tenant domain",
 		logger.String("tenant_id", a.TenantID),
 		logger.String("user_id", a.UserID),
-		logger.String("domain", host))
+		logger.String("domain", host), logger.RequestID(ctx))
 
 	if err := s.authorize(ctx, a, true, "remove a tenant domain"); err != nil {
 		return err
@@ -253,7 +249,7 @@ func (s *AdminService) RemoveDomain(ctx context.Context, a Actor, domain string)
 // tenant that the routine created.
 func (s *AdminService) ReadBootstrap(ctx context.Context, a Actor) (BootstrapView, error) {
 	s.log.Debug("read the bootstrap record",
-		logger.String("tenant_id", a.TenantID), logger.String("user_id", a.UserID))
+		logger.String("tenant_id", a.TenantID), logger.String("user_id", a.UserID), logger.RequestID(ctx))
 
 	if err := s.authorize(ctx, a, false, "read the bootstrap record"); err != nil {
 		return BootstrapView{}, err

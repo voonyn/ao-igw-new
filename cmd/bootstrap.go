@@ -53,7 +53,7 @@ var (
 	bootstrapPortalURL     string
 )
 
-// bootstrapCmd performs the one-time, instance-wide initialization of the IAM:
+// bootstrapCmd performs the one-time, deployment-wide initialization of the IAM:
 // it creates the AlphaOmega default tenant, organization and project; a default
 // admin user wired to all three and granted IAM_OWNER + ORG_OWNER; the console-ui
 // and portal-ui OIDC applications (public SPA clients, PKCE); the per-tenant OIDC
@@ -69,7 +69,7 @@ var (
 var bootstrapCmd = &cobra.Command{
 	Use:   "bootstrap",
 	Short: "One-time initialization of the IAM (default tenant, admin, apps, OIDC keys, login-ui PAT)",
-	Long: "Initialize a fresh IAM instance exactly once: the AlphaOmega default tenant,\n" +
+	Long: "Initialize a fresh IAM deployment exactly once: the AlphaOmega default tenant,\n" +
 		"organization and project, a default admin user, the console-ui and portal-ui\n" +
 		"OIDC applications, the OIDC provider config and two signing keys. Also\n" +
 		"generates a login-ui PAT (AO_LOGIN_UI_PAT), shown once, unless one is already\n" +
@@ -624,7 +624,7 @@ func seedBuiltinScopes(ctx context.Context, tx bun.Tx, tenantID string) error {
 	return nil
 }
 
-// checkNotBootstrapped returns an error if the instance is already initialized,
+// checkNotBootstrapped returns an error if the deployment is already initialized,
 // or if the schema is missing (migrations not yet applied).
 func checkNotBootstrapped(ctx context.Context, db *bun.DB) error {
 	var count int
@@ -633,7 +633,7 @@ func checkNotBootstrapped(ctx context.Context, db *bun.DB) error {
 		return fmt.Errorf("check bootstrap state (did you run 'migrate up'?): %w", err)
 	}
 	if count > 0 {
-		return errors.New("this IAM instance is already initialized; bootstrap can only run once")
+		return errors.New("this IAM deployment is already initialized; bootstrap can only run once")
 	}
 	return nil
 }
@@ -847,7 +847,7 @@ func resolveAdminEmail(r *bufio.Reader, w io.Writer, flagVal string) (string, er
 
 func printPlan(w io.Writer, domain, issuer, alg, email, username, consoleURL, portalURL string, encrypted, loginUIPATConfigured bool) {
 	fmt.Fprintln(w, "")
-	fmt.Fprintln(w, "About to initialize this IAM instance with:")
+	fmt.Fprintln(w, "About to initialize this IAM deployment with:")
 	fmt.Fprintf(w, "  Tenant:        %s\n", bootstrapTenantName)
 	fmt.Fprintf(w, "  Organization:  %s\n", bootstrapOrgName)
 	fmt.Fprintf(w, "  Project:       %s\n", bootstrapProjectName)

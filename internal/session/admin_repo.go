@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"time"
 
 	"github.com/uptrace/bun"
 
@@ -45,49 +44,6 @@ const sessionOwnerJoin = `LEFT JOIN users AS u
 const sessionProfileJoin = `LEFT JOIN user_humans AS h
 	ON h.user_id = s.user_id AND h.tenant_id = s.tenant_id`
 
-// Record is one row of login_sessions as an administrative read projects it.
-//
-// The flat columns answer the list, and the sealed blob answers the context: the
-// address, the agent, and the verified factors. A row whose seal cannot be
-// opened keeps its columns and carries no context, because an operator
-// investigating an account must still see that the session exists.
-//
-// TokenHash is not projected. An administrative read never needs it, and a
-// column that is never selected cannot leak into an answer.
-type Record struct {
-	bun.BaseModel `bun:"table:login_sessions,alias:s"`
-
-	ID        string    `bun:"id"`
-	TenantID  string    `bun:"tenant_id"`
-	UserID    string    `bun:"user_id,nullzero"`
-	State     int       `bun:"state"`
-	CreatedAt time.Time `bun:"created_at,nullzero"`
-	ExpiresAt time.Time `bun:"expires_at,nullzero"`
-	Data      []byte    `bun:"data"`
-
-	UserName string `bun:"user_name,scanonly"`
-	OrgID    string `bun:"org_id,scanonly"`
-
-	// What the sealed session holds. They are read after the scan, so no column
-	// carries them.
-	IP        string               `bun:"-"`
-	UserAgent string               `bun:"-"`
-	Factors   map[string]time.Time `bun:"-"`
-	Links     []Link               `bun:"-"`
-}
-
-// Link is one row of login_session_links: one protocol flow the login session
-// satisfied. AppID is the relying party, and Ref is the request identifier the
-// protocol minted.
-type Link struct {
-	bun.BaseModel `bun:"table:login_session_links,alias:l"`
-
-	LoginSessionID string `bun:"login_session_id"`
-	Protocol       int    `bun:"protocol"`
-	Ref            string `bun:"protocol_ref"`
-	AppID          string `bun:"client_id,nullzero"`
-}
-
 // Revoked is what one hard-deleted login session leaves behind. The cache is
 // keyed by the token digest, so the caller needs it to drop the entry, and the
 // audit event names the person the session belonged to.
@@ -106,7 +62,7 @@ func (r *Repository) ListSessions(
 	ctx context.Context, tenantID string, q Query,
 ) ([]Record, int64, error) {
 	r.log.Debug("list login sessions",
-		logger.String("tenant_id", tenantID), logger.Int("offset", q.Offset))
+		logger.String("tenant_id", tenantID), logger.Int("offset", q.Offset), logger.RequestID(ctx))
 
 	var rows []Record
 	sel := db.Conn(ctx, r.db).NewSelect().
@@ -221,7 +177,7 @@ func (r *Repository) attachLinks(ctx context.Context, tenantID string, rows []Re
 // is deleted like any other: the operator asked for the row to go.
 func (r *Repository) DeleteSession(ctx context.Context, tenantID, sessionID string) (Revoked, error) {
 	r.log.Debug("revoke login session",
-		logger.String("tenant_id", tenantID), logger.String("session_id", sessionID))
+		logger.String("tenant_id", tenantID), logger.String("session_id", sessionID), logger.RequestID(ctx))
 
 	var row Row
 	err := db.Conn(ctx, r.db).NewSelect().
@@ -246,7 +202,7 @@ func (r *Repository) DeleteSession(ctx context.Context, tenantID, sessionID stri
 	}
 
 	r.log.Debug("revoked login session",
-		logger.String("tenant_id", tenantID), logger.String("session_id", sessionID))
+		logger.String("tenant_id", tenantID), logger.String("session_id", sessionID), logger.RequestID(ctx))
 	return Revoked{SessionID: row.ID, UserID: row.UserID, TokenHash: row.TokenHash}, nil
 }
 
@@ -258,7 +214,7 @@ func (r *Repository) DeleteSession(ctx context.Context, tenantID, sessionID stri
 // for.
 func (r *Repository) DeleteUserSessions(ctx context.Context, tenantID, userID string) ([]Revoked, error) {
 	r.log.Debug("revoke the login sessions of one person",
-		logger.String("tenant_id", tenantID), logger.String("user_id", userID))
+		logger.String("tenant_id", tenantID), logger.String("user_id", userID), logger.RequestID(ctx))
 
 	var rows []Row
 	if err := db.Conn(ctx, r.db).NewSelect().
@@ -291,6 +247,6 @@ func (r *Repository) DeleteUserSessions(ctx context.Context, tenantID, userID st
 	r.log.Debug("revoked the login sessions of one person",
 		logger.String("tenant_id", tenantID),
 		logger.String("user_id", userID),
-		logger.Int("sessions", len(revoked)))
+		logger.Int("sessions", len(revoked)), logger.RequestID(ctx))
 	return revoked, nil
 }

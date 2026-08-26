@@ -18,7 +18,7 @@
 CREATE TABLE oidc_grants (
     -- ── Identity & lifecycle ──────────────────────────────────
     id                  CHAR(36)     NOT NULL,                /* goidc Grant.ID (UUID by default) */
-    tenant_id           CHAR(36)     NOT NULL,                /* owning OP instance, see oidc_provider_configs */
+    tenant_id           CHAR(36)     NOT NULL,                /* owning tenant, see oidc_provider_configs */
     client_id           CHAR(36)     NOT NULL,                /* extracted: relying party */
     subject             VARCHAR(255) NULL     DEFAULT NULL,   /* extracted: resource owner (NULL for client_credentials) */
 

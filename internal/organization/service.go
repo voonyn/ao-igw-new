@@ -4,9 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"slices"
 	"time"
 
+	"alphaomega/identitygateway/internal/actor"
 	"alphaomega/identitygateway/internal/audit"
 	"alphaomega/identitygateway/internal/platform/db"
 	"alphaomega/identitygateway/internal/platform/logger"
@@ -29,12 +29,7 @@ var ErrDefaultOrg = errors.New("the default organization cannot be deleted")
 
 // Actor is the person behind one admin request. The IP and the user agent reach
 // the audit trail, so a change is traceable to where it came from.
-type Actor struct {
-	TenantID  string
-	UserID    string
-	IP        string
-	UserAgent string
-}
+type Actor actor.Actor
 
 // Query is the window and the narrowing one list read asks for. Sort names a
 // column of the route's allowlist, and an empty State means every state.
@@ -102,32 +97,6 @@ func NewService(deps Deps) *Service {
 	return &Service{deps: deps, log: deps.Log}
 }
 
-// rights is what one person may do in this tenant: administer all of it, or
-// administer the organizations named here.
-type rights struct {
-	tenantManager bool
-	orgRoles      map[string][]string
-}
-
-// canWrite reports whether the person may write one organization. A tenant
-// manager writes any of them, and an ORG_OWNER writes its own.
-func (r rights) canWrite(orgID string) bool {
-	return r.tenantManager || slices.Contains(r.orgRoles[orgID], RoleOrgOwner)
-}
-
-// admits reports whether the person administers anything at all.
-func (r rights) admits() bool {
-	if r.tenantManager {
-		return true
-	}
-	for _, roles := range r.orgRoles {
-		if slices.Contains(roles, RoleOrgOwner) || slices.Contains(roles, RoleOrgUserManager) {
-			return true
-		}
-	}
-	return false
-}
-
 // List reads one page of the organizations of the tenant.
 //
 // Every administrator of the tenant reads the whole list, because the console
@@ -135,7 +104,7 @@ func (r rights) admits() bool {
 // narrow.
 func (s *Service) List(ctx context.Context, a Actor, q Query) ([]View, int64, error) {
 	s.log.Debug("list organizations",
-		logger.String("tenant_id", a.TenantID), logger.String("user_id", a.UserID))
+		logger.String("tenant_id", a.TenantID), logger.String("user_id", a.UserID), logger.RequestID(ctx))
 
 	if _, err := s.admitted(ctx, a); err != nil {
 		return nil, 0, err
@@ -157,7 +126,7 @@ func (s *Service) List(ctx context.Context, a Actor, q Query) ([]View, int64, er
 	}
 
 	s.log.Debug("listed organizations",
-		logger.String("tenant_id", a.TenantID), logger.Int("count", len(views)))
+		logger.String("tenant_id", a.TenantID), logger.Int("count", len(views)), logger.RequestID(ctx))
 	return views, total, nil
 }
 
@@ -165,7 +134,7 @@ func (s *Service) List(ctx context.Context, a Actor, q Query) ([]View, int64, er
 // ErrNotFound.
 func (s *Service) Find(ctx context.Context, a Actor, orgID string) (View, error) {
 	s.log.Debug("read organization",
-		logger.String("tenant_id", a.TenantID), logger.String("org_id", orgID))
+		logger.String("tenant_id", a.TenantID), logger.String("org_id", orgID), logger.RequestID(ctx))
 
 	if _, err := s.admitted(ctx, a); err != nil {
 		return View{}, err
@@ -192,13 +161,13 @@ func (s *Service) Find(ctx context.Context, a Actor, orgID string) (View, error)
 // rolls the row back, because a change nobody can audit is not allowed to
 // stand.
 func (s *Service) Create(ctx context.Context, a Actor, name string) (View, error) {
-	s.log.Debug("create organization", logger.String("tenant_id", a.TenantID))
+	s.log.Debug("create organization", logger.String("tenant_id", a.TenantID), logger.RequestID(ctx))
 
 	held, err := s.admitted(ctx, a)
 	if err != nil {
 		return View{}, err
 	}
-	if !held.tenantManager {
+	if !held.TenantManager {
 		return View{}, s.refuse(a, "", "create an organization")
 	}
 
@@ -234,7 +203,7 @@ func (s *Service) Create(ctx context.Context, a Actor, name string) (View, error
 // ORG_OWNER renames its own.
 func (s *Service) Update(ctx context.Context, a Actor, orgID, name string) (View, error) {
 	s.log.Debug("rename organization",
-		logger.String("tenant_id", a.TenantID), logger.String("org_id", orgID))
+		logger.String("tenant_id", a.TenantID), logger.String("org_id", orgID), logger.RequestID(ctx))
 
 	row, err := s.writable(ctx, a, orgID, "rename an organization")
 	if err != nil {
@@ -271,7 +240,7 @@ func (s *Service) Update(ctx context.Context, a Actor, orgID, name string) (View
 // would have nowhere to land.
 func (s *Service) Delete(ctx context.Context, a Actor, orgID string) error {
 	s.log.Debug("delete organization",
-		logger.String("tenant_id", a.TenantID), logger.String("org_id", orgID))
+		logger.String("tenant_id", a.TenantID), logger.String("org_id", orgID), logger.RequestID(ctx))
 
 	if _, err := s.writable(ctx, a, orgID, "delete an organization"); err != nil {
 		return err
@@ -314,7 +283,7 @@ func (s *Service) writable(ctx context.Context, a Actor, orgID, what string) (Or
 	if err != nil {
 		return Organization{}, err
 	}
-	if !held.canWrite(orgID) {
+	if !held.CanWrite(orgID) {
 		return Organization{}, s.refuse(a, orgID, what)
 	}
 	return s.find(ctx, a, orgID)
@@ -358,29 +327,22 @@ func (s *Service) find(ctx context.Context, a Actor, orgID string) (Organization
 
 // admitted reads what the person may do here, and refuses a person who
 // administers nothing.
-func (s *Service) admitted(ctx context.Context, a Actor) (rights, error) {
+func (s *Service) admitted(ctx context.Context, a Actor) (Rights, error) {
 	tenantRoles, err := s.deps.TenantRoles(ctx, a.TenantID, a.UserID)
 	if err != nil {
-		return rights{}, s.fail(a, "read tenant roles", err)
+		return Rights{}, s.fail(a, "read tenant roles", err)
 	}
 	memberships, err := s.deps.Memberships(ctx, a.TenantID, a.UserID)
 	if err != nil {
-		return rights{}, s.fail(a, "read organization memberships", err)
+		return Rights{}, s.fail(a, "read organization memberships", err)
 	}
 
-	held := rights{
-		tenantManager: slices.Contains(tenantRoles, tenant.RoleIAMOwner) ||
-			slices.Contains(tenantRoles, tenant.RoleIAMAdmin),
-		orgRoles: make(map[string][]string, len(memberships)),
-	}
-	for _, m := range memberships {
-		held.orgRoles[m.OrgID] = m.Roles
-	}
+	held := NewRights(tenantRoles, memberships)
 
-	if !held.admits() {
+	if !held.Admits() {
 		s.log.Warn("refused a person without an administrative role",
 			logger.String("tenant_id", a.TenantID), logger.String("user_id", a.UserID))
-		return rights{}, fmt.Errorf("%w: tenant %s, user %s", ErrNotAdmin, a.TenantID, a.UserID)
+		return Rights{}, fmt.Errorf("%w: tenant %s, user %s", ErrNotAdmin, a.TenantID, a.UserID)
 	}
 	return held, nil
 }

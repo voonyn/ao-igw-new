@@ -7,13 +7,14 @@ import {
   describeStatus,
   getTotal,
   loadConsoleData,
+  type ConsoleData,
   mutationMessage,
   UnauthorizedError,
   type CollectionKey,
   type CollectionStatus,
   type ListQuery,
-  WALK_PAGE,
-  WALK_MAX_PAGES,
+  type Outcome,
+  PICKER_PAGE,
   readAllPages,
   type Me,
   type OrgRef,
@@ -92,13 +93,25 @@ const ConsoleContext = createContext<ConsoleContextValue | null>(null);
 // exhausted. Narrowing is now a query predicate — every paged read passes
 // `orgId` and the server applies it (AZ-4 closed server-side).
 
-export function ConsoleProvider({ children }: { children: React.ReactNode }) {
+/**
+ * `initial` is the shell the layout already read on the server. When it is
+ * present the provider starts ready, so nothing waits for a mount fetch and the
+ * first paint carries real data. `reload` still reads from the browser, because
+ * a write has to refresh without a navigation.
+ */
+export function ConsoleProvider({
+  initial,
+  children,
+}: {
+  initial?: ConsoleData | null;
+  children: React.ReactNode;
+}) {
   const router = useRouter();
-  const [db, setDb] = useState<Db | null>(null);
-  const [me, setMe] = useState<Me | null>(null);
-  const [bootstrap, setBootstrap] = useState<Bootstrap | null>(null);
-  const [collections, setCollections] = useState<Record<CollectionKey, CollectionStatus> | null>(null);
-  const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
+  const [db, setDb] = useState<Db | null>(initial?.db ?? null);
+  const [me, setMe] = useState<Me | null>(initial?.me ?? null);
+  const [bootstrap, setBootstrap] = useState<Bootstrap | null>(initial?.bootstrap ?? null);
+  const [collections, setCollections] = useState<Record<CollectionKey, CollectionStatus> | null>(initial?.status ?? null);
+  const [status, setStatus] = useState<"loading" | "ready" | "error">(initial ? "ready" : "loading");
   const [selectedOrgId, setSelectedOrgId] = useState<string | null>(null);
   const [dataVersion, setDataVersion] = useState(0);
   const [legacy, setLegacy] = useState<LegacyState>(createInitialLegacy);
@@ -115,8 +128,10 @@ export function ConsoleProvider({ children }: { children: React.ReactNode }) {
     setTimeout(() => setToasts((ts) => ts.filter((x) => x.id !== id)), 3200);
   }, []);
 
-  // Load live data once on mount. A 401 means the session is gone — bounce to login.
+  // Load live data once on mount, only when the server did not already hand it
+  // over. A 401 means the session is gone — bounce to login.
   useEffect(() => {
+    if (initial) return;
     let cancelled = false;
     loadConsoleData()
       .then((data) => {
@@ -139,7 +154,7 @@ export function ConsoleProvider({ children }: { children: React.ReactNode }) {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [initial]);
 
   // ponytail: writes re-read the shared state and restart every mounted paged
   // list from page one rather than patching local state — simplest correct
@@ -328,9 +343,10 @@ export interface PagedList<P extends Page<unknown>> {
   loading: boolean;
   /** Non-null when the list could not be read, phrased for the operator. */
   error: { title: string; body: string } | null;
-  /** Picker mode only: the collection was longer than WALK_MAX_PAGES pages, so
-   * rows are missing from `items`. A short `<select>` that does not say this is
-   * indistinguishable from a complete one. */
+  /** Picker mode only: the collection holds more rows than the short page on
+   * screen, so `items` is a head and not the whole of it. A `<select>` that does
+   * not say this is indistinguishable from a complete one, and the operator has
+   * to know that typing narrows the read rather than filtering what is shown. */
   truncated: boolean;
   /** The page size in effect — what the next fetch will send as `limit`. */
   pageSize: number;
@@ -344,8 +360,8 @@ export interface PagedList<P extends Page<unknown>> {
   /** Merges a partial narrowing and refetches from the head. An empty string or
    * `undefined` clears a key rather than sending it empty. */
   setQuery: (patch: ListQuery) => void;
-  /** Walks the collection under the ACTIVE query to the walk bound and returns
-   * every row it retrieved. `truncated` means the bound cut the walk short — an
+  /** Walks the whole collection under the ACTIVE query and returns every row.
+   * There is no page bound. `truncated` means a page read failed part way, so an
    * export built from it is partial and has to say so. */
   readAll: () => Promise<{ rows: P["items"]; truncated: boolean }>;
   reload: () => void;
@@ -356,12 +372,20 @@ const PAGE_SIZE = 50;
 /** Per-list overrides. `role` names the role a 403 needs, so a permission failure
  * explains itself. `limit` sets the initial page size for a table (the selector
  * moves it afterwards) and the fixed size for a picker. */
-export interface PagedOpts {
+export interface PagedOpts<P extends Page<unknown> = Page<unknown>> {
   role?: string;
+  /** The first page, read on the server during the render, so the rows arrive
+   * with the HTML instead of after a round trip the browser makes on mount.
+   *
+   * The mount fetch is skipped exactly once, while the list still shows page one
+   * under the narrowing the server used. Any move after that — a page, a sort, a
+   * search, a page size, a reload — reads from the browser as before. */
+  initial?: Outcome<P>;
   limit?: number;
-  /** Picker mode: the read walks every page to exhaustion, bounded by
-   * WALK_MAX_PAGES, because a `<select>` has no pager. `truncated` on the result
-   * reports whether the bound cut the collection short. */
+  /** Picker mode: the read takes one page of PICKER_PAGE rows, because a
+   * `<select>` has no pager. The operator narrows it with `setQuery({ q })`,
+   * which reaches the request, so a match outside the page is still found.
+   * `truncated` reports that more rows exist than the page holds. */
   picker?: boolean;
   /** Overrides the console's org selector for this list. A detail page that
    * lists a child collection knows its own organization and should narrow to it
@@ -479,22 +503,29 @@ function useQueryState(urlSync: boolean, defaultLimit: number): [QueryState, (pa
  * page client-side returns fewer rows than were asked for, which reads as
  * "end of list" — the exact failure paging exists to remove.
  */
-export function usePagedList<P extends Page<unknown>>(read: PageReader<P>, resource: string, opts: PagedOpts = {}): PagedList<P> {
-  const { role, picker = false, userId, urlSync = false } = opts;
+export function usePagedList<P extends Page<unknown>>(read: PageReader<P>, resource: string, opts: PagedOpts<P> = {}): PagedList<P> {
+  const { role, picker = false, userId, urlSync = false, initial: seed } = opts;
   const { selectedOrgId, dataVersion } = useConsole();
   const orgId = opts.orgId !== undefined ? opts.orgId : selectedOrgId;
   // The narrowing and the size travel together: both send the list back to page
   // one, and both belong in a shared link.
-  const [state, setState] = useQueryState(urlSync, picker ? WALK_PAGE : (opts.limit ?? PAGE_SIZE));
+  const [state, setState] = useQueryState(urlSync, picker ? PICKER_PAGE : (opts.limit ?? PAGE_SIZE));
   const { limit, ...query } = state;
-  const [items, setItems] = useState<P["items"]>([]);
-  const [raw, setRaw] = useState<P | null>(null);
-  const [total, setTotal] = useState<number | null>(null);
-  const [totalPages, setTotalPages] = useState(0);
+  const [items, setItems] = useState<P["items"]>(seed?.ok ? (seed.data.items ?? ([] as P["items"])) : ([] as P["items"]));
+  const [raw, setRaw] = useState<P | null>(seed?.ok ? seed.data : null);
+  const [total, setTotal] = useState<number | null>(seed?.ok ? (seed.data.total ?? null) : null);
+  const [totalPages, setTotalPages] = useState(seed?.ok ? (seed.data.totalPages ?? 0) : 0);
   const [page, setPageNumber] = useState(1);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<{ title: string; body: string } | null>(null);
+  const [loading, setLoading] = useState(!seed);
+  const [error, setError] = useState<{ title: string; body: string } | null>(
+    seed && !seed.ok ? describeStatus({ state: seed.reason }, resource, opts.role) : null
+  );
   const [nonce, setNonce] = useState(0);
+
+  // The server already answered page one. The first run of the effect below
+  // would repeat that request, so it is skipped once. The ref is cleared on that
+  // same run, and every later run reads normally.
+  const seeded = useRef(Boolean(seed));
 
   // Spread into the deps rather than the object itself: `query` is rebuilt every
   // render, so depending on it would refetch continuously.
@@ -505,12 +536,15 @@ export function usePagedList<P extends Page<unknown>>(read: PageReader<P>, resou
   );
 
   useEffect(() => {
+    if (seeded.current) {
+      seeded.current = false;
+      return;
+    }
     let cancelled = false;
     // The pending flag has to flip before the request is issued — it IS the
     // synchronization with the external system, not a render derived from one.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     setLoading(true);
-    (picker ? readAllPages(read, scope) : read({ ...scope, limit, page }))
+    read({ ...scope, limit, page })
       .then((out) => {
         if (cancelled) return;
         if (!out.ok) {
@@ -571,15 +605,14 @@ export function usePagedList<P extends Page<unknown>>(read: PageReader<P>, resou
     [setState]
   );
 
-  // The export walk. Same reader, same narrowing, same bound as a picker — an
-  // export is a picker that writes a file instead of filling a <select>.
+  // The export walk. Same reader and same narrowing as the table, read to the
+  // end: a CSV has no second page. It reports itself truncated only when a page
+  // read failed part way, which is the one case the rows are short of `total`.
   const readAll = useCallback(async () => {
     const out = await readAllPages(read, scope);
     if (!out.ok) throw new Error(out.reason);
-    return {
-      rows: (out.data.items ?? []) as P["items"],
-      truncated: (out.data.totalPages ?? 0) > WALK_MAX_PAGES,
-    };
+    const rows = (out.data.items ?? []) as P["items"];
+    return { rows, truncated: rows.length < (out.data.total ?? rows.length) };
   }, [read, scope]);
 
   return {
@@ -591,7 +624,7 @@ export function usePagedList<P extends Page<unknown>>(read: PageReader<P>, resou
     setPage,
     loading,
     error,
-    truncated: picker && totalPages > WALK_MAX_PAGES,
+    truncated: picker && total !== null && total > items.length,
     pageSize: limit,
     setPageSize,
     query,

@@ -5,7 +5,6 @@ import (
 
 	"alphaomega/identitygateway/internal/api/http/middlewares"
 	"alphaomega/identitygateway/internal/api/http/response"
-	"alphaomega/identitygateway/internal/platform/logger"
 )
 
 // The sentinels this domain answers with. A domain registers its own, so no
@@ -21,17 +20,22 @@ func init() {
 	response.Map(ErrForbidden, fiber.StatusForbidden, "forbidden", "Forbidden")
 	response.Map(ErrTenantScope, fiber.StatusConflict, "tenant_scope",
 		"The tenant default has no level to inherit from and cannot be reset.")
+
+	// Every password write in the gateway checks against this policy, so the
+	// refusal is registered here, beside the rules it comes from. The message
+	// names no rule: see ErrWeakPassword.
+	response.Map(ErrWeakPassword, fiber.StatusBadRequest, "weak_password",
+		"That password does not meet the password policy.")
 }
 
 // Handler serves the auth policy of a tenant to the console. It binds the
 // request, calls the service, and writes the envelope. No rule lives here.
 type Handler struct {
 	svc *Service
-	log logger.Logger
 }
 
-func NewHandler(svc *Service, log logger.Logger) *Handler {
-	return &Handler{svc: svc, log: log}
+func NewHandler(svc *Service) *Handler {
+	return &Handler{svc: svc}
 }
 
 // AdminRoutes mounts the auth-policy routes. The caller mounts the tenant
@@ -81,14 +85,4 @@ func (h *Handler) reset(c fiber.Ctx) error {
 
 // actorFrom reads the person behind the request. The tenant middleware and the
 // bearer guard both ran, so both values are present.
-func actorFrom(c fiber.Ctx) Actor {
-	tc, _ := middlewares.TenantFrom(c)
-	subject, _ := middlewares.SubjectFrom(c)
-
-	return Actor{
-		TenantID:  tc.TenantID,
-		UserID:    subject,
-		IP:        c.IP(),
-		UserAgent: c.Get(fiber.HeaderUserAgent),
-	}
-}
+func actorFrom(c fiber.Ctx) Actor { return Actor(middlewares.ActorFrom(c)) }

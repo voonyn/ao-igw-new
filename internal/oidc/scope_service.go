@@ -39,7 +39,7 @@ func NewScopeService(deps ScopeDeps) *ScopeService {
 // first and is always present, because a tenant that disables the row still
 // runs OpenID Connect.
 func (s *ScopeService) Advertised(ctx context.Context, tenantID string) ([]string, error) {
-	s.log.Debug("read advertised scopes", logger.String("tenant_id", tenantID))
+	s.log.Debug("read advertised scopes", logger.String("tenant_id", tenantID), logger.RequestID(ctx))
 
 	scopes, err := s.deps.List(ctx, tenantID)
 	if err != nil {
@@ -55,7 +55,7 @@ func (s *ScopeService) Advertised(ctx context.Context, tenantID string) ([]strin
 		}
 	}
 
-	s.log.Debug("advertised scopes", logger.String("tenant_id", tenantID))
+	s.log.Debug("advertised scopes", logger.String("tenant_id", tenantID), logger.RequestID(ctx))
 	return names, nil
 }
 
@@ -68,7 +68,7 @@ func (s *ScopeService) Advertised(ctx context.Context, tenantID string) ([]strin
 func (s *ScopeService) Describe(
 	ctx context.Context, tenantID string, names []string,
 ) ([]Scope, error) {
-	s.log.Debug("describe scopes", logger.String("tenant_id", tenantID))
+	s.log.Debug("describe scopes", logger.String("tenant_id", tenantID), logger.RequestID(ctx))
 
 	scopes, err := s.deps.List(ctx, tenantID)
 	if err != nil {
@@ -92,6 +92,6 @@ func (s *ScopeService) Describe(
 		out = append(out, scope)
 	}
 
-	s.log.Debug("described scopes", logger.String("tenant_id", tenantID))
+	s.log.Debug("described scopes", logger.String("tenant_id", tenantID), logger.RequestID(ctx))
 	return out, nil
 }

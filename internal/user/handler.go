@@ -6,7 +6,6 @@ import (
 
 	"alphaomega/identitygateway/internal/api/http/middlewares"
 	"alphaomega/identitygateway/internal/api/http/response"
-	"alphaomega/identitygateway/internal/platform/logger"
 )
 
 // SlugNotAConsoleUser is what a person without an administrative role reads. The
@@ -37,11 +36,10 @@ func init() {
 // and writes the envelope. No rule lives here.
 type Handler struct {
 	svc *Service
-	log logger.Logger
 }
 
-func NewHandler(svc *Service, log logger.Logger) *Handler {
-	return &Handler{svc: svc, log: log}
+func NewHandler(svc *Service) *Handler {
+	return &Handler{svc: svc}
 }
 
 // AdminRoutes mounts the admin front door. The caller mounts the tenant
@@ -199,17 +197,7 @@ func (h *Handler) memberships(c fiber.Ctx) error {
 
 // actorFrom reads the person behind the request. The tenant middleware and the
 // bearer guard both ran, so both values are present.
-func actorFrom(c fiber.Ctx) Actor {
-	tc, _ := middlewares.TenantFrom(c)
-	subject, _ := middlewares.SubjectFrom(c)
-
-	return Actor{
-		TenantID:  tc.TenantID,
-		UserID:    subject,
-		IP:        c.IP(),
-		UserAgent: c.Get(fiber.HeaderUserAgent),
-	}
-}
+func actorFrom(c fiber.Ctx) Actor { return Actor(middlewares.ActorFrom(c)) }
 
 // queryFrom reads the window and the narrowing of one list read. The paginate
 // middleware already clamped the limit and refused an unknown sort key.
@@ -223,7 +211,6 @@ func queryFrom(c fiber.Ctx) Query {
 		OrgID:    c.Query("orgId"),
 		Sort:     sort,
 		Desc:     desc,
-		Limit:    1,
 	}
 	if info, ok := paginate.FromContext(c); ok && info != nil {
 		q.Limit, q.Offset = info.Limit, info.Start()

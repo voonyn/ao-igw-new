@@ -10,6 +10,7 @@ import (
 	"go.uber.org/zap/zaptest/observer"
 
 	"alphaomega/identitygateway/internal/audit"
+	"alphaomega/identitygateway/internal/oidc"
 	"alphaomega/identitygateway/internal/organization"
 	"alphaomega/identitygateway/internal/platform/crypto"
 	"alphaomega/identitygateway/internal/platform/logger"
@@ -58,7 +59,7 @@ func TestListReadsTheWholeTenant(t *testing.T) {
 			{ID: otherAppID, TenantID: testTenantID, ProjectID: otherProjectID, ProjectName: "Ledger",
 				OrgID: otherOrgID, Name: "Ledger SAML", AppType: TypeSAML, State: StateInactive},
 		},
-		configs: []OIDCConfig{{
+		configs: []oidc.Client{{
 			AppID: testAppID, TenantID: testTenantID, ClientID: testClientID,
 			TokenAuthnMethod: "client_secret_basic", Secret: "a-bcrypt-hash",
 			Scopes: "openid profile", RedirectURIs: []string{"https://app.example.com/callback"},
@@ -96,7 +97,7 @@ func TestViewNeverCarriesTheStoredSecret(t *testing.T) {
 		tenantRoles: []string{tenant.RoleIAMAdmin},
 		rows: []Application{{ID: testAppID, TenantID: testTenantID, ProjectID: testProjectID,
 			OrgID: testOrgID, Name: "Checkout SPA", AppType: TypeOIDC, State: StateActive}},
-		configs: []OIDCConfig{{AppID: testAppID, TenantID: testTenantID, ClientID: testClientID,
+		configs: []oidc.Client{{AppID: testAppID, TenantID: testTenantID, ClientID: testClientID,
 			Secret: "a-bcrypt-hash"}},
 	})
 
@@ -224,7 +225,7 @@ func TestUpdateWritesTheNameAndTheClient(t *testing.T) {
 		tenantRoles: []string{tenant.RoleIAMOwner},
 		rows: []Application{{ID: testAppID, TenantID: testTenantID, ProjectID: testProjectID,
 			OrgID: testOrgID, Name: "Checkout SPA", AppType: TypeOIDC, State: StateActive}},
-		configs: []OIDCConfig{{AppID: testAppID, TenantID: testTenantID, ClientID: testClientID,
+		configs: []oidc.Client{{AppID: testAppID, TenantID: testTenantID, ClientID: testClientID,
 			TokenAuthnMethod: "none", Secret: "a-bcrypt-hash"}},
 	})
 
@@ -315,7 +316,7 @@ func TestRotateSecretAnswersTheSecretOnceAndStoresAHash(t *testing.T) {
 		tenantRoles: []string{tenant.RoleIAMOwner},
 		rows: []Application{{ID: testAppID, TenantID: testTenantID, ProjectID: testProjectID,
 			OrgID: testOrgID, Name: "Checkout SPA", AppType: TypeOIDC}},
-		configs: []OIDCConfig{{AppID: testAppID, TenantID: testTenantID, ClientID: testClientID,
+		configs: []oidc.Client{{AppID: testAppID, TenantID: testTenantID, ClientID: testClientID,
 			TokenAuthnMethod: "client_secret_basic"}},
 	})
 
@@ -363,7 +364,7 @@ func TestRotateSecretRefusesAPublicClient(t *testing.T) {
 		tenantRoles: []string{tenant.RoleIAMOwner},
 		rows: []Application{{ID: testAppID, TenantID: testTenantID, ProjectID: testProjectID,
 			OrgID: testOrgID, Name: "Checkout SPA", AppType: TypeOIDC}},
-		configs: []OIDCConfig{{AppID: testAppID, TenantID: testTenantID, ClientID: testClientID,
+		configs: []oidc.Client{{AppID: testAppID, TenantID: testTenantID, ClientID: testClientID,
 			TokenAuthnMethod: "none"}},
 	})
 
@@ -415,7 +416,7 @@ type deps struct {
 	tenantRoles []string
 	memberships []organization.Membership
 	rows        []Application
-	configs     []OIDCConfig
+	configs     []oidc.Client
 	auditFails  bool
 }
 
@@ -423,9 +424,9 @@ type deps struct {
 // one package run one after another, so each test reads its own writes.
 var (
 	written        []Application
-	writtenConfigs []OIDCConfig
+	writtenConfigs []oidc.Client
 	updated        []Application
-	updatedConfigs []OIDCConfig
+	updatedConfigs []oidc.Client
 	deleted        []string
 	secrets        []string
 	events         []audit.Event
@@ -457,7 +458,7 @@ func testService(t *testing.T, d deps) *Service {
 			written = append(written, row)
 			return nil
 		},
-		InsertConfig: func(_ context.Context, row OIDCConfig) error {
+		InsertConfig: func(_ context.Context, row oidc.Client) error {
 			writtenConfigs = append(writtenConfigs, row)
 			return nil
 		},
@@ -465,7 +466,7 @@ func testService(t *testing.T, d deps) *Service {
 			updated = append(updated, row)
 			return nil
 		},
-		UpdateConfig: func(_ context.Context, row OIDCConfig) error {
+		UpdateConfig: func(_ context.Context, row oidc.Client) error {
 			updatedConfigs = append(updatedConfigs, row)
 			return nil
 		},
@@ -500,8 +501,8 @@ func testService(t *testing.T, d deps) *Service {
 			}
 			return Application{}, ErrNotFound
 		},
-		Configs: func(_ context.Context, _ string, appIDs []string) ([]OIDCConfig, error) {
-			var out []OIDCConfig
+		Configs: func(_ context.Context, _ string, appIDs []string) ([]oidc.Client, error) {
+			var out []oidc.Client
 			for _, row := range d.configs {
 				for _, id := range appIDs {
 					if row.AppID == id {

@@ -23,13 +23,13 @@ type Config struct {
 	Notification NotificationConfig
 }
 
-// NotificationConfig is the instance-level default/fallback for outbound mail.
+// NotificationConfig is the deployment-wide default and fallback for outbound mail.
 // Per-tenant settings in notification_settings override every field; when a
 // tenant has no row, these apply. When neither yields a usable transport the
 // Notifier falls back to the log transport (it never fails startup). Bound to
 // AO_NOTIFICATION_* env vars.
 type NotificationConfig struct {
-	// Transport selects the instance default delivery: "smtp" or "log". Defaults
+	// Transport selects the deployment default delivery: "smtp" or "log". Defaults
 	// to "log", so an unconfigured deployment is safe (renders + logs, never
 	// sends). Set to "smtp" with the SMTP* fields to actually deliver.
 	Transport string `mapstructure:"transport"`
@@ -50,9 +50,9 @@ type NotificationConfig struct {
 	SendTimeout time.Duration `mapstructure:"send_timeout"`
 }
 
-// UsableSMTP reports whether the instance SMTP transport is configured well
+// UsableSMTP reports whether the deployment SMTP transport is configured well
 // enough to attempt a send (host + from address present). The Notifier uses it
-// to decide the instance-default → log fallback without failing startup.
+// to decide the deployment-default → log fallback without failing startup.
 func (n NotificationConfig) UsableSMTP() bool {
 	return n.SMTPHost != "" && n.FromAddress != ""
 }
@@ -254,7 +254,7 @@ func InitConfig() (*Config, error) {
 	// (or a yaml list).
 	_ = viper.BindEnv("server.trusted_proxies", "AO_SERVER_TRUSTED_PROXIES")
 
-	// Instance-level notification defaults (AO_NOTIFICATION_*). Per-tenant DB
+	// Deployment-wide notification defaults (AO_NOTIFICATION_*). Per-tenant DB
 	// settings override these; an unconfigured deployment falls back to the log
 	// transport.
 	_ = viper.BindEnv("notification.transport", "AO_NOTIFICATION_TRANSPORT")

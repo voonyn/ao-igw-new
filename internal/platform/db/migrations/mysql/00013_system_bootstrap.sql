@@ -1,5 +1,5 @@
 -- +goose Up
--- One-time, instance-wide bootstrap marker. The `bootstrap` command inserts the
+-- One-time, deployment-wide bootstrap marker. The `bootstrap` command inserts the
 -- single row (id = 1) inside the same transaction that creates the AlphaOmega
 -- default tenant, organization, project, admin user, applications, OIDC provider
 -- config and signing keys. A second `bootstrap` invocation hits this primary-key

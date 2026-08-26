@@ -40,7 +40,7 @@ func NewScopeRepository(bdb *bun.DB, log logger.Logger) *ScopeRepository {
 // List reads the scopes the tenant offers. A disabled scope is neither
 // advertised nor described, so the read filters it out.
 func (r *ScopeRepository) List(ctx context.Context, tenantID string) ([]Scope, error) {
-	r.log.Debug("read scopes", logger.String("tenant_id", tenantID))
+	r.log.Debug("read scopes", logger.String("tenant_id", tenantID), logger.RequestID(ctx))
 
 	var rows []struct {
 		Name        string `bun:"name"`
@@ -79,7 +79,7 @@ func (r *ScopeRepository) List(ctx context.Context, tenantID string) ([]Scope, e
 func (r *ScopeRepository) Mappers(
 	ctx context.Context, tenantID string, scopes []string,
 ) ([]ClaimMapper, error) {
-	r.log.Debug("read claim mappers", logger.String("tenant_id", tenantID))
+	r.log.Debug("read claim mappers", logger.String("tenant_id", tenantID), logger.RequestID(ctx))
 
 	if len(scopes) == 0 {
 		return nil, nil
@@ -132,7 +132,7 @@ func (r *ScopeRepository) Profile(
 	ctx context.Context, tenantID, userID string,
 ) (UserProfile, error) {
 	r.log.Debug("read claim source",
-		logger.String("tenant_id", tenantID), logger.String("user_id", userID))
+		logger.String("tenant_id", tenantID), logger.String("user_id", userID), logger.RequestID(ctx))
 
 	var row struct {
 		Username      string    `bun:"username"`

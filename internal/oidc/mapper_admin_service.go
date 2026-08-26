@@ -101,7 +101,7 @@ func (s *ScopeAdminService) ListMappers(
 	s.log.Debug("list the claim mappers",
 		logger.String("tenant_id", a.TenantID),
 		logger.String("user_id", a.UserID),
-		logger.String("scope_id", scopeID))
+		logger.String("scope_id", scopeID), logger.RequestID(ctx))
 
 	if err := s.authorize(ctx, a, "list the claim mappers"); err != nil {
 		return nil, err
@@ -135,7 +135,7 @@ func (s *ScopeAdminService) CreateMapper(
 	s.log.Debug("create a claim mapper",
 		logger.String("tenant_id", a.TenantID),
 		logger.String("user_id", a.UserID),
-		logger.String("scope_id", scopeID))
+		logger.String("scope_id", scopeID), logger.RequestID(ctx))
 
 	if err := s.authorize(ctx, a, "create a claim mapper"); err != nil {
 		return MapperView{}, err
@@ -203,7 +203,7 @@ func (s *ScopeAdminService) UpdateMapper(
 	s.log.Debug("write a claim mapper",
 		logger.String("tenant_id", a.TenantID),
 		logger.String("user_id", a.UserID),
-		logger.String("mapper_id", id))
+		logger.String("mapper_id", id), logger.RequestID(ctx))
 
 	if err := s.authorize(ctx, a, "write a claim mapper"); err != nil {
 		return MapperView{}, err
@@ -262,7 +262,7 @@ func (s *ScopeAdminService) DeleteMapper(ctx context.Context, a AdminActor, id s
 	s.log.Debug("delete a claim mapper",
 		logger.String("tenant_id", a.TenantID),
 		logger.String("user_id", a.UserID),
-		logger.String("mapper_id", id))
+		logger.String("mapper_id", id), logger.RequestID(ctx))
 
 	if err := s.authorize(ctx, a, "delete a claim mapper"); err != nil {
 		return err

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"alphaomega/identitygateway/internal/platform/db/dbtest"
+	"alphaomega/identitygateway/internal/platform/logger"
 )
 
 // The two tenants every repository test reads. The second one holds a row of
@@ -57,7 +58,7 @@ func testFeedRepo(t *testing.T) (*Repository, context.Context) {
 	t.Helper()
 
 	bdb := dbtest.Open(t, "audit")
-	repo, ctx := NewRepository(bdb), context.Background()
+	repo, ctx := NewRepository(bdb, logger.New()), context.Background()
 	seedFeed(t, repo, ctx)
 	return repo, ctx
 }

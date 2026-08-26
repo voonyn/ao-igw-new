@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useId, useMemo, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { Icon } from "@/components/console/icons";
 import { EntityHeader, FullPage, SectionCard } from "@/components/console/overlays";
 import { Btn, confirmAction, Field, ViewNotice } from "@/components/console/primitives";
@@ -18,6 +18,7 @@ import {
   type NotificationTemplate,
   type NotificationTemplateInfo,
   type OrgRef,
+  type Outcome,
   type RenderedTemplate,
 } from "@/lib/console-api";
 
@@ -34,7 +35,14 @@ const TLS_MODES = [
   { v: "none", label: "None (dev only)" },
 ];
 
-export function NotificationsView() {
+/** The tenant-scope reads, taken on the server during the render. The route
+ * passes them; picking an organization reads that scope from the browser. */
+export interface NotificationsSeed {
+  settings?: Outcome<NotificationSettings>;
+  templates?: NotificationTemplateInfo[];
+}
+
+export function NotificationsView({ initial }: { initial?: NotificationsSeed } = {}) {
   const { A, me } = useConsole();
   const tenantManager = canManageTenant(me);
   // Orgs whose templates the caller may manage: every org for a tenant
@@ -59,30 +67,47 @@ export function NotificationsView() {
     );
   }
 
-  return <NotificationsManager tenantManager={tenantManager} manageableOrgs={manageableOrgs} toast={A.toast} />;
+  return <NotificationsManager tenantManager={tenantManager} manageableOrgs={manageableOrgs} toast={A.toast} initial={initial} />;
 }
 
 function NotificationsManager({
   tenantManager,
   manageableOrgs,
   toast,
+  initial,
 }: {
   tenantManager: boolean;
   manageableOrgs: OrgRef[];
   toast: (msg: string, icon?: string, severity?: "success" | "error" | "info") => void;
+  /** The tenant-scope reads, taken on the server during the render. They seed
+   * the first paint. Picking an organization reads that scope from the browser,
+   * and so does every write. */
+  initial?: NotificationsSeed;
 }) {
-  const [settings, setSettings] = useState<NotificationSettings | null>(null);
-  const [templates, setTemplates] = useState<NotificationTemplateInfo[] | null>(null);
+  // The seed is the tenant read, so it counts only when the tenant scope is the
+  // one on screen. An org manager opens on its own scope and reads it here.
+  const seed = tenantManager ? initial : undefined;
+  const [settings, setSettings] = useState<NotificationSettings | null>(seed?.settings?.ok ? seed.settings.data : null);
+  const [templates, setTemplates] = useState<NotificationTemplateInfo[] | null>(seed?.templates ?? null);
   const [openKey, setOpenKey] = useState<string | null>(null);
   // Templates scope: "" = tenant default (tenant managers only); else an org id.
   const [scope, setScope] = useState<string>(tenantManager ? "" : manageableOrgs[0]?.id ?? "");
 
   // EH-4, same shape as audit.tsx: `loaded` flips in `finally`, so a failed read
   // renders an error instead of a card that stays blank forever.
-  const [settingsLoaded, setSettingsLoaded] = useState(false);
+  const [settingsLoaded, setSettingsLoaded] = useState(Boolean(seed?.settings));
   // Title AND body come from `describeStatus`, so a refusal reads as one
   // sentence rather than a view-specific headline over a shared body.
-  const [settingsError, setSettingsError] = useState<{ title: string; body: string } | null>(null);
+  const [settingsError, setSettingsError] = useState<{ title: string; body: string } | null>(
+    seed?.settings && !seed.settings.ok
+      ? describeStatus({ state: seed.settings.reason }, NOTIFICATIONS_RESOURCE, "IAM_OWNER or IAM_ADMIN", "ORG_OWNER")
+      : null
+  );
+
+  // The server already answered both tenant reads. The two mount effects below
+  // would repeat them, so each is skipped once.
+  const seededSettings = useRef(Boolean(seed?.settings));
+  const seededTemplates = useRef(Boolean(seed?.templates));
 
   const loadSettings = useCallback(() => {
     return notificationsApi
@@ -110,10 +135,18 @@ function NotificationsManager({
   }, [toast, scope]);
 
   useEffect(() => {
+    if (seededSettings.current) {
+      seededSettings.current = false;
+      return;
+    }
     if (tenantManager) void loadSettings();
   }, [tenantManager, loadSettings]);
 
   useEffect(() => {
+    if (seededTemplates.current) {
+      seededTemplates.current = false;
+      return;
+    }
     loadTemplates();
   }, [loadTemplates]);
 

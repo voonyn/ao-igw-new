@@ -332,6 +332,40 @@ func TestUnlockClearsBothHalves(t *testing.T) {
 	}
 }
 
+// TestUnlockKeepsADeactivatedAccountOff covers the state guard. Deactivate and
+// the lockout both stop a sign-in, so an unlock that wrote the active state
+// without a guard turned a deactivated account back on.
+func TestUnlockKeepsADeactivatedAccountOff(t *testing.T) {
+	repo, ctx := testRepo(t)
+
+	if err := repo.SetState(ctx, testTenantID, lockedUserID, StateInactive); err != nil {
+		t.Fatalf("deactivate the account: %v", err)
+	}
+	if err := repo.Unlock(ctx, testTenantID, lockedUserID); err != nil {
+		t.Fatalf("unlock the account: %v", err)
+	}
+
+	row, err := repo.Read(ctx, testTenantID, lockedUserID)
+	if err != nil {
+		t.Fatalf("read the account: %v", err)
+	}
+	if row.State != StateInactive {
+		t.Errorf("the state reads %d, want %d", row.State, StateInactive)
+	}
+
+	// The lockout still clears. Only the state is guarded.
+	var count int
+	var lockedUntil sql.NullTime
+	if err := repo.db.QueryRowContext(ctx,
+		`SELECT failed_login_count, locked_until FROM user_humans WHERE tenant_id = ? AND user_id = ?`,
+		testTenantID, lockedUserID).Scan(&count, &lockedUntil); err != nil {
+		t.Fatalf("read the lockout: %v", err)
+	}
+	if count != 0 || lockedUntil.Valid {
+		t.Errorf("the lockout reads %d and %v, want it cleared", count, lockedUntil)
+	}
+}
+
 // TestClearMFARemovesEverySecondFactor covers the reset: the TOTP secret, the
 // recovery codes behind it, and every registered passkey.
 func TestClearMFARemovesEverySecondFactor(t *testing.T) {

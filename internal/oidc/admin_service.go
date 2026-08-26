@@ -7,6 +7,7 @@ import (
 	"slices"
 	"time"
 
+	"alphaomega/identitygateway/internal/actor"
 	"alphaomega/identitygateway/internal/audit"
 	"alphaomega/identitygateway/internal/platform/db"
 	"alphaomega/identitygateway/internal/platform/logger"
@@ -25,12 +26,7 @@ var ErrOpaqueAccessToken = errors.New("an opaque access token is not served")
 // AdminActor is the person behind one administrative provider request. The IP
 // and the agent travel to the audit trail, so the trail names where the change
 // came from.
-type AdminActor struct {
-	TenantID  string
-	UserID    string
-	IP        string
-	UserAgent string
-}
+type AdminActor actor.Actor
 
 // The reads and writes the administrative service composes its answers from.
 // Each one is a function value, so the logic is testable without a database.
@@ -78,7 +74,7 @@ func NewAdminService(deps AdminDeps) *AdminService {
 // ReadProvider answers the protocol settings of the tenant.
 func (s *AdminService) ReadProvider(ctx context.Context, a AdminActor) (ProviderView, error) {
 	s.log.Debug("read the provider config",
-		logger.String("tenant_id", a.TenantID), logger.String("user_id", a.UserID))
+		logger.String("tenant_id", a.TenantID), logger.String("user_id", a.UserID), logger.RequestID(ctx))
 
 	if err := s.authorize(ctx, a, false, "read the provider config"); err != nil {
 		return ProviderView{}, err
@@ -104,7 +100,7 @@ func (s *AdminService) UpdateProvider(
 	ctx context.Context, a AdminActor, body ProviderConfigBody,
 ) (ProviderView, error) {
 	s.log.Debug("write the provider config",
-		logger.String("tenant_id", a.TenantID), logger.String("user_id", a.UserID))
+		logger.String("tenant_id", a.TenantID), logger.String("user_id", a.UserID), logger.RequestID(ctx))
 
 	if err := s.authorize(ctx, a, true, "write the provider config"); err != nil {
 		return ProviderView{}, err
@@ -152,7 +148,7 @@ func (s *AdminService) UpdateProvider(
 // rotation routine, so it is not paged.
 func (s *AdminService) ListKeys(ctx context.Context, a AdminActor) ([]KeyView, error) {
 	s.log.Debug("list the signing keys",
-		logger.String("tenant_id", a.TenantID), logger.String("user_id", a.UserID))
+		logger.String("tenant_id", a.TenantID), logger.String("user_id", a.UserID), logger.RequestID(ctx))
 
 	if err := s.authorize(ctx, a, false, "list the signing keys"); err != nil {
 		return nil, err

@@ -7,7 +7,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"time"
 
 	"github.com/go-sql-driver/mysql"
 	"github.com/uptrace/bun"
@@ -66,87 +65,6 @@ const (
 
 // mysqlDuplicateEntry is the MySQL error number of a unique key violation.
 const mysqlDuplicateEntry = 1062
-
-// User is one row of users joined to its user_humans row: the account and the
-// person behind it.
-//
-// PasswordHash holds a bcrypt hash, never the password. It never reaches a log
-// line and never leaves this package in a response.
-type User struct {
-	bun.BaseModel `bun:"table:users,alias:u"`
-
-	ID       string `bun:"id,pk"`
-	TenantID string `bun:"tenant_id,pk"`
-	OrgID    string `bun:"org_id"`
-	Username string `bun:"username,nullzero"`
-	UserType int    `bun:"user_type"`
-	State    int    `bun:"state"`
-
-	CreatedAt  time.Time `bun:"created_at,nullzero"`
-	LastAuthAt time.Time `bun:"last_auth_at,nullzero"`
-
-	// The columns of the joined user_humans row, and the second factor derived
-	// beside it. A machine account holds no such row, so every one of them is
-	// empty for one.
-	DisplayName     string `bun:"display_name,scanonly"`
-	Email           string `bun:"email,scanonly"`
-	IsEmailVerified bool   `bun:"is_email_verified,scanonly"`
-	PasswordHash    string `bun:"password_hash,scanonly"`
-
-	FirstName         string    `bun:"first_name,scanonly"`
-	LastName          string    `bun:"last_name,scanonly"`
-	Lang              string    `bun:"preferred_language,scanonly"`
-	Phone             string    `bun:"phone,scanonly"`
-	IsPhoneVerified   bool      `bun:"is_phone_verified,scanonly"`
-	PasswordChangeReq bool      `bun:"password_change_required,scanonly"`
-	PasswordChangedAt time.Time `bun:"password_changed_at,scanonly,nullzero"`
-	MFAEnabled        bool      `bun:"mfa_enabled,scanonly"`
-
-	DeletedAt time.Time `bun:",soft_delete,nullzero"`
-}
-
-// Human is one row of user_humans: the person behind one account. A machine
-// account holds no such row.
-//
-// PasswordHash holds a bcrypt hash, never the password. It never reaches a log
-// line and never leaves this package in a response.
-type Human struct {
-	bun.BaseModel `bun:"table:user_humans,alias:h"`
-
-	UserID   string `bun:"user_id,pk"`
-	TenantID string `bun:"tenant_id,pk"`
-
-	FirstName   string `bun:"first_name,nullzero"`
-	LastName    string `bun:"last_name,nullzero"`
-	DisplayName string `bun:"display_name,nullzero"`
-	Lang        string `bun:"preferred_language,nullzero"`
-
-	Email           string `bun:"email,nullzero"`
-	IsEmailVerified bool   `bun:"is_email_verified"`
-	Phone           string `bun:"phone,nullzero"`
-
-	PasswordHash string `bun:"password_hash,nullzero"`
-
-	CreatedAt time.Time `bun:"created_at,nullzero"`
-}
-
-// AccountToken is one row of account_tokens: a single-use, time-limited value a
-// person redeems once.
-//
-// TokenHash holds a SHA-256 digest, never the token itself. The token is
-// disclosed exactly once, in the answer of the request that minted it.
-type AccountToken struct {
-	bun.BaseModel `bun:"table:account_tokens"`
-
-	ID       string `bun:"id,pk"`
-	TenantID string `bun:"tenant_id,pk"`
-	UserID   string `bun:"user_id"`
-	Purpose  int    `bun:"purpose"`
-
-	TokenHash string    `bun:"token_hash"`
-	ExpiresAt time.Time `bun:"expires_at"`
-	CreatedAt time.Time `bun:"created_at,nullzero"`
-}
 
 // userColumns names every column the User model holds. The table carries more
 // columns than the model does, and a select of them all fails to scan, so the
@@ -208,7 +126,7 @@ func NewRepository(bdb *bun.DB, log logger.Logger) *Repository {
 // An inactive account and a soft-deleted one never come back. A miss returns
 // ErrNotFound. The identifier is personal data, so it never reaches a log line.
 func (r *Repository) FindByIdentifier(ctx context.Context, tenantID, identifier string) (User, error) {
-	r.log.Debug("read user by identifier", logger.String("tenant_id", tenantID))
+	r.log.Debug("read user by identifier", logger.String("tenant_id", tenantID), logger.RequestID(ctx))
 
 	var row User
 	err := db.Conn(ctx, r.db).NewSelect().
@@ -232,7 +150,7 @@ func (r *Repository) FindByIdentifier(ctx context.Context, tenantID, identifier 
 	}
 
 	r.log.Debug("read user by identifier",
-		logger.String("tenant_id", tenantID), logger.String("user_id", row.ID))
+		logger.String("tenant_id", tenantID), logger.String("user_id", row.ID), logger.RequestID(ctx))
 	return row, nil
 }
 
@@ -244,7 +162,7 @@ func (r *Repository) FindByIdentifier(ctx context.Context, tenantID, identifier 
 // package in a response. A miss returns ErrNotFound.
 func (r *Repository) FindPasswordHash(ctx context.Context, tenantID, userID string) (string, error) {
 	r.log.Debug("read password hash",
-		logger.String("tenant_id", tenantID), logger.String("user_id", userID))
+		logger.String("tenant_id", tenantID), logger.String("user_id", userID), logger.RequestID(ctx))
 
 	var row User
 	err := db.Conn(ctx, r.db).NewSelect().
@@ -275,7 +193,7 @@ func (r *Repository) FindPasswordHash(ctx context.Context, tenantID, userID stri
 // left. A miss returns ErrNotFound.
 func (r *Repository) FindByID(ctx context.Context, tenantID, userID string) (User, error) {
 	r.log.Debug("read user by id",
-		logger.String("tenant_id", tenantID), logger.String("user_id", userID))
+		logger.String("tenant_id", tenantID), logger.String("user_id", userID), logger.RequestID(ctx))
 
 	var row User
 	err := db.Conn(ctx, r.db).NewSelect().
@@ -307,7 +225,7 @@ func (r *Repository) FindByID(ctx context.Context, tenantID, userID string) (Use
 // person, because it holds no user_humans row.
 func (r *Repository) List(ctx context.Context, tenantID string, q Query) ([]User, int64, error) {
 	r.log.Debug("list users",
-		logger.String("tenant_id", tenantID), logger.Int("offset", q.Offset))
+		logger.String("tenant_id", tenantID), logger.Int("offset", q.Offset), logger.RequestID(ctx))
 
 	var rows []User
 	sel := db.Conn(ctx, r.db).NewSelect().
@@ -369,7 +287,7 @@ func orderBy(q Query) string {
 // about to reactivate.
 func (r *Repository) Read(ctx context.Context, tenantID, userID string) (User, error) {
 	r.log.Debug("read user for administration",
-		logger.String("tenant_id", tenantID), logger.String("user_id", userID))
+		logger.String("tenant_id", tenantID), logger.String("user_id", userID), logger.RequestID(ctx))
 
 	var row User
 	err := db.Conn(ctx, r.db).NewSelect().
@@ -395,21 +313,35 @@ func (r *Repository) Read(ctx context.Context, tenantID, userID string) (User, e
 // A username another live account of the tenant holds returns
 // ErrDuplicateUsername, because the unique key refuses it.
 func (r *Repository) Insert(ctx context.Context, row User) error {
+	r.log.Debug("write user",
+		logger.String("tenant_id", row.TenantID), logger.String("user_id", row.ID),
+		logger.RequestID(ctx))
+
 	if _, err := db.Conn(ctx, r.db).NewInsert().Model(&row).Exec(ctx); err != nil {
 		if isDuplicate(err) {
 			return fmt.Errorf("%w: %s", ErrDuplicateUsername, row.Username)
 		}
 		return fmt.Errorf("write user %s of tenant %s: %w", row.ID, row.TenantID, err)
 	}
+	r.log.Debug("wrote user",
+		logger.String("tenant_id", row.TenantID), logger.String("user_id", row.ID),
+		logger.RequestID(ctx))
 	return nil
 }
 
 // InsertHuman writes the person behind one new account. It runs on the caller's
 // transaction, so the account and the person land together.
 func (r *Repository) InsertHuman(ctx context.Context, row Human) error {
+	r.log.Debug("write person",
+		logger.String("tenant_id", row.TenantID), logger.String("user_id", row.UserID),
+		logger.RequestID(ctx))
+
 	if _, err := db.Conn(ctx, r.db).NewInsert().Model(&row).Exec(ctx); err != nil {
 		return fmt.Errorf("write person of user %s of tenant %s: %w", row.UserID, row.TenantID, err)
 	}
+	r.log.Debug("wrote person",
+		logger.String("tenant_id", row.TenantID), logger.String("user_id", row.UserID),
+		logger.RequestID(ctx))
 	return nil
 }
 
@@ -420,6 +352,10 @@ func (r *Repository) InsertHuman(ctx context.Context, row Human) error {
 // here. Each of them credentials a sign-in, and the update body carries none of
 // them.
 func (r *Repository) UpdateHuman(ctx context.Context, row Human) error {
+	r.log.Debug("update person",
+		logger.String("tenant_id", row.TenantID), logger.String("user_id", row.UserID),
+		logger.RequestID(ctx))
+
 	res, err := db.Conn(ctx, r.db).NewUpdate().
 		Model(&row).
 		Column("first_name", "last_name", "display_name", "preferred_language", "phone").
@@ -429,12 +365,19 @@ func (r *Repository) UpdateHuman(ctx context.Context, row Human) error {
 	if err != nil {
 		return fmt.Errorf("update person of user %s of tenant %s: %w", row.UserID, row.TenantID, err)
 	}
+	r.log.Debug("updated person",
+		logger.String("tenant_id", row.TenantID), logger.String("user_id", row.UserID),
+		logger.RequestID(ctx))
 	return oneRow(res, row.TenantID, row.UserID, "update the person of")
 }
 
 // SetState writes the state of one live account. It runs on the caller's
 // transaction.
 func (r *Repository) SetState(ctx context.Context, tenantID, userID string, state int) error {
+	r.log.Debug("set user state",
+		logger.String("tenant_id", tenantID), logger.String("user_id", userID),
+		logger.RequestID(ctx))
+
 	res, err := db.Conn(ctx, r.db).NewUpdate().
 		Model((*User)(nil)).
 		Set("state = ?", state).
@@ -445,31 +388,41 @@ func (r *Repository) SetState(ctx context.Context, tenantID, userID string, stat
 	if err != nil {
 		return fmt.Errorf("set the state of user %s of tenant %s: %w", userID, tenantID, err)
 	}
+	r.log.Debug("set the user state",
+		logger.String("tenant_id", tenantID), logger.String("user_id", userID),
+		logger.RequestID(ctx))
 	return oneRow(res, tenantID, userID, "set the state of")
 }
 
-// Unlock clears the lockout of one account and returns it to the active state.
-// It runs on the caller's transaction.
+// Unlock clears the lockout of one account. It runs on the caller's
+// transaction.
 //
 // Both halves are needed. The three lockout columns hold the running count and
 // the auto-expiring lock, and users.state holds the badge the console renders.
 // Clearing one and not the other leaves the person locked out by whichever half
 // stayed.
+//
+// Only a locked row returns to active. Without the state guard the unlock also
+// revives an account that deactivate turned off, because both states clear the
+// same way. A row in any other state keeps the state it holds, so no row here is
+// a normal answer. The service read the account before it called, so a missing
+// account never reaches this point.
 func (r *Repository) Unlock(ctx context.Context, tenantID, userID string) error {
+	r.log.Debug("unlock user",
+		logger.String("tenant_id", tenantID), logger.String("user_id", userID),
+		logger.RequestID(ctx))
+
 	conn := db.Conn(ctx, r.db)
 
-	res, err := conn.NewUpdate().
+	if _, err := conn.NewUpdate().
 		Model((*User)(nil)).
 		Set("state = ?", StateActive).
 		Where("tenant_id = ?", tenantID).
 		Where("id = ?", userID).
+		Where("state = ?", StateLocked).
 		Where("deleted_at IS NULL").
-		Exec(ctx)
-	if err != nil {
+		Exec(ctx); err != nil {
 		return fmt.Errorf("unlock user %s of tenant %s: %w", userID, tenantID, err)
-	}
-	if err := oneRow(res, tenantID, userID, "unlock"); err != nil {
-		return err
 	}
 
 	// A machine account holds no user_humans row, so no row here is a normal
@@ -484,6 +437,9 @@ func (r *Repository) Unlock(ctx context.Context, tenantID, userID string) error 
 		Exec(ctx); err != nil {
 		return fmt.Errorf("clear the lockout of user %s of tenant %s: %w", userID, tenantID, err)
 	}
+	r.log.Debug("unlocked user",
+		logger.String("tenant_id", tenantID), logger.String("user_id", userID),
+		logger.RequestID(ctx))
 	return nil
 }
 
@@ -494,6 +450,10 @@ func (r *Repository) Unlock(ctx context.Context, tenantID, userID string) error 
 // column, and the account row is what every read joins from, so a profile
 // without a live account is unreachable.
 func (r *Repository) SoftDelete(ctx context.Context, tenantID, userID string) error {
+	r.log.Debug("delete user",
+		logger.String("tenant_id", tenantID), logger.String("user_id", userID),
+		logger.RequestID(ctx))
+
 	res, err := db.Conn(ctx, r.db).NewDelete().
 		Model((*User)(nil)).
 		Where("tenant_id = ?", tenantID).
@@ -502,15 +462,25 @@ func (r *Repository) SoftDelete(ctx context.Context, tenantID, userID string) er
 	if err != nil {
 		return fmt.Errorf("delete user %s of tenant %s: %w", userID, tenantID, err)
 	}
+	r.log.Debug("deleted user",
+		logger.String("tenant_id", tenantID), logger.String("user_id", userID),
+		logger.RequestID(ctx))
 	return oneRow(res, tenantID, userID, "delete")
 }
 
 // InsertToken writes one account token. It runs on the caller's transaction. The
 // row holds a digest, and the token itself is never written and never logged.
 func (r *Repository) InsertToken(ctx context.Context, row AccountToken) error {
+	r.log.Debug("write account token",
+		logger.String("tenant_id", row.TenantID), logger.String("user_id", row.UserID),
+		logger.RequestID(ctx))
+
 	if _, err := db.Conn(ctx, r.db).NewInsert().Model(&row).Exec(ctx); err != nil {
 		return fmt.Errorf("write account token of user %s of tenant %s: %w", row.UserID, row.TenantID, err)
 	}
+	r.log.Debug("wrote account token",
+		logger.String("tenant_id", row.TenantID), logger.String("user_id", row.UserID),
+		logger.RequestID(ctx))
 	return nil
 }
 
@@ -523,6 +493,10 @@ func (r *Repository) InsertToken(ctx context.Context, row AccountToken) error {
 // and the client cannot recover it. The TOTP row and the passkeys carry
 // deleted_at, so bun marks them.
 func (r *Repository) ClearMFA(ctx context.Context, tenantID, userID string) error {
+	r.log.Debug("clear second factors",
+		logger.String("tenant_id", tenantID), logger.String("user_id", userID),
+		logger.RequestID(ctx))
+
 	conn := db.Conn(ctx, r.db)
 
 	if _, err := conn.NewDelete().
@@ -549,37 +523,11 @@ func (r *Repository) ClearMFA(ctx context.Context, tenantID, userID string) erro
 		Exec(ctx); err != nil {
 		return fmt.Errorf("clear the passkeys of user %s of tenant %s: %w", userID, tenantID, err)
 	}
+	r.log.Debug("cleared second factors",
+		logger.String("tenant_id", tenantID), logger.String("user_id", userID),
+		logger.RequestID(ctx))
 	return nil
 }
-
-// The three tables a second-factor reset clears. Only the keys are modelled,
-// because the reset writes no other column of them.
-type (
-	totp struct {
-		bun.BaseModel `bun:"table:user_totp"`
-
-		TenantID  string    `bun:"tenant_id,pk"`
-		UserID    string    `bun:"user_id,pk"`
-		DeletedAt time.Time `bun:",soft_delete,nullzero"`
-	}
-
-	totpRecoveryCode struct {
-		bun.BaseModel `bun:"table:user_totp_recovery_codes"`
-
-		TenantID string `bun:"tenant_id,pk"`
-		UserID   string `bun:"user_id,pk"`
-		CodeHash string `bun:"code_hash,pk"`
-	}
-
-	passkey struct {
-		bun.BaseModel `bun:"table:user_webauthn_credentials"`
-
-		TenantID     string    `bun:"tenant_id,pk"`
-		CredentialID []byte    `bun:"credential_id,pk"`
-		UserID       string    `bun:"user_id"`
-		DeletedAt    time.Time `bun:",soft_delete,nullzero"`
-	}
-)
 
 // oneRow reports ErrNoSuchUser when a write matched no live row. The service
 // read the row first, so this is a race, not a routine answer.

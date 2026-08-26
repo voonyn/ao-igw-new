@@ -3,6 +3,8 @@ package application
 import (
 	"strings"
 	"time"
+
+	"alphaomega/identitygateway/internal/oidc"
 )
 
 // OidcBody is the client of one application, as a create and an update carry
@@ -85,7 +87,7 @@ type SecretView struct {
 
 // newView maps one application, and the client it holds, into the answer. A
 // nil config answers a null client, which is what a SAML application reads.
-func newView(row Application, cfg *OIDCConfig) View {
+func newView(row Application, cfg *oidc.Client) View {
 	view := View{
 		ID:          row.ID,
 		TenantID:    row.TenantID,
@@ -137,8 +139,8 @@ func list(values []string) []string {
 // config maps the body into the row it writes. The stored secret, the created
 // timestamp, and the first-party flag are not in the body, so the caller sets
 // them.
-func (b OidcBody) config(tenantID, appID string) OIDCConfig {
-	return OIDCConfig{
+func (b OidcBody) config(tenantID, appID string) oidc.Client {
+	return oidc.Client{
 		AppID:            appID,
 		TenantID:         tenantID,
 		ClientID:         b.ClientID,

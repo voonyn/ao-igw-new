@@ -9,6 +9,8 @@ package session
 import (
 	"errors"
 	"time"
+
+	"github.com/uptrace/bun"
 )
 
 // The two states login_sessions.state holds. An expired session stays active
@@ -94,4 +96,71 @@ type Identity struct {
 type Opened struct {
 	ID    string
 	Token string
+}
+
+// Row is one row of login_sessions. Data holds the sealed LoginSession, which
+// is the authority. The other columns are extracted copies, so the database can
+// find the row and an operator can read it.
+//
+// TokenHash holds a SHA-256 digest, never the token. A leaked row cannot
+// credential a request.
+//
+// The table records the fact of a login, so a row is terminated, never soft
+// deleted. See the ao-db-migration skill.
+type Row struct {
+	bun.BaseModel `bun:"table:login_sessions"`
+
+	ID       string `bun:"id,pk"`
+	TenantID string `bun:"tenant_id,pk"`
+	UserID   string `bun:"user_id,nullzero"`
+	State    int    `bun:"state"`
+
+	TokenHash string `bun:"token_hash"`
+	Data      []byte `bun:"data"`
+
+	ExpiresAt    time.Time `bun:"expires_at"`
+	TerminatedAt time.Time `bun:"terminated_at,nullzero"`
+}
+
+// Record is one row of login_sessions as an administrative read projects it.
+//
+// The flat columns answer the list, and the sealed blob answers the context: the
+// address, the agent, and the verified factors. A row whose seal cannot be
+// opened keeps its columns and carries no context, because an operator
+// investigating an account must still see that the session exists.
+//
+// TokenHash is not projected. An administrative read never needs it, and a
+// column that is never selected cannot leak into an answer.
+type Record struct {
+	bun.BaseModel `bun:"table:login_sessions,alias:s"`
+
+	ID        string    `bun:"id"`
+	TenantID  string    `bun:"tenant_id"`
+	UserID    string    `bun:"user_id,nullzero"`
+	State     int       `bun:"state"`
+	CreatedAt time.Time `bun:"created_at,nullzero"`
+	ExpiresAt time.Time `bun:"expires_at,nullzero"`
+	Data      []byte    `bun:"data"`
+
+	UserName string `bun:"user_name,scanonly"`
+	OrgID    string `bun:"org_id,scanonly"`
+
+	// What the sealed session holds. They are read after the scan, so no column
+	// carries them.
+	IP        string               `bun:"-"`
+	UserAgent string               `bun:"-"`
+	Factors   map[string]time.Time `bun:"-"`
+	Links     []Link               `bun:"-"`
+}
+
+// Link is one row of login_session_links: one protocol flow the login session
+// satisfied. AppID is the relying party, and Ref is the request identifier the
+// protocol minted.
+type Link struct {
+	bun.BaseModel `bun:"table:login_session_links,alias:l"`
+
+	LoginSessionID string `bun:"login_session_id"`
+	Protocol       int    `bun:"protocol"`
+	Ref            string `bun:"protocol_ref"`
+	AppID          string `bun:"client_id,nullzero"`
 }

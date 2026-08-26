@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server"
 
 import { adminFetch, adminMutate, resolveAccessToken } from "@/lib/server/admin-client"
+import { unwrap } from "@/lib/server/envelope"
 import { cookieOptions, CONSOLE_SESSION_COOKIE, openSession, sealSession, type SessionTokens } from "@/lib/server/secure-cookie"
 
 export const runtime = "nodejs"
@@ -78,26 +79,4 @@ async function relay(upstream: Response, rotated: SessionTokens | null) {
   })
   if (rotated) res.cookies.set(CONSOLE_SESSION_COOKIE, await sealSession(rotated), cookieOptions)
   return res
-}
-
-// Returns the `data` value of the gateway envelope. A body that is empty, that
-// is not JSON, or that carries no `data` key is returned unchanged, so a
-// non-envelope answer from a proxy still reaches the browser intact.
-//
-// A list answer also carries `meta` — the page, the limit, the total, and the
-// total pages. Dropping it would leave the pager with rows and no page numbers,
-// so `meta` is merged onto the payload as the browser's `Page<T>`: an array
-// payload becomes its `items`, and an object payload keeps its own fields.
-function unwrap(body: string): string {
-  if (!body) return body
-  try {
-    const parsed: unknown = JSON.parse(body)
-    if (!parsed || typeof parsed !== "object" || !("data" in parsed)) return body
-
-    const { data, meta } = parsed as { data: unknown; meta?: Record<string, unknown> }
-    if (!meta) return JSON.stringify(data)
-    return JSON.stringify(Array.isArray(data) || data === null ? { items: data ?? [], ...meta } : { ...data, ...meta })
-  } catch {
-    return body
-  }
 }

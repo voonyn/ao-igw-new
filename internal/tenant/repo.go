@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"slices"
-	"time"
 
 	"github.com/uptrace/bun"
 
@@ -48,47 +47,6 @@ const (
 	RoleIAMAdmin = "IAM_ADMIN"
 )
 
-// Tenant is one row of tenants. DefaultOrgID is empty until bootstrap points the
-// tenant at its default organization.
-type Tenant struct {
-	bun.BaseModel `bun:"table:tenants"`
-
-	ID           string    `bun:"id,pk"`
-	Name         string    `bun:"name"`
-	State        int       `bun:"state"`
-	DefaultOrgID string    `bun:"default_org_id,nullzero"`
-	CreatedAt    time.Time `bun:"created_at"`
-	DeletedAt    time.Time `bun:",soft_delete,nullzero"`
-}
-
-// Member is one row of tenant_members: the tenant roles of one person.
-type Member struct {
-	bun.BaseModel `bun:"table:tenant_members,alias:m"`
-
-	TenantID  string    `bun:"tenant_id,pk"`
-	UserID    string    `bun:"user_id,pk"`
-	Roles     []string  `bun:"roles"`
-	CreatedAt time.Time `bun:"created_at,nullzero"`
-	DeletedAt time.Time `bun:",soft_delete,nullzero"`
-
-	// UserName is the person behind the membership, joined by the roster read.
-	// It is empty everywhere else, because no column of this table holds it.
-	UserName string `bun:"user_name,scanonly"`
-}
-
-// Domain is one row of tenant_domains. The domain is the bare host, lowercased,
-// with a port only for a non-standard listener.
-type Domain struct {
-	bun.BaseModel `bun:"table:tenant_domains"`
-
-	Domain     string    `bun:"domain,pk"`
-	TenantID   string    `bun:"tenant_id"`
-	IsPrimary  bool      `bun:"is_primary"`
-	IsVerified bool      `bun:"is_verified"`
-	State      int       `bun:"state"`
-	DeletedAt  time.Time `bun:",soft_delete,nullzero"`
-}
-
 // Repository reads the tenant domains.
 type Repository struct {
 	db  *bun.DB
@@ -103,7 +61,7 @@ func NewRepository(bdb *bun.DB, log logger.Logger) *Repository {
 // an inactive domain never resolves, so a domain under verification cannot serve
 // a token. A miss returns ErrDomainNotFound.
 func (r *Repository) TenantIDByDomain(ctx context.Context, domain string) (string, error) {
-	r.log.Debug("resolve tenant domain", logger.String("domain", domain))
+	r.log.Debug("resolve tenant domain", logger.String("domain", domain), logger.RequestID(ctx))
 
 	var row Domain
 	err := db.Conn(ctx, r.db).NewSelect().
@@ -121,14 +79,14 @@ func (r *Repository) TenantIDByDomain(ctx context.Context, domain string) (strin
 	}
 
 	r.log.Debug("resolved tenant domain",
-		logger.String("domain", domain), logger.String("tenant_id", row.TenantID))
+		logger.String("domain", domain), logger.String("tenant_id", row.TenantID), logger.RequestID(ctx))
 	return row.TenantID, nil
 }
 
 // FindByID reads one live tenant. A soft-deleted tenant returns
 // ErrTenantNotFound.
 func (r *Repository) FindByID(ctx context.Context, tenantID string) (Tenant, error) {
-	r.log.Debug("read tenant", logger.String("tenant_id", tenantID))
+	r.log.Debug("read tenant", logger.String("tenant_id", tenantID), logger.RequestID(ctx))
 
 	var row Tenant
 	err := db.Conn(ctx, r.db).NewSelect().
@@ -148,7 +106,7 @@ func (r *Repository) FindByID(ctx context.Context, tenantID string) (Tenant, err
 // inactive domain, an unverified one, and a soft-deleted one never come back,
 // so this read and TenantIDByDomain agree on which domains serve requests.
 func (r *Repository) ListDomains(ctx context.Context, tenantID string) ([]Domain, error) {
-	r.log.Debug("read tenant domains", logger.String("tenant_id", tenantID))
+	r.log.Debug("read tenant domains", logger.String("tenant_id", tenantID), logger.RequestID(ctx))
 
 	var rows []Domain
 	err := db.Conn(ctx, r.db).NewSelect().
@@ -201,7 +159,7 @@ func (r *Repository) IsManager(ctx context.Context, tenantID, userID string) (bo
 // an owner that nobody is. Two deletes would then each read two and each pass,
 // and the tenant would end with no owner it can reach.
 func (r *Repository) CountOwners(ctx context.Context, tenantID string) (int64, error) {
-	r.log.Debug("count the owners of the tenant", logger.String("tenant_id", tenantID))
+	r.log.Debug("count the owners of the tenant", logger.String("tenant_id", tenantID), logger.RequestID(ctx))
 
 	total, err := db.Conn(ctx, r.db).NewSelect().
 		Model((*Member)(nil)).
@@ -222,7 +180,7 @@ func (r *Repository) CountOwners(ctx context.Context, tenantID string) (int64, e
 // empty row and not an error.
 func (r *Repository) FindMember(ctx context.Context, tenantID, userID string) (Member, error) {
 	r.log.Debug("read tenant member",
-		logger.String("tenant_id", tenantID), logger.String("user_id", userID))
+		logger.String("tenant_id", tenantID), logger.String("user_id", userID), logger.RequestID(ctx))
 
 	var row Member
 	err := db.Conn(ctx, r.db).NewSelect().
@@ -250,7 +208,7 @@ func (r *Repository) ListMembers(
 	ctx context.Context, tenantID string, desc bool, limit, offset int,
 ) ([]Member, int64, error) {
 	r.log.Debug("list tenant members",
-		logger.String("tenant_id", tenantID), logger.Int("offset", offset))
+		logger.String("tenant_id", tenantID), logger.Int("offset", offset), logger.RequestID(ctx))
 
 	order := "m.created_at ASC"
 	if desc {
@@ -291,6 +249,10 @@ const memberNameColumn = `COALESCE(NULLIF(h.display_name, ''), u.username, '') A
 // created_at is not written again, so the column keeps naming when the person
 // first entered the roster.
 func (r *Repository) SaveMember(ctx context.Context, row Member) error {
+	r.log.Debug("save tenant member",
+		logger.String("tenant_id", row.TenantID), logger.String("user_id", row.UserID),
+		logger.RequestID(ctx))
+
 	_, err := db.Conn(ctx, r.db).NewInsert().
 		Model(&row).
 		On("DUPLICATE KEY UPDATE").
@@ -301,6 +263,9 @@ func (r *Repository) SaveMember(ctx context.Context, row Member) error {
 		return fmt.Errorf("write the tenant membership of user %s of tenant %s: %w",
 			row.UserID, row.TenantID, err)
 	}
+	r.log.Debug("saved tenant member",
+		logger.String("tenant_id", row.TenantID), logger.String("user_id", row.UserID),
+		logger.RequestID(ctx))
 	return nil
 }
 
@@ -310,6 +275,10 @@ func (r *Repository) SaveMember(ctx context.Context, row Member) error {
 // A membership nobody holds returns ErrMemberNotFound, so a revoke of a row
 // that already went answers 404 and not a silent success.
 func (r *Repository) DeleteMember(ctx context.Context, tenantID, userID string) error {
+	r.log.Debug("delete tenant member",
+		logger.String("tenant_id", tenantID), logger.String("user_id", userID),
+		logger.RequestID(ctx))
+
 	res, err := db.Conn(ctx, r.db).NewDelete().
 		Model((*Member)(nil)).
 		Where("tenant_id = ?", tenantID).
@@ -328,5 +297,8 @@ func (r *Repository) DeleteMember(ctx context.Context, tenantID, userID string) 
 	if rows == 0 {
 		return fmt.Errorf("%w: %s", ErrMemberNotFound, userID)
 	}
+	r.log.Debug("deleted tenant member",
+		logger.String("tenant_id", tenantID), logger.String("user_id", userID),
+		logger.RequestID(ctx))
 	return nil
 }

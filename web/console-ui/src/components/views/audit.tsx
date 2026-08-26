@@ -1,13 +1,13 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Icon } from "@/components/console/icons";
 import { Avatar, Btn, copyToClipboard, Pager, ResultBadge, SearchBox, SelectInput, Ts, ViewNotice } from "@/components/console/primitives";
 import { csvCell, downloadCsv } from "@/lib/csv";
 import { useConsole } from "@/components/console/store";
 import { PageHead } from "@/components/console/page-head";
 import { rowActivation } from "@/components/console/data-table";
-import { auditApi, describeStatus, type AuditEvent } from "@/lib/console-api";
+import { auditApi, describeStatus, type AuditEvent, type AuditPage, type Outcome } from "@/lib/console-api";
 
 /** The noun and role every audit refusal is phrased from — one gate in the view,
  * one 403 from the gateway, one sentence. */
@@ -70,14 +70,23 @@ function actionOf(label: string): string | undefined {
   return m ? m[1] : undefined;
 }
 
-/** How many pages the CSV export follows before it stops and says so — the same
- * bound the pickers use, for the same reason: a file that silently ends is
- * indistinguishable from a complete one. */
-const EXPORT_MAX_PAGES = 10;
+/** Rows per request while the CSV export walks the feed. It is the largest page
+ * the gateway serves, so the walk takes the fewest round trips.
+ *
+ * There is no page cap. The walk follows the operator's ACTIVE filters to the
+ * end, because a file that silently stops is indistinguishable from a complete
+ * one.
+ *
+ * ponytail: audit_events is append-only and never pruned, so an export with no
+ * time range walks every page the tenant has ever written. Require a range here,
+ * or add a server-side export endpoint, if a tenant ever grows one an operator
+ * can stall the browser with. */
 const EXPORT_PAGE = 100;
 
-/** Rows per page in the feed. The pager addresses the rest. */
-const PAGE_SIZE = 100;
+/** Rows per page in the feed. The pager addresses the rest. The audit route
+ * reads the same value, because the page it hands over has to be the page this
+ * feed would have asked for. */
+export const PAGE_SIZE = 100;
 
 function resultLabel(result: string): string {
   return result === "failure" ? "Failed" : "Success";
@@ -88,7 +97,7 @@ function actorLabel(e: AuditEvent): string {
   return e.result === "failure" ? "Unknown" : "System";
 }
 
-export function AuditView() {
+export function AuditView({ initial }: { initial?: Outcome<AuditPage> }) {
   const { me, A } = useConsole();
 
   // Reads are tenant-manager scoped (matches the sidebar gate + the API).
@@ -107,7 +116,7 @@ export function AuditView() {
     );
   }
 
-  return <AuditLog toast={A.toast} />;
+  return <AuditLog toast={A.toast} initial={initial} />;
 }
 
 /**
@@ -122,17 +131,24 @@ export function AuditLog({
   toast,
   fixed,
   title,
+  initial,
 }: {
   toast: (msg: string, icon?: string, severity?: "success" | "error" | "info") => void;
   fixed?: { actor?: string; entityId?: string };
   title?: ReactNode;
+  /** The unfiltered first page, read on the server. Present only on the audit
+   * route. The user detail view mounts this feed with `fixed` and no `initial`,
+   * so it reads from the browser as before. */
+  initial?: Outcome<AuditPage>;
 }) {
-  const [events, setEvents] = useState<AuditEvent[]>([]);
+  const [events, setEvents] = useState<AuditEvent[]>(initial?.ok ? initial.data.items : []);
   const [page, setPage] = useState(1);
-  const [totalPages, setTotalPages] = useState(0);
-  const [loaded, setLoaded] = useState(false);
+  const [totalPages, setTotalPages] = useState(initial?.ok ? initial.data.totalPages : 0);
+  const [loaded, setLoaded] = useState(Boolean(initial));
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<{ title: string; body: string } | null>(null);
+  const [error, setError] = useState<{ title: string; body: string } | null>(
+    initial && !initial.ok ? describeStatus({ state: initial.reason }, AUDIT_RESOURCE, AUDIT_ROLE) : null
+  );
   const [action, setAction] = useState("All actions");
   const [actor, setActor] = useState("");
   const [exporting, setExporting] = useState(false);
@@ -173,10 +189,18 @@ export function AuditLog({
       });
   }, [query, page]);
 
+  // The server already read page one with these filters, so the first effect
+  // would re-read what is on screen. Every later run is a real change: a filter,
+  // or a page the operator asked for.
+  const seeded = useRef(Boolean(initial));
+
   useEffect(() => {
+    if (seeded.current) {
+      seeded.current = false;
+      return;
+    }
     // The pending flag has to flip before the request is issued — it IS the
     // synchronization with the external system, not a render derived from one.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     setLoading(true);
     void load();
   }, [load]);
@@ -196,14 +220,15 @@ export function AuditLog({
     setExportNote(null);
     try {
       let rows: AuditEvent[] = [];
-      let truncated = false;
-      for (let n = 1; n <= EXPORT_MAX_PAGES; n++) {
+      let total = 0;
+      for (let n = 1; ; n++) {
         const out = await auditApi.list({ ...query, limit: EXPORT_PAGE, page: n });
         if (!out.ok) break;
         rows = rows.concat(out.data.items);
+        total = out.data.total ?? rows.length;
         if (n >= out.data.totalPages) break;
-        truncated = n === EXPORT_MAX_PAGES;
       }
+      const truncated = rows.length < total;
       const head = ["Time", "Actor", "Action", "Entity type", "Entity ID", "Result", "IP", "User agent"];
       const lines = [head.map(csvCell).join(",")];
       for (const e of rows) {
@@ -216,7 +241,7 @@ export function AuditLog({
       downloadCsv("audit.csv", lines.join("\r\n"));
       setExportNote(
         truncated
-          ? `Exported the first ${rows.length} events — the feed is longer than this export can walk, so the file is partial.`
+          ? `Exported ${rows.length} of ${total} events — a page could not be read, so the file is partial.`
           : `Exported ${rows.length} ${rows.length === 1 ? "event" : "events"}.`
       );
     } catch {

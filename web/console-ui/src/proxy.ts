@@ -26,10 +26,23 @@ export async function proxy(req: NextRequest) {
     return res
   }
 
-  const res = NextResponse.next()
+  // A refresh has to reach the render pass, not only the browser. Setting the
+  // cookie on the response sends it back in Set-Cookie, but the request the page
+  // renders from still carries the pre-refresh value, so a Server Component
+  // would read a session one rotation behind and call the gateway with an access
+  // token that just expired. Rewrite the request cookie header as well, which is
+  // what `request.headers` on NextResponse.next forwards upstream.
+  let sealed: string | null = null
   if (rotated) {
-    res.cookies.set(CONSOLE_SESSION_COOKIE, await sealSession(next), cookieOptions)
+    sealed = await sealSession(next)
+    req.cookies.set(CONSOLE_SESSION_COOKIE, sealed)
   }
+
+  const headers = new Headers(req.headers)
+  if (sealed) headers.set("cookie", req.cookies.toString())
+
+  const res = NextResponse.next({ request: { headers } })
+  if (sealed) res.cookies.set(CONSOLE_SESSION_COOKIE, sealed, cookieOptions)
   return res
 }
 

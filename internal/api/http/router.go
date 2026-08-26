@@ -62,7 +62,7 @@ func Routes(app *fiber.App, cfg *config.Config, bdb *bun.DB, rdb cache.Client, l
 
 	// The audit trail is written on the caller's transaction, so one recorder
 	// serves both stacks.
-	recorder := audit.NewRecorder(audit.NewRepository(bdb).Insert, log)
+	recorder := audit.NewRecorder(audit.NewRepository(bdb, log).Insert, log)
 
 	storage := oidc.NewStorageRepository(bdb, cipher, log)
 
@@ -378,19 +378,19 @@ func mountAdmin(
 			TLSMode:       notify.TLSMode,
 			SendTimeoutMS: int(notify.SendTimeout.Milliseconds()),
 		},
-		Org:            orgs.FindByID,
-		TenantRoles:    tenants.MemberRoles,
-		Memberships:    orgs.ListMemberships,
-		InTx:           tx,
-		Audit:          recorder,
-		Log:            log,
+		Org:         orgs.FindByID,
+		TenantRoles: tenants.MemberRoles,
+		Memberships: orgs.ListMemberships,
+		InTx:        tx,
+		Audit:       recorder,
+		Log:         log,
 	})
 
 	// What every write above left behind. The feed is a read and nothing more:
 	// a row of audit_events records a fact, so it is never updated and never
 	// deleted.
 	auditSvc := audit.NewService(audit.Deps{
-		List:          audit.NewRepository(bdb).ListEvents,
+		List:          audit.NewRepository(bdb, log).ListEvents,
 		TenantManager: tenants.IsManager,
 		Log:           log,
 	})
@@ -406,19 +406,19 @@ func mountAdmin(
 	})
 
 	group := app.Group(adminPrefix, tenantMW, bearer)
-	tenant.AdminRoutes(group, tenant.NewAdminHandler(tenantSvc, tenantActor, log))
-	oidc.AdminRoutes(group, oidc.NewAdminHandler(providerSvc, providerActor, log))
-	oidc.ScopeAdminRoutes(group, oidc.NewScopeAdminHandler(scopeSvc, providerActor, log))
-	user.AdminRoutes(group, user.NewHandler(svc, log))
-	organization.AdminRoutes(group, organization.NewHandler(orgSvc, log))
-	organization.MemberRoutes(group, organization.NewMemberHandler(memberSvc, log))
-	project.AdminRoutes(group, project.NewHandler(projectSvc, log))
-	application.AdminRoutes(group, application.NewHandler(appSvc, log))
-	session.AdminRoutes(group, session.NewAdminHandler(sessionSvc, log))
-	session.GrantRoutes(group, session.NewGrantHandler(grantSvc, log))
-	authpolicy.AdminRoutes(group, authpolicy.NewHandler(policySvc, log))
-	notification.AdminRoutes(group, notification.NewHandler(notificationSvc, log))
-	audit.AdminRoutes(group, audit.NewHandler(auditSvc, auditActor, log),
+	tenant.AdminRoutes(group, tenant.NewAdminHandler(tenantSvc, tenantActor))
+	oidc.AdminRoutes(group, oidc.NewAdminHandler(providerSvc, providerActor))
+	oidc.ScopeAdminRoutes(group, oidc.NewScopeAdminHandler(scopeSvc, providerActor))
+	user.AdminRoutes(group, user.NewHandler(svc))
+	organization.AdminRoutes(group, organization.NewHandler(orgSvc))
+	organization.MemberRoutes(group, organization.NewMemberHandler(memberSvc))
+	project.AdminRoutes(group, project.NewHandler(projectSvc))
+	application.AdminRoutes(group, application.NewHandler(appSvc))
+	session.AdminRoutes(group, session.NewAdminHandler(sessionSvc))
+	session.GrantRoutes(group, session.NewGrantHandler(grantSvc))
+	authpolicy.AdminRoutes(group, authpolicy.NewHandler(policySvc))
+	notification.AdminRoutes(group, notification.NewHandler(notificationSvc))
+	audit.AdminRoutes(group, audit.NewHandler(auditSvc, auditActor),
 		middlewares.Paginate(audit.SortKeys...))
 }
 
@@ -433,38 +433,15 @@ func mountAdmin(
 // imports everything, so it reads the request here and hands each domain a
 // function value.
 //
-// A read of the audit trail records nothing, so auditActor carries no address
-// and no agent.
-func tenantActor(c fiber.Ctx) tenant.Actor {
-	tc, _ := middlewares.TenantFrom(c)
-	subject, _ := middlewares.SubjectFrom(c)
+// Each one converts what middlewares.ActorFrom read. The three domain types are
+// defined on internal/actor, so the conversion is a name change and nothing
+// else. A read of the audit trail records nothing, and the service ignores the
+// address and the agent it carries.
+func tenantActor(c fiber.Ctx) tenant.Actor { return tenant.Actor(middlewares.ActorFrom(c)) }
 
-	return tenant.Actor{
-		TenantID:  tc.TenantID,
-		UserID:    subject,
-		IP:        c.IP(),
-		UserAgent: c.Get(fiber.HeaderUserAgent),
-	}
-}
+func auditActor(c fiber.Ctx) audit.Actor { return audit.Actor(middlewares.ActorFrom(c)) }
 
-func auditActor(c fiber.Ctx) audit.Actor {
-	tc, _ := middlewares.TenantFrom(c)
-	subject, _ := middlewares.SubjectFrom(c)
-
-	return audit.Actor{TenantID: tc.TenantID, UserID: subject}
-}
-
-func providerActor(c fiber.Ctx) oidc.AdminActor {
-	tc, _ := middlewares.TenantFrom(c)
-	subject, _ := middlewares.SubjectFrom(c)
-
-	return oidc.AdminActor{
-		TenantID:  tc.TenantID,
-		UserID:    subject,
-		IP:        c.IP(),
-		UserAgent: c.Get(fiber.HeaderUserAgent),
-	}
-}
+func providerActor(c fiber.Ctx) oidc.AdminActor { return oidc.AdminActor(middlewares.ActorFrom(c)) }
 
 // newSessionService builds the login session service both stacks share.
 //

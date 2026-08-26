@@ -46,7 +46,7 @@ function TenantDetailPage({
   const [tab, setTab] = useState("Settings");
   const [newDomain, setNewDomain] = useState("");
   const [busy, run] = usePending();
-  // The endpoint is instance-scoped — it always writes the CALLER's tenant. So the
+  // The endpoint always writes the CALLER's own tenant. So the
   // controls only appear on the caller's own tenant, never on a listed sibling
   // whose domains this page can read but not address.
   const canWriteDomains = isIAMOwner(me) && tenant.id === currentTenantId;
@@ -95,7 +95,7 @@ function TenantDetailPage({
 
       {tab === "Settings" && (
         <div>
-          <SectionCard title="Basic Information" desc="Instance-level record. A tenant is an isolated IAM realm with its own OIDC provider.">
+          <SectionCard title="Basic Information" desc="The tenant record. A tenant is an isolated IAM realm with its own OIDC provider.">
             <ReadField label="Name" value={tenant.name} />
             <ReadField label="Tenant ID" value={tenant.id} mono toast={A.toast} />
             {issuer && <ReadField label="Provider issuer" value={issuer} mono toast={A.toast} />}
@@ -173,7 +173,7 @@ export function TenantsView() {
     <div className="fade-in">
       <PageHead
         page="tenants"
-        sub="Instance-level view. Each tenant is an isolated IAM realm with its own domains, organizations and OIDC provider."
+        sub="Every tenant of this deployment. Each tenant is an isolated IAM realm with its own domains, organizations and OIDC provider."
       />
 
       <div className="card" style={{ overflow: "auto hidden" }}>

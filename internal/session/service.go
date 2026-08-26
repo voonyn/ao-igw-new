@@ -70,7 +70,7 @@ func NewService(deps Deps) *Service {
 // identifier gets the same answer as a known one, so the response never says
 // which people a tenant holds. The password step then fails alike for both.
 func (s *Service) Identify(ctx context.Context, tenantID, identifier, ip, userAgent string) (Opened, error) {
-	s.log.Debug("open login session", logger.String("tenant_id", tenantID))
+	s.log.Debug("open login session", logger.String("tenant_id", tenantID), logger.RequestID(ctx))
 
 	person, err := s.deps.Identity(ctx, tenantID, identifier)
 	if err != nil && !errors.Is(err, user.ErrNotFound) {
@@ -106,7 +106,7 @@ func (s *Service) Identify(ctx context.Context, tenantID, identifier, ip, userAg
 	s.log.Debug("opened login session",
 		logger.String("tenant_id", tenantID),
 		logger.String("session_id", live.ID),
-		logger.Bool("known_user", person.UserID != ""))
+		logger.Bool("known_user", person.UserID != ""), logger.RequestID(ctx))
 	return Opened{ID: live.ID, Token: token}, nil
 }
 
@@ -122,7 +122,7 @@ func (s *Service) Identify(ctx context.Context, tenantID, identifier, ip, userAg
 // give ErrBadCredentials. Each of them also pays for one bcrypt comparison, so
 // neither the answer nor its timing says which of them happened.
 func (s *Service) VerifyPassword(ctx context.Context, tenantID, token, password string) (Opened, error) {
-	s.log.Debug("verify password", logger.String("tenant_id", tenantID))
+	s.log.Debug("verify password", logger.String("tenant_id", tenantID), logger.RequestID(ctx))
 
 	live, err := s.deps.Find(ctx, tenantID, aocrypto.Digest(token))
 	if err != nil {
@@ -173,7 +173,7 @@ func (s *Service) VerifyPassword(ctx context.Context, tenantID, token, password 
 	s.log.Debug("verified password",
 		logger.String("tenant_id", tenantID),
 		logger.String("session_id", live.ID),
-		logger.String("user_id", live.UserID))
+		logger.String("user_id", live.UserID), logger.RequestID(ctx))
 	return Opened{ID: live.ID, Token: rotated}, nil
 }
 
@@ -242,7 +242,7 @@ func (s *Service) entry(live LoginSession, action audit.Action, metadata map[str
 //
 // The token is a credential. Only the session id reaches a log line.
 func (s *Service) Resolve(ctx context.Context, tenantID, token string) (LoginSession, error) {
-	s.log.Debug("read login session", logger.String("tenant_id", tenantID))
+	s.log.Debug("read login session", logger.String("tenant_id", tenantID), logger.RequestID(ctx))
 
 	live, err := s.deps.Find(ctx, tenantID, aocrypto.Digest(token))
 	if err != nil {
@@ -256,7 +256,7 @@ func (s *Service) Resolve(ctx context.Context, tenantID, token string) (LoginSes
 	}
 
 	s.log.Debug("read login session",
-		logger.String("tenant_id", tenantID), logger.String("session_id", live.ID))
+		logger.String("tenant_id", tenantID), logger.String("session_id", live.ID), logger.RequestID(ctx))
 	return live, nil
 }
 
@@ -267,7 +267,7 @@ func (s *Service) Resolve(ctx context.Context, tenantID, token string) (LoginSes
 //
 // The token is a credential. Only the session id reaches a log line.
 func (s *Service) Logout(ctx context.Context, tenantID, token string) error {
-	s.log.Debug("end login session", logger.String("tenant_id", tenantID))
+	s.log.Debug("end login session", logger.String("tenant_id", tenantID), logger.RequestID(ctx))
 
 	live, err := s.deps.Find(ctx, tenantID, aocrypto.Digest(token))
 	if err != nil {
@@ -292,7 +292,7 @@ func (s *Service) Logout(ctx context.Context, tenantID, token string) error {
 	}
 
 	s.log.Debug("ended login session",
-		logger.String("tenant_id", tenantID), logger.String("session_id", live.ID))
+		logger.String("tenant_id", tenantID), logger.String("session_id", live.ID), logger.RequestID(ctx))
 	return nil
 }
 
@@ -301,7 +301,7 @@ func (s *Service) Logout(ctx context.Context, tenantID, token string) error {
 // that side knows the client that asked. See internal/api/oidc/logout.go.
 func (s *Service) TerminateByID(ctx context.Context, tenantID, sessionID string) error {
 	s.log.Debug("end login session",
-		logger.String("tenant_id", tenantID), logger.String("session_id", sessionID))
+		logger.String("tenant_id", tenantID), logger.String("session_id", sessionID), logger.RequestID(ctx))
 
 	if err := s.deps.Terminate(ctx, tenantID, sessionID); err != nil {
 		if !errors.Is(err, ErrLoginSessionNotFound) {

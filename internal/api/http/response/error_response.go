@@ -40,11 +40,20 @@ func ErrorSlug(c fiber.Ctx, statusCode int, slug, message string) error {
 // slug of its own. Every error answer carries a slug, so a client always has
 // one field to branch on.
 //
-// 401 is the exception: its status text is "Unauthorized", but the gateway
-// answers "unauthenticated", the slug the bearer guard already writes.
+// Three statuses do not use their status text:
+//
+//   - 401 answers "unauthenticated", the slug the bearer guard already writes,
+//     and not "unauthorized".
+//   - 400 and 422 answer "invalid_input", the slug the paginate middleware and
+//     the domain sentinels already write, and the one the console reads. A body
+//     that fails to parse and a field that fails a rule are one condition to the
+//     caller: the request carried something the gateway cannot take.
 func slugFor(statusCode int) string {
-	if statusCode == fiber.StatusUnauthorized {
+	switch statusCode {
+	case fiber.StatusUnauthorized:
 		return "unauthenticated"
+	case fiber.StatusBadRequest, fiber.StatusUnprocessableEntity:
+		return "invalid_input"
 	}
 	return strings.ReplaceAll(strings.ToLower(http.StatusText(statusCode)), " ", "_")
 }

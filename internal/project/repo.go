@@ -41,7 +41,7 @@ var sortColumns = map[string]string{
 // soft-deleted project never does.
 func (r *Repository) List(ctx context.Context, tenantID string, q Query) ([]Project, int64, error) {
 	r.log.Debug("list projects",
-		logger.String("tenant_id", tenantID), logger.Int("offset", q.Offset))
+		logger.String("tenant_id", tenantID), logger.Int("offset", q.Offset), logger.RequestID(ctx))
 
 	var rows []Project
 	sel := db.Conn(ctx, r.db).NewSelect().
@@ -87,7 +87,7 @@ func orderBy(q Query) string {
 // FindByID reads one live project of a tenant. A miss returns ErrNotFound.
 func (r *Repository) FindByID(ctx context.Context, tenantID, projectID string) (Project, error) {
 	r.log.Debug("read project",
-		logger.String("tenant_id", tenantID), logger.String("project_id", projectID))
+		logger.String("tenant_id", tenantID), logger.String("project_id", projectID), logger.RequestID(ctx))
 
 	var row Project
 	err := db.Conn(ctx, r.db).NewSelect().
@@ -106,9 +106,17 @@ func (r *Repository) FindByID(ctx context.Context, tenantID, projectID string) (
 
 // Insert writes one new project. It runs on the caller's transaction.
 func (r *Repository) Insert(ctx context.Context, row Project) error {
+	r.log.Debug("write project",
+		logger.String("tenant_id", row.TenantID), logger.String("project_id", row.ID),
+		logger.RequestID(ctx))
+
 	if _, err := db.Conn(ctx, r.db).NewInsert().Model(&row).Exec(ctx); err != nil {
 		return fmt.Errorf("write project %s of tenant %s: %w", row.ID, row.TenantID, err)
 	}
+
+	r.log.Debug("wrote project",
+		logger.String("tenant_id", row.TenantID), logger.String("project_id", row.ID),
+		logger.RequestID(ctx))
 	return nil
 }
 
@@ -116,6 +124,10 @@ func (r *Repository) Insert(ctx context.Context, row Project) error {
 // the caller's transaction. A row that went in the meantime returns
 // ErrNotFound.
 func (r *Repository) Update(ctx context.Context, row Project) error {
+	r.log.Debug("update project",
+		logger.String("tenant_id", row.TenantID), logger.String("project_id", row.ID),
+		logger.RequestID(ctx))
+
 	res, err := db.Conn(ctx, r.db).NewUpdate().
 		Model(&row).
 		Column("name", "project_role_assertion", "project_role_check",
@@ -127,12 +139,20 @@ func (r *Repository) Update(ctx context.Context, row Project) error {
 	if err != nil {
 		return fmt.Errorf("update project %s of tenant %s: %w", row.ID, row.TenantID, err)
 	}
+
+	r.log.Debug("updated project",
+		logger.String("tenant_id", row.TenantID), logger.String("project_id", row.ID),
+		logger.RequestID(ctx))
 	return oneRow(res, row.TenantID, row.ID, "update")
 }
 
 // SoftDelete marks one project deleted. The row stays in the database, and
 // every read filters it out. It runs on the caller's transaction.
 func (r *Repository) SoftDelete(ctx context.Context, tenantID, projectID string) error {
+	r.log.Debug("delete project",
+		logger.String("tenant_id", tenantID), logger.String("project_id", projectID),
+		logger.RequestID(ctx))
+
 	res, err := db.Conn(ctx, r.db).NewDelete().
 		Model((*Project)(nil)).
 		Where("tenant_id = ?", tenantID).
@@ -141,6 +161,10 @@ func (r *Repository) SoftDelete(ctx context.Context, tenantID, projectID string)
 	if err != nil {
 		return fmt.Errorf("delete project %s of tenant %s: %w", projectID, tenantID, err)
 	}
+
+	r.log.Debug("deleted project",
+		logger.String("tenant_id", tenantID), logger.String("project_id", projectID),
+		logger.RequestID(ctx))
 	return oneRow(res, tenantID, projectID, "delete")
 }
 

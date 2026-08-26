@@ -75,7 +75,7 @@ func Build(ctx context.Context, tenantID string, cfg aooidc.ProviderConfig, deps
 	deps.Log.Debug("build provider",
 		logger.String("tenant_id", tenantID),
 		logger.String("issuer", cfg.Issuer),
-		RequestID(ctx))
+		logger.RequestID(ctx))
 
 	if cfg.AccessTokenType == aooidc.AccessTokenTypeOpaque {
 		return nil, fmt.Errorf("%w: tenant %s", ErrOpaqueAccessToken, tenantID)
@@ -204,7 +204,7 @@ func Build(ctx context.Context, tenantID string, cfg aooidc.ProviderConfig, deps
 	deps.Log.Debug("built provider",
 		logger.String("tenant_id", tenantID),
 		logger.String("issuer", cfg.Issuer),
-		RequestID(ctx))
+		logger.RequestID(ctx))
 	return p, nil
 }
 

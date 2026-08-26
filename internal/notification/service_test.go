@@ -156,16 +156,16 @@ func TestReadSettingsFallsBackToTheDefaultsWhenTheTenantStoresNothing(t *testing
 	}
 }
 
-// TestReadSettingsFallsBackToTheInstanceConfig covers the read of a tenant that
+// TestReadSettingsFallsBackToTheDeploymentConfig covers the read of a tenant that
 // stores no row on a deployment that configured a relay through
 // AO_NOTIFICATION_*. Those values are what the tenant sends with, so the read
 // answers them: the table defaults would report a log transport while real mail
 // leaves the deployment.
-func TestReadSettingsFallsBackToTheInstanceConfig(t *testing.T) {
+func TestReadSettingsFallsBackToTheDeploymentConfig(t *testing.T) {
 	svc := testService(t, []string{tenant.RoleIAMAdmin}, nil)
 	svc.deps.Defaults = Settings{
 		Transport: TransportSMTP, SMTPHost: "relay.example.net", SMTPPort: 465,
-		SMTPUsername: "instance", Password: "an-instance-secret",
+		SMTPUsername: "deployment", Password: "a-deployment-secret",
 		FromAddress: "mail@example.net", FromName: "Example",
 		TLSMode: "tls", SendTimeoutMS: 15000,
 	}
@@ -175,25 +175,25 @@ func TestReadSettingsFallsBackToTheInstanceConfig(t *testing.T) {
 		t.Fatalf("read the delivery settings: %v", err)
 	}
 	if view.Transport != TransportSMTP || view.SMTPHost != "relay.example.net" {
-		t.Errorf("the answer reads %+v, want the instance relay", view)
+		t.Errorf("the answer reads %+v, want the deployment relay", view)
 	}
 	if view.SMTPPort != 465 || view.TLSMode != "tls" || view.SendTimeoutSeconds != 15 {
-		t.Errorf("the answer reads %+v, want the instance connection settings", view)
+		t.Errorf("the answer reads %+v, want the deployment connection settings", view)
 	}
 	if !view.PasswordSet || !view.Configured {
 		t.Errorf("the answer reads %+v, want a stored password and a usable transport", view)
 	}
 }
 
-// TestWriteSettingsKeepsTheInstancePasswordOutOfTheTenantRow covers the base of
-// the first write. The instance credential belongs to the deployment, so a write
-// that omits a password stores none and the tenant keeps reading the instance
+// TestWriteSettingsKeepsTheDeploymentPasswordOutOfTheTenantRow covers the base of
+// the first write. The deployment credential is not the tenant's, so a write
+// that omits a password stores none and the tenant keeps reading the deployment
 // value until it sets its own.
-func TestWriteSettingsKeepsTheInstancePasswordOutOfTheTenantRow(t *testing.T) {
+func TestWriteSettingsKeepsTheDeploymentPasswordOutOfTheTenantRow(t *testing.T) {
 	svc := testService(t, []string{tenant.RoleIAMAdmin}, nil)
 	svc.deps.Defaults = Settings{
 		Transport: TransportSMTP, SMTPHost: "relay.example.net", SMTPPort: 465,
-		Password: "an-instance-secret", FromAddress: "mail@example.net",
+		Password: "a-deployment-secret", FromAddress: "mail@example.net",
 		TLSMode: "tls", SendTimeoutMS: 15000,
 	}
 
@@ -204,7 +204,7 @@ func TestWriteSettingsKeepsTheInstancePasswordOutOfTheTenantRow(t *testing.T) {
 		t.Fatalf("the write stored %d rows, want one", len(storedSettings))
 	}
 	if storedSettings[0].Password != "" {
-		t.Error("the write copied the instance credential into the tenant row")
+		t.Error("the write copied the deployment credential into the tenant row")
 	}
 }
 

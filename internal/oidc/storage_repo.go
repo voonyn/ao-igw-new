@@ -7,11 +7,9 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/gofiber/fiber/v3"
 	"github.com/luikyv/go-oidc/pkg/goidc"
 	"github.com/uptrace/bun"
 
-	"alphaomega/identitygateway/internal/api/http/response"
 	aocrypto "alphaomega/identitygateway/internal/platform/crypto"
 	"alphaomega/identitygateway/internal/platform/db"
 	"alphaomega/identitygateway/internal/platform/logger"
@@ -48,41 +46,6 @@ func (e *ReuseError) Error() string {
 // does not name the type.
 func (e *ReuseError) Is(target error) bool { return target == ErrRefreshTokenReused }
 
-// The sentinels this domain answers with. A domain registers its own, so no
-// other package maps an error it does not declare.
-//
-// A login step that names an authorization request the gateway does not hold
-// gets 400: the request is bad, and the credentials are not.
-func init() {
-	response.Map(ErrSessionNotFound, fiber.StatusBadRequest, "session_not_found", "Bad Request")
-}
-
-// Grant is one row of oidc_grants: what a client received from one successful
-// authorization. Data holds the sealed goidc.Grant, which is the authority. The
-// other columns are extracted copies, so the database can find the row.
-//
-// AuthCodeHash and RefreshTokenHash hold a SHA-256 digest, never the value. A
-// leaked row cannot be replayed.
-type Grant struct {
-	bun.BaseModel `bun:"table:oidc_grants"`
-
-	ID       string `bun:"id,pk"`
-	TenantID string `bun:"tenant_id,pk"`
-	ClientID string `bun:"client_id"`
-	Subject  string `bun:"subject,nullzero"`
-
-	// LoginSessionID names the sign-in the grant came from. A logout of that
-	// session revokes the grant. It is empty for a grant that no browser
-	// sign-in produced.
-	LoginSessionID string `bun:"login_session_id,nullzero"`
-
-	AuthCodeHash     string `bun:"auth_code_hash,nullzero"`
-	RefreshTokenHash string `bun:"refresh_token_hash,nullzero"`
-
-	Data      []byte    `bun:"data"`
-	ExpiresAt time.Time `bun:"expires_at,nullzero"`
-}
-
 // ClaimSessionID names the login session a grant came from. It is the key the
 // grant store holds it under, and the name of the ID token claim that publishes
 // it. OpenID Connect Session Management defines the claim.
@@ -97,35 +60,6 @@ const supersededFallbackLifetime = 30 * 24 * time.Hour
 // sweeps, so a small batch drains faster than the traffic fills it, and no
 // single request pays for a large delete.
 const supersededPruneBatch = 200
-
-// SupersededRefreshToken is one row of oidc_superseded_refresh_tokens: a
-// refresh token that a rotation replaced. The row holds the SHA-256 digest,
-// never the token, so a leaked row cannot be replayed. A later request that
-// presents the same token is a replay, and the grant dies.
-//
-// The row is a fact, not an entity, so it is hard deleted when it expires.
-type SupersededRefreshToken struct {
-	bun.BaseModel `bun:"table:oidc_superseded_refresh_tokens"`
-
-	TenantID  string    `bun:"tenant_id,pk"`
-	TokenHash string    `bun:"token_hash,pk"`
-	GrantID   string    `bun:"grant_id"`
-	ExpiresAt time.Time `bun:"expires_at"`
-}
-
-// Session is one row of oidc_sessions: one authorization request in flight.
-// Data holds the sealed goidc.AuthnSession, which is the authority.
-type Session struct {
-	bun.BaseModel `bun:"table:oidc_sessions"`
-
-	ID       string `bun:"id,pk"`
-	TenantID string `bun:"tenant_id,pk"`
-	ClientID string `bun:"client_id,nullzero"`
-	Subject  string `bun:"subject,nullzero"`
-
-	Data      []byte    `bun:"data"`
-	ExpiresAt time.Time `bun:"expires_at,nullzero"`
-}
 
 // StorageRepository holds the protocol state of one tenant: its grants and its
 // authn sessions. The cipher seals the state at rest. A nil cipher matches the
@@ -144,7 +78,7 @@ func NewStorageRepository(bdb *bun.DB, cipher *aocrypto.Cipher, log logger.Logge
 // again on every rotation and on code redemption, so the write is an upsert.
 func (r *StorageRepository) SaveGrant(ctx context.Context, tenantID string, grant *goidc.Grant) error {
 	r.log.Debug("save grant",
-		logger.String("tenant_id", tenantID), logger.String("grant_id", grant.ID))
+		logger.String("tenant_id", tenantID), logger.String("grant_id", grant.ID), logger.RequestID(ctx))
 
 	row, err := sealGrant(tenantID, grant, r.cipher)
 	if err != nil {
@@ -168,7 +102,7 @@ func (r *StorageRepository) SaveGrant(ctx context.Context, tenantID string, gran
 	}
 
 	r.log.Debug("saved grant",
-		logger.String("tenant_id", tenantID), logger.String("grant_id", grant.ID))
+		logger.String("tenant_id", tenantID), logger.String("grant_id", grant.ID), logger.RequestID(ctx))
 	return nil
 }
 
@@ -200,7 +134,7 @@ func (r *StorageRepository) retainSuperseded(ctx context.Context, tenantID strin
 		return fmt.Errorf("retain superseded refresh token of grant %s of tenant %s: %w", grant.ID, tenantID, err)
 	}
 	r.log.Debug("retained superseded refresh token",
-		logger.String("tenant_id", tenantID), logger.String("grant_id", grant.ID))
+		logger.String("tenant_id", tenantID), logger.String("grant_id", grant.ID), logger.RequestID(ctx))
 
 	if _, err := db.Conn(ctx, r.db).NewDelete().
 		Model((*SupersededRefreshToken)(nil)).
@@ -259,7 +193,7 @@ func (r *StorageRepository) FindGrantsByLoginSession(
 	ctx context.Context, tenantID, sessionID string,
 ) ([]*goidc.Grant, error) {
 	r.log.Debug("read grants of login session",
-		logger.String("tenant_id", tenantID), logger.String("session_id", sessionID))
+		logger.String("tenant_id", tenantID), logger.String("session_id", sessionID), logger.RequestID(ctx))
 
 	if sessionID == "" {
 		return nil, nil
@@ -291,7 +225,7 @@ func (r *StorageRepository) FindGrantsByLoginSession(
 	r.log.Debug("read grants of login session",
 		logger.String("tenant_id", tenantID),
 		logger.String("session_id", sessionID),
-		logger.Int("grants", len(grants)))
+		logger.Int("grants", len(grants)), logger.RequestID(ctx))
 	return grants, nil
 }
 
@@ -299,6 +233,10 @@ func (r *StorageRepository) FindGrantsByLoginSession(
 // grant: a revoked grant has nothing left to detect. It always answers with a
 // ReuseError, which names the grant and never the token.
 func (r *StorageRepository) revokeGrant(ctx context.Context, tenantID, grantID string) error {
+	r.log.Debug("revoke grant",
+		logger.String("tenant_id", tenantID), logger.String("grant_id", grantID),
+		logger.RequestID(ctx))
+
 	reuse := &ReuseError{GrantID: grantID}
 
 	grant, err := r.findGrant(ctx, tenantID, "id", grantID)
@@ -333,6 +271,9 @@ func (r *StorageRepository) revokeGrant(ctx context.Context, tenantID, grantID s
 		return fmt.Errorf("drop superseded refresh tokens of grant %s of tenant %s: %w", grantID, tenantID, err)
 	}
 
+	r.log.Debug("revoked grant",
+		logger.String("tenant_id", tenantID), logger.String("grant_id", grantID),
+		logger.RequestID(ctx))
 	return reuse
 }
 
@@ -340,7 +281,7 @@ func (r *StorageRepository) revokeGrant(ctx context.Context, tenantID, grantID s
 // digest, so it is safe to log the column name but never the value.
 func (r *StorageRepository) findGrant(ctx context.Context, tenantID, column, value string) (*goidc.Grant, error) {
 	r.log.Debug("read grant",
-		logger.String("tenant_id", tenantID), logger.String("by", column))
+		logger.String("tenant_id", tenantID), logger.String("by", column), logger.RequestID(ctx))
 
 	var row Grant
 	err := db.Conn(ctx, r.db).NewSelect().
@@ -365,7 +306,7 @@ func (r *StorageRepository) findGrant(ctx context.Context, tenantID, column, val
 	}
 
 	r.log.Debug("read grant",
-		logger.String("tenant_id", tenantID), logger.String("grant_id", row.ID))
+		logger.String("tenant_id", tenantID), logger.String("grant_id", row.ID), logger.RequestID(ctx))
 	return grant, nil
 }
 
@@ -373,7 +314,7 @@ func (r *StorageRepository) findGrant(ctx context.Context, tenantID, column, val
 // session again at each step of the login, so the write is an upsert.
 func (r *StorageRepository) SaveSession(ctx context.Context, tenantID string, session *goidc.AuthnSession) error {
 	r.log.Debug("save authn session",
-		logger.String("tenant_id", tenantID), logger.String("session_id", session.ID))
+		logger.String("tenant_id", tenantID), logger.String("session_id", session.ID), logger.RequestID(ctx))
 
 	row, err := sealSession(tenantID, session, r.cipher)
 	if err != nil {
@@ -392,14 +333,14 @@ func (r *StorageRepository) SaveSession(ctx context.Context, tenantID string, se
 	}
 
 	r.log.Debug("saved authn session",
-		logger.String("tenant_id", tenantID), logger.String("session_id", session.ID))
+		logger.String("tenant_id", tenantID), logger.String("session_id", session.ID), logger.RequestID(ctx))
 	return nil
 }
 
 // FindSession reads one authn session of one tenant by its id.
 func (r *StorageRepository) FindSession(ctx context.Context, tenantID, id string) (*goidc.AuthnSession, error) {
 	r.log.Debug("read authn session",
-		logger.String("tenant_id", tenantID), logger.String("session_id", id))
+		logger.String("tenant_id", tenantID), logger.String("session_id", id), logger.RequestID(ctx))
 
 	var row Session
 	err := db.Conn(ctx, r.db).NewSelect().
@@ -424,7 +365,7 @@ func (r *StorageRepository) FindSession(ctx context.Context, tenantID, id string
 	}
 
 	r.log.Debug("read authn session",
-		logger.String("tenant_id", tenantID), logger.String("session_id", id))
+		logger.String("tenant_id", tenantID), logger.String("session_id", id), logger.RequestID(ctx))
 	return session, nil
 }
 

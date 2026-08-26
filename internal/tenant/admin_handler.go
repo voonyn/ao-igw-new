@@ -4,7 +4,6 @@ import (
 	"github.com/gofiber/fiber/v3"
 
 	"alphaomega/identitygateway/internal/api/http/response"
-	"alphaomega/identitygateway/internal/platform/logger"
 )
 
 // SlugPrimaryDomain is what an operator reads when they try to remove the host
@@ -41,11 +40,10 @@ type ActorReader func(c fiber.Ctx) Actor
 type AdminHandler struct {
 	svc   *AdminService
 	actor ActorReader
-	log   logger.Logger
 }
 
-func NewAdminHandler(svc *AdminService, actor ActorReader, log logger.Logger) *AdminHandler {
-	return &AdminHandler{svc: svc, actor: actor, log: log}
+func NewAdminHandler(svc *AdminService, actor ActorReader) *AdminHandler {
+	return &AdminHandler{svc: svc, actor: actor}
 }
 
 // AdminRoutes mounts the tenant routes. The caller mounts the tenant middleware

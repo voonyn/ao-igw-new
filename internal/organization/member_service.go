@@ -164,7 +164,7 @@ func (s *MemberService) ListTenant(
 	ctx context.Context, a Actor, desc bool, limit, offset int,
 ) ([]TenantMemberView, int64, error) {
 	s.log.Debug("list tenant members",
-		logger.String("tenant_id", a.TenantID), logger.String("user_id", a.UserID))
+		logger.String("tenant_id", a.TenantID), logger.String("user_id", a.UserID), logger.RequestID(ctx))
 
 	held, err := s.admitted(ctx, a)
 	if err != nil {
@@ -203,7 +203,7 @@ func (s *MemberService) ListOrg(
 	ctx context.Context, a Actor, orgID string, desc bool, limit, offset int,
 ) ([]OrgMemberView, int64, error) {
 	s.log.Debug("list organization members",
-		logger.String("tenant_id", a.TenantID), logger.String("org_id", orgID))
+		logger.String("tenant_id", a.TenantID), logger.String("org_id", orgID), logger.RequestID(ctx))
 
 	if _, err := s.admitted(ctx, a); err != nil {
 		return nil, 0, err
@@ -237,7 +237,7 @@ func (s *MemberService) Add(ctx context.Context, a Actor, body MemberBody) error
 	s.log.Debug("grant a membership",
 		logger.String("tenant_id", a.TenantID),
 		logger.String("org_id", body.OrgID),
-		logger.String("target_user_id", body.UserID))
+		logger.String("target_user_id", body.UserID), logger.RequestID(ctx))
 
 	if err := s.authorize(ctx, a, body.OrgID, body.Roles, "grant a membership"); err != nil {
 		return err
@@ -254,7 +254,7 @@ func (s *MemberService) UpdateRoles(ctx context.Context, a Actor, userID string,
 	s.log.Debug("change the roles of a membership",
 		logger.String("tenant_id", a.TenantID),
 		logger.String("org_id", body.OrgID),
-		logger.String("target_user_id", userID))
+		logger.String("target_user_id", userID), logger.RequestID(ctx))
 
 	if err := s.authorize(ctx, a, body.OrgID, body.Roles, "change the roles of a membership"); err != nil {
 		return err
@@ -275,7 +275,7 @@ func (s *MemberService) Remove(ctx context.Context, a Actor, userID, orgID strin
 	s.log.Debug("revoke a membership",
 		logger.String("tenant_id", a.TenantID),
 		logger.String("org_id", orgID),
-		logger.String("target_user_id", userID))
+		logger.String("target_user_id", userID), logger.RequestID(ctx))
 
 	// A revoke carries no roles, so it passes the seat gate and the role gate
 	// has nothing to read.
@@ -420,13 +420,13 @@ func (s *MemberService) authorize(ctx context.Context, a Actor, orgID string, ro
 		if !held.iamOwner() {
 			return s.refuse(a, orgID, what)
 		}
-		return s.scoped(a, roles, tenant.RoleIAMOwner, tenant.RoleIAMAdmin)
+		return s.known(a, roles, tenant.RoleIAMOwner, tenant.RoleIAMAdmin)
 	}
 
 	if !held.managesOrg(orgID) {
 		return s.refuse(a, orgID, what)
 	}
-	if err := s.scoped(a, roles, RoleOrgOwner, RoleOrgUserManager); err != nil {
+	if err := s.known(a, roles, RoleOrgOwner, RoleOrgUserManager); err != nil {
 		return err
 	}
 	if err := AuthorizeOrgRoleGrant(held.tenantManager(), held.orgRoles[orgID], roles); err != nil {
@@ -449,13 +449,18 @@ func (s *MemberService) authorize(ctx context.Context, a Actor, orgID string, ro
 	return nil
 }
 
-// scoped refuses a role name that means nothing where it was sent.
-func (s *MemberService) scoped(a Actor, roles []string, allowed ...string) error {
+// known refuses a role name that means nothing where it was sent. A tenant
+// membership and an organization membership name different roles, so the caller
+// passes the names its own seat accepts.
+//
+// The rule is not named for a scope. CONTEXT.md gives Scope the OIDC meaning,
+// and one word with two meanings is what the glossary exists to prevent.
+func (s *MemberService) known(a Actor, roles []string, allowed ...string) error {
 	for _, role := range roles {
 		if slices.Contains(allowed, role) {
 			continue
 		}
-		s.log.Warn("refused a role outside the scope of the membership",
+		s.log.Warn("refused a role name unknown where it was sent",
 			logger.String("tenant_id", a.TenantID),
 			logger.String("user_id", a.UserID),
 			logger.String("role", role))

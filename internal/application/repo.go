@@ -10,6 +10,7 @@ import (
 
 	"github.com/uptrace/bun"
 
+	"alphaomega/identitygateway/internal/oidc"
 	"alphaomega/identitygateway/internal/platform/db"
 	"alphaomega/identitygateway/internal/platform/logger"
 )
@@ -52,7 +53,7 @@ const projectJoin = "JOIN projects AS p ON p.id = a.project_id AND p.tenant_id =
 // soft-deleted application never does.
 func (r *Repository) List(ctx context.Context, tenantID string, q Query) ([]Application, int64, error) {
 	r.log.Debug("list applications",
-		logger.String("tenant_id", tenantID), logger.Int("offset", q.Offset))
+		logger.String("tenant_id", tenantID), logger.Int("offset", q.Offset), logger.RequestID(ctx))
 
 	var rows []Application
 	sel := db.Conn(ctx, r.db).NewSelect().
@@ -71,9 +72,6 @@ func (r *Repository) List(ctx context.Context, tenantID string, q Query) ([]Appl
 	}
 	if q.OrgID != "" {
 		sel = sel.Where("p.org_id = ?", q.OrgID)
-	}
-	if q.ProjectID != "" {
-		sel = sel.Where("a.project_id = ?", q.ProjectID)
 	}
 
 	// The id breaks a tie, so two applications created in the same millisecond
@@ -105,7 +103,7 @@ func orderBy(q Query) string {
 // FindByID reads one live application of a tenant. A miss returns ErrNotFound.
 func (r *Repository) FindByID(ctx context.Context, tenantID, appID string) (Application, error) {
 	r.log.Debug("read application",
-		logger.String("tenant_id", tenantID), logger.String("app_id", appID))
+		logger.String("tenant_id", tenantID), logger.String("app_id", appID), logger.RequestID(ctx))
 
 	var row Application
 	err := db.Conn(ctx, r.db).NewSelect().
@@ -128,14 +126,14 @@ func (r *Repository) FindByID(ctx context.Context, tenantID, appID string) (Appl
 
 // Configs reads the clients of the applications one page holds. An application
 // without a client is simply absent from the answer.
-func (r *Repository) Configs(ctx context.Context, tenantID string, appIDs []string) ([]OIDCConfig, error) {
+func (r *Repository) Configs(ctx context.Context, tenantID string, appIDs []string) ([]oidc.Client, error) {
 	if len(appIDs) == 0 {
 		return nil, nil
 	}
 	r.log.Debug("read clients",
-		logger.String("tenant_id", tenantID), logger.Int("count", len(appIDs)))
+		logger.String("tenant_id", tenantID), logger.Int("count", len(appIDs)), logger.RequestID(ctx))
 
-	var rows []OIDCConfig
+	var rows []oidc.Client
 	err := db.Conn(ctx, r.db).NewSelect().
 		Model(&rows).
 		Where("c.tenant_id = ?", tenantID).
@@ -149,24 +147,42 @@ func (r *Repository) Configs(ctx context.Context, tenantID string, appIDs []stri
 
 // Insert writes one new application. It runs on the caller's transaction.
 func (r *Repository) Insert(ctx context.Context, row Application) error {
+	r.log.Debug("write application",
+		logger.String("tenant_id", row.TenantID), logger.String("app_id", row.ID),
+		logger.RequestID(ctx))
+
 	if _, err := db.Conn(ctx, r.db).NewInsert().Model(&row).Exec(ctx); err != nil {
 		return fmt.Errorf("write application %s of tenant %s: %w", row.ID, row.TenantID, err)
 	}
+	r.log.Debug("wrote application",
+		logger.String("tenant_id", row.TenantID), logger.String("app_id", row.ID),
+		logger.RequestID(ctx))
 	return nil
 }
 
 // InsertConfig writes the client of one new application. It runs on the
 // caller's transaction, so the application and its client land together.
-func (r *Repository) InsertConfig(ctx context.Context, row OIDCConfig) error {
+func (r *Repository) InsertConfig(ctx context.Context, row oidc.Client) error {
+	r.log.Debug("write client",
+		logger.String("tenant_id", row.TenantID), logger.String("app_id", row.AppID),
+		logger.RequestID(ctx))
+
 	if _, err := db.Conn(ctx, r.db).NewInsert().Model(&row).Exec(ctx); err != nil {
 		return fmt.Errorf("write client of application %s of tenant %s: %w", row.AppID, row.TenantID, err)
 	}
+	r.log.Debug("wrote client",
+		logger.String("tenant_id", row.TenantID), logger.String("app_id", row.AppID),
+		logger.RequestID(ctx))
 	return nil
 }
 
 // Update writes the name of one live application. It runs on the caller's
 // transaction. A row that went in the meantime returns ErrNotFound.
 func (r *Repository) Update(ctx context.Context, row Application) error {
+	r.log.Debug("update application",
+		logger.String("tenant_id", row.TenantID), logger.String("app_id", row.ID),
+		logger.RequestID(ctx))
+
 	res, err := db.Conn(ctx, r.db).NewUpdate().
 		Model(&row).
 		Column("name").
@@ -177,6 +193,9 @@ func (r *Repository) Update(ctx context.Context, row Application) error {
 	if err != nil {
 		return fmt.Errorf("update application %s of tenant %s: %w", row.ID, row.TenantID, err)
 	}
+	r.log.Debug("updated application",
+		logger.String("tenant_id", row.TenantID), logger.String("app_id", row.ID),
+		logger.RequestID(ctx))
 	return oneRow(res, row.TenantID, row.ID, "update")
 }
 
@@ -186,7 +205,11 @@ func (r *Repository) Update(ctx context.Context, row Application) error {
 // The client id is not written. Every relying party is configured with it, so a
 // changed id breaks a live integration with no error anybody reads. The stored
 // secret is not written either: only a rotation replaces it.
-func (r *Repository) UpdateConfig(ctx context.Context, row OIDCConfig) error {
+func (r *Repository) UpdateConfig(ctx context.Context, row oidc.Client) error {
+	r.log.Debug("update client",
+		logger.String("tenant_id", row.TenantID), logger.String("app_id", row.AppID),
+		logger.RequestID(ctx))
+
 	res, err := db.Conn(ctx, r.db).NewUpdate().
 		Model(&row).
 		Column("token_authn_method", "subject_type", "par_is_required", "scopes",
@@ -198,14 +221,21 @@ func (r *Repository) UpdateConfig(ctx context.Context, row OIDCConfig) error {
 	if err != nil {
 		return fmt.Errorf("update client of application %s of tenant %s: %w", row.AppID, row.TenantID, err)
 	}
+	r.log.Debug("updated client",
+		logger.String("tenant_id", row.TenantID), logger.String("app_id", row.AppID),
+		logger.RequestID(ctx))
 	return oneRow(res, row.TenantID, row.AppID, "update the client of")
 }
 
 // SetSecret writes the bcrypt hash of one rotated client secret. It runs on the
 // caller's transaction. The secret itself is never written and never logged.
 func (r *Repository) SetSecret(ctx context.Context, tenantID, appID, hash string) error {
+	r.log.Debug("write client secret",
+		logger.String("tenant_id", tenantID), logger.String("app_id", appID),
+		logger.RequestID(ctx))
+
 	res, err := db.Conn(ctx, r.db).NewUpdate().
-		Model((*OIDCConfig)(nil)).
+		Model((*oidc.Client)(nil)).
 		Set("secret = ?", hash).
 		Where("tenant_id = ?", tenantID).
 		Where("app_id = ?", appID).
@@ -214,6 +244,9 @@ func (r *Repository) SetSecret(ctx context.Context, tenantID, appID, hash string
 	if err != nil {
 		return fmt.Errorf("rotate the secret of application %s of tenant %s: %w", appID, tenantID, err)
 	}
+	r.log.Debug("wrote client secret",
+		logger.String("tenant_id", tenantID), logger.String("app_id", appID),
+		logger.RequestID(ctx))
 	return oneRow(res, tenantID, appID, "rotate the secret of")
 }
 
@@ -224,6 +257,10 @@ func (r *Repository) SetSecret(ctx context.Context, tenantID, appID, hash string
 // The client goes with the application. A client that outlived the application
 // it belongs to would still mint tokens.
 func (r *Repository) SoftDelete(ctx context.Context, tenantID, appID string) error {
+	r.log.Debug("delete application",
+		logger.String("tenant_id", tenantID), logger.String("app_id", appID),
+		logger.RequestID(ctx))
+
 	res, err := db.Conn(ctx, r.db).NewDelete().
 		Model((*Application)(nil)).
 		Where("tenant_id = ?", tenantID).
@@ -238,12 +275,15 @@ func (r *Repository) SoftDelete(ctx context.Context, tenantID, appID string) err
 
 	// A SAML application holds no client, so no row here is the normal answer.
 	if _, err := db.Conn(ctx, r.db).NewDelete().
-		Model((*OIDCConfig)(nil)).
+		Model((*oidc.Client)(nil)).
 		Where("tenant_id = ?", tenantID).
 		Where("app_id = ?", appID).
 		Exec(ctx); err != nil {
 		return fmt.Errorf("delete client of application %s of tenant %s: %w", appID, tenantID, err)
 	}
+	r.log.Debug("deleted application",
+		logger.String("tenant_id", tenantID), logger.String("app_id", appID),
+		logger.RequestID(ctx))
 	return nil
 }
 

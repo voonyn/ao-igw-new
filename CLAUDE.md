@@ -85,7 +85,11 @@ bubbling up.
 a convenience for the user, never the enforcement point.
 
 **One response envelope.** Every API answer is
-`{code, status, message, data, meta?}` or `{code, status, message, errors?}`.
+`{code, status, message, data, meta?}` or `{code, status, message, error, errors?}`.
+
+`error` is a machine-readable slug, and it is on every error answer. A client
+branches on the slug, never on `message`, so a reworded message never changes
+behaviour. `errors` is present only when the answer names the fields that failed.
 
 ## Stateless design
 

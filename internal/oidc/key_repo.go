@@ -7,7 +7,6 @@ package oidc
 import (
 	"context"
 	"fmt"
-	"time"
 
 	"github.com/uptrace/bun"
 
@@ -26,31 +25,6 @@ const (
 // out of scope.
 const keyUseSig = 1
 
-// Key is one row of oidc_keys. PublicKey holds the public JWK JSON as it is
-// served. PrivateKey holds the private JWK JSON sealed by the cipher. The row
-// id doubles as the JWKS kid.
-type Key struct {
-	bun.BaseModel `bun:"table:oidc_keys"`
-
-	ID         string    `bun:"id,pk"`
-	TenantID   string    `bun:"tenant_id,pk"`
-	KeyUse     int       `bun:"key_use"`
-	Algorithm  string    `bun:"algorithm"`
-	State      int       `bun:"state"`
-	PublicKey  []byte    `bun:"public_key"`
-	PrivateKey []byte    `bun:"private_key"`
-	ActiveAt   time.Time `bun:"active_at,nullzero"`
-	ExpiresAt  time.Time `bun:"expires_at,nullzero"`
-
-	// UpdatedAt is the last write to the row, which is when a rotation demoted
-	// or promoted the key. The administrative read renders it, because
-	// ExpiresAt is a future grace deadline and answers a different question.
-	CreatedAt time.Time `bun:"created_at,nullzero"`
-	UpdatedAt time.Time `bun:"updated_at,nullzero"`
-
-	DeletedAt time.Time `bun:",soft_delete,nullzero"`
-}
-
 // KeyRepository reads the signing keys of one tenant.
 type KeyRepository struct {
 	db  *bun.DB
@@ -62,9 +36,9 @@ func NewKeyRepository(bdb *bun.DB, log logger.Logger) *KeyRepository {
 }
 
 // ListSigningKeys returns the active and the inactive signature keys of one
-// tenant, active first. Retired and soft-deleted rows never come back.
+// tenant, active first. A retired row never comes back.
 func (r *KeyRepository) ListSigningKeys(ctx context.Context, tenantID string) ([]Key, error) {
-	r.log.Debug("list signing keys", logger.String("tenant_id", tenantID))
+	r.log.Debug("list signing keys", logger.String("tenant_id", tenantID), logger.RequestID(ctx))
 
 	var keys []Key
 	err := db.Conn(ctx, r.db).NewSelect().
@@ -79,11 +53,11 @@ func (r *KeyRepository) ListSigningKeys(ctx context.Context, tenantID string) ([
 	}
 
 	r.log.Debug("listed signing keys",
-		logger.String("tenant_id", tenantID), logger.Int("count", len(keys)))
+		logger.String("tenant_id", tenantID), logger.Int("count", len(keys)), logger.RequestID(ctx))
 	return keys, nil
 }
 
-// ListKeys reads every live key of one tenant, active first and retired last.
+// ListKeys reads every key of one tenant, active first and retired last.
 //
 // It differs from ListSigningKeys on purpose. That read answers what the JWKS
 // endpoint publishes, and this one answers what the tenant holds: the console
@@ -93,7 +67,7 @@ func (r *KeyRepository) ListSigningKeys(ctx context.Context, tenantID string) ([
 // The private half is projected like every other column, and the view drops it.
 // No key material reaches an answer.
 func (r *KeyRepository) ListKeys(ctx context.Context, tenantID string) ([]Key, error) {
-	r.log.Debug("list every key", logger.String("tenant_id", tenantID))
+	r.log.Debug("list every key", logger.String("tenant_id", tenantID), logger.RequestID(ctx))
 
 	var keys []Key
 	err := db.Conn(ctx, r.db).NewSelect().

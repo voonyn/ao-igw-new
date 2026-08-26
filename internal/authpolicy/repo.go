@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"time"
 
 	"github.com/uptrace/bun"
 
@@ -17,41 +16,6 @@ import (
 // a level that stores nothing inherits the level below, and a reset of an
 // override that is not there has already reached the state it asks for.
 var ErrNotFound = errors.New("auth policy row not found")
-
-// Row is one row of auth_policy_settings: the tenant default when OrgID is
-// empty, and the override of one organization otherwise.
-//
-// Every knob is a pointer, because the column is nullable and NULL is the
-// answer "inherit the level below". A stored value is an explicit setting, and
-// zero is a value: a threshold of 0 disables lockout.
-//
-// The durations are stored in milliseconds and the API answers seconds, so the
-// two names differ on purpose.
-//
-// PwDenyList is the JSON array the column holds, bound as a string. The console
-// reads and writes a list of words, and the DTO does that conversion.
-type Row struct {
-	bun.BaseModel `bun:"table:auth_policy_settings,alias:ap"`
-
-	TenantID string `bun:"tenant_id,pk"`
-	OrgID    string `bun:"org_id,pk"`
-
-	LockoutThreshold  *int `bun:"lockout_threshold"`
-	LockoutWindowMS   *int `bun:"lockout_window_ms"`
-	LockoutCooldownMS *int `bun:"lockout_cooldown_ms"`
-
-	PwMinLength   *int    `bun:"pw_min_length"`
-	PwMinClasses  *int    `bun:"pw_min_classes"`
-	PwDenyList    *string `bun:"pw_deny_list"`
-	PwCheckBreach *bool   `bun:"pw_check_breach"`
-
-	RecoveryResetTTLMS  *int `bun:"recovery_reset_ttl_ms"`
-	RecoveryVerifyTTLMS *int `bun:"recovery_verify_ttl_ms"`
-
-	MFARequired *bool `bun:"mfa_required"`
-
-	DeletedAt time.Time `bun:"deleted_at,soft_delete,nullzero"`
-}
 
 // policyColumns names every knob of the table, in the order the migrations
 // added them. The insert lists them so no write touches created_at or
@@ -77,7 +41,7 @@ func NewRepository(bdb *bun.DB, log logger.Logger) *Repository {
 // reads as "inherit everything".
 func (r *Repository) Find(ctx context.Context, tenantID, orgID string) (Row, error) {
 	r.log.Debug("read the auth policy of one level",
-		logger.String("tenant_id", tenantID), logger.String("org_id", orgID))
+		logger.String("tenant_id", tenantID), logger.String("org_id", orgID), logger.RequestID(ctx))
 
 	var row Row
 	err := db.Conn(ctx, r.db).NewSelect().
@@ -102,6 +66,10 @@ func (r *Repository) Find(ctx context.Context, tenantID, orgID string) (Row, err
 // primary key is (tenant_id, org_id), so a level that was reset once must be
 // writable again.
 func (r *Repository) Upsert(ctx context.Context, row Row) error {
+	r.log.Debug("write auth policy",
+		logger.String("tenant_id", row.TenantID), logger.String("org_id", row.OrgID),
+		logger.RequestID(ctx))
+
 	q := db.Conn(ctx, r.db).NewInsert().
 		Model(&row).
 		Column(append([]string{"tenant_id", "org_id"}, policyColumns...)...).
@@ -114,6 +82,9 @@ func (r *Repository) Upsert(ctx context.Context, row Row) error {
 		return fmt.Errorf("write the auth policy of tenant %s, org %q: %w",
 			row.TenantID, row.OrgID, err)
 	}
+	r.log.Debug("wrote auth policy",
+		logger.String("tenant_id", row.TenantID), logger.String("org_id", row.OrgID),
+		logger.RequestID(ctx))
 	return nil
 }
 
@@ -123,6 +94,10 @@ func (r *Repository) Upsert(ctx context.Context, row Row) error {
 // The row is soft deleted, not dropped: an operator wrote it, and the trail of
 // what an organization once enforced answers a question a dropped row cannot.
 func (r *Repository) Remove(ctx context.Context, tenantID, orgID string) error {
+	r.log.Debug("delete auth policy",
+		logger.String("tenant_id", tenantID), logger.String("org_id", orgID),
+		logger.RequestID(ctx))
+
 	res, err := db.Conn(ctx, r.db).NewDelete().
 		Model((*Row)(nil)).
 		Where("ap.tenant_id = ?", tenantID).
@@ -139,5 +114,8 @@ func (r *Repository) Remove(ctx context.Context, tenantID, orgID string) error {
 	if rows == 0 {
 		return fmt.Errorf("%w: tenant %s, org %s", ErrNotFound, tenantID, orgID)
 	}
+	r.log.Debug("deleted auth policy",
+		logger.String("tenant_id", tenantID), logger.String("org_id", orgID),
+		logger.RequestID(ctx))
 	return nil
 }

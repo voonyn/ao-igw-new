@@ -13,7 +13,7 @@ export default function ConsoleNotFound() {
           <h1>Not found</h1>
           <div className="sub">
             That record doesn&apos;t exist, or it sits outside the access your roles grant. If you expected to see it,
-            ask an instance manager to check your membership.
+            ask a tenant manager to check your membership.
           </div>
         </div>
       </div>

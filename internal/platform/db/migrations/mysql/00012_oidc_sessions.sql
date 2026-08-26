@@ -15,7 +15,7 @@
 CREATE TABLE oidc_sessions (
     -- ── Identity & lifecycle ──────────────────────────────────
     id          CHAR(36)     NOT NULL,                /* goidc AuthnSession.ID (UUID) */
-    tenant_id   CHAR(36)     NOT NULL,                /* owning OP instance, see oidc_provider_configs */
+    tenant_id   CHAR(36)     NOT NULL,                /* owning tenant, see oidc_provider_configs */
     client_id   CHAR(36)     NULL     DEFAULT NULL,   /* extracted: relying party */
     subject     VARCHAR(255) NULL     DEFAULT NULL,   /* extracted: set once the user authenticates */
 

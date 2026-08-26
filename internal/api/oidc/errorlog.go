@@ -25,7 +25,7 @@ func ErrorLogger(tenantID string, log logger.Logger) goidc.HandleErrorFunc {
 		log.Error("oidc request failed",
 			logger.String("tenant_id", tenantID),
 			logger.String("error_code", errorCode(err)),
-			RequestID(ctx))
+			logger.RequestID(ctx))
 	}
 }
 

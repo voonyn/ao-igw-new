@@ -66,7 +66,7 @@ func (s *ConsentService) Decide(
 ) ([]string, error) {
 	s.log.Debug("decide consent",
 		logger.String("tenant_id", tenantID),
-		logger.String("client_id", clientID))
+		logger.String("client_id", clientID), logger.RequestID(ctx))
 
 	// prompt=consent overrules everything the database holds, so no lookup runs.
 	// The person answers again for the whole request.
@@ -98,7 +98,7 @@ func (s *ConsentService) Decide(
 func (s *ConsentService) Approve(ctx context.Context, given Consent) error {
 	s.log.Debug("record consent",
 		logger.String("tenant_id", given.TenantID),
-		logger.String("client_id", given.ClientID))
+		logger.String("client_id", given.ClientID), logger.RequestID(ctx))
 
 	state, err := s.deps.Find(ctx, given.TenantID, given.UserID, given.ClientID)
 	if err != nil {
@@ -127,7 +127,7 @@ func (s *ConsentService) Approve(ctx context.Context, given Consent) error {
 	s.log.Debug("recorded consent",
 		logger.String("tenant_id", given.TenantID),
 		logger.String("user_id", given.UserID),
-		logger.String("client_id", given.ClientID))
+		logger.String("client_id", given.ClientID), logger.RequestID(ctx))
 	return nil
 }
 

@@ -266,7 +266,7 @@ export interface Page<T> {
  * about the size of the tenant. Those now belong to the view that renders them,
  * one page at a time, via `usePagedList`.
  *
- * `tenants` holds the single resolved instance (the multi-tenant list is SYSTEM
+ * `tenants` holds the single resolved tenant (the multi-tenant list is SYSTEM
  * scope and deferred); `keys` is a tenant's signing keys, bounded by rotation
  * policy; `providerConfigs` is one config per tenant.
  */

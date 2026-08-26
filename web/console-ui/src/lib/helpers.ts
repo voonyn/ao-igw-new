@@ -118,7 +118,7 @@ export const PAGE_PATH: Record<string, string> = {
  * THE name of a route. One table, three consumers: the sidebar nav item, the
  * breadcrumb, and the page `<h1>` (via `<PageHead>`). Nothing else may carry a
  * route's display string — three tables is how `/tenants` came to be called
- * "Instance Settings", "Tenants", and "Tenants" on the same screen.
+ * "Tenant Settings", "Tenants", and "Tenants" on the same screen.
  */
 export const PAGE_TITLES: Record<string, string> = {
   overview: "Overview",

@@ -56,7 +56,7 @@ export function KeysView() {
   const [jwksOpen, setJwksOpen] = useState(false);
   const keys = db.keys.filter((k) => k.tenantId === tenantId);
   const KU = LABELS.keyUse;
-  // The keys read is instance-manager gated, so "no keys" and "not yours to see"
+  // The keys read is tenant-manager gated, so "no keys" and "not yours to see"
   // are different answers and must not render the same empty table.
   const failed = describeStatus(status.keys, "signing keys", "IAM_OWNER or IAM_ADMIN");
 

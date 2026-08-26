@@ -61,7 +61,7 @@ func (r *Registry) Handler(ctx context.Context, tenantID string, cfg aooidc.Prov
 	}
 
 	r.log.Debug("cache miss, build the provider",
-		logger.String("tenant_id", tenantID), RequestID(ctx))
+		logger.String("tenant_id", tenantID), logger.RequestID(ctx))
 	handler, err := r.build(ctx, tenantID, cfg)
 	if err != nil {
 		return nil, err
@@ -71,6 +71,6 @@ func (r *Registry) Handler(ctx context.Context, tenantID string, cfg aooidc.Prov
 	r.log.Debug("cached the provider",
 		logger.String("tenant_id", tenantID),
 		logger.String("issuer", cfg.Issuer),
-		RequestID(ctx))
+		logger.RequestID(ctx))
 	return handler, nil
 }

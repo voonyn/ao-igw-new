@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useId, useMemo, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { Icon } from "@/components/console/icons";
 import { Btn, confirmAction, ViewNotice } from "@/components/console/primitives";
 import { useConsole, usePending } from "@/components/console/store";
@@ -13,6 +13,7 @@ import {
   type AuthPolicy,
   type AuthPolicyBody,
   type OrgRef,
+  type Outcome,
 } from "@/lib/console-api";
 
 /** The noun `describeStatus` builds every auth-policy sentence from. */
@@ -49,7 +50,7 @@ function numProblem(key: string, raw: string): string | null {
   return null;
 }
 
-export function PoliciesView() {
+export function PoliciesView({ initial }: { initial?: Outcome<AuthPolicy> } = {}) {
   const { me } = useConsole();
   const tenantManager = canManageTenant(me);
   // Orgs whose override the caller may manage: every org for an tenant manager,
@@ -74,25 +75,39 @@ export function PoliciesView() {
     );
   }
 
-  return <AuthPolicyManager tenantManager={tenantManager} manageableOrgs={manageableOrgs} />;
+  return <AuthPolicyManager tenantManager={tenantManager} manageableOrgs={manageableOrgs} initial={initial} />;
 }
 
 function AuthPolicyManager({
   tenantManager,
   manageableOrgs,
+  initial,
 }: {
   tenantManager: boolean;
   manageableOrgs: OrgRef[];
+  /** The tenant-default policy, read on the server during the render. It seeds
+   * the first paint, and it applies only while the scope is still the tenant —
+   * picking an organization reads that override from the browser. */
+  initial?: Outcome<AuthPolicy>;
 }) {
   const scopeId = useId();
   // Scope: "" = tenant default (tenant managers only); else an org id override.
   const [scope, setScope] = useState<string>(tenantManager ? "" : manageableOrgs[0]?.id ?? "");
-  const [pol, setPol] = useState<AuthPolicy | null>(null);
+  // The seed is the tenant read, so it counts only when the tenant scope is the
+  // one on screen. An org manager opens on its own override and reads it here.
+  const seed = tenantManager ? initial : undefined;
+  const [pol, setPol] = useState<AuthPolicy | null>(seed?.ok ? seed.data : null);
 
   // Same shape as audit.tsx: a refused read resolves to the shared sentence, and
   // `loaded` flips either way so a 403 can never leave the card on "Loading…".
-  const [error, setError] = useState<{ title: string; body: string } | null>(null);
-  const [loaded, setLoaded] = useState(false);
+  const [error, setError] = useState<{ title: string; body: string } | null>(
+    seed && !seed.ok ? describeStatus({ state: seed.reason }, POLICIES_RESOURCE, "IAM_OWNER or IAM_ADMIN", "ORG_OWNER") : null
+  );
+  const [loaded, setLoaded] = useState(Boolean(seed));
+
+  // The server already answered the tenant scope. The mount effect below would
+  // repeat that request, so it is skipped once.
+  const seeded = useRef(Boolean(seed));
 
   const load = useCallback(() => {
     return authPolicyApi
@@ -112,6 +127,10 @@ function AuthPolicyManager({
   }, [scope]);
 
   useEffect(() => {
+    if (seeded.current) {
+      seeded.current = false;
+      return;
+    }
     load();
   }, [load]);
 

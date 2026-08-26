@@ -184,30 +184,34 @@ export const PAGE_SIZES = [10, 50, 100] as const;
  * instead of asking for one page the size of the collection. */
 export const WALK_PAGE = 100;
 
-/** How many pages an exhaustive read follows before it stops. 1000 rows is
- * already an unusable `<select>`; past this the caller reports itself truncated
- * rather than rendering a short list as if it were the whole collection. */
-export const WALK_MAX_PAGES = 10;
+/** How many rows a picker holds. A `<select>` has no pager, so it shows a short
+ * head of the collection and the operator narrows it by typing: the search is a
+ * request parameter, so a match on the thousandth row is found. Ten rows fit on
+ * screen without scrolling and cost one small request. */
+export const PICKER_PAGE = 10;
 
 /**
  * One exhaustive read: read page 1, then read the pages after it until the
- * collection is exhausted or WALK_MAX_PAGES pages have been read.
+ * collection is exhausted.
  *
- * It backs both a picker and an export, because they are the same walk: a
- * `<select>` has no pager and a CSV has no second page, so each reads the whole
- * collection under a declared bound and says so when it hits it.
+ * It backs an export and the membership exclusion set. A CSV has no second page
+ * and an exclusion set that stopped early would offer a duplicate the write then
+ * refuses, so both read the whole collection under the ACTIVE narrowing.
+ *
+ * There is no page bound. A picker used to share this walk and needed one; a
+ * picker now reads one short page and searches instead. What is left must be
+ * complete to be correct.
  *
  * The answer keeps page 1's shape and its `total`. The caller compares the rows
- * it holds against that `total` to tell a complete collection from a truncated
- * one, so a walk that fails mid-way still reports itself incomplete rather than
- * as the end.
+ * it holds against that `total`, so a walk that fails mid-way reports itself
+ * incomplete rather than as the end.
  */
 export async function readAllPages<P extends Page<unknown>>(read: PageReader<P>, opts: PageOpts = {}): Promise<Outcome<P>> {
   const first = await read({ ...opts, limit: WALK_PAGE, page: 1 });
   if (!first.ok) return first;
 
   let items = first.data.items ?? [];
-  const last = Math.min(first.data.totalPages ?? 1, WALK_MAX_PAGES);
+  const last = first.data.totalPages ?? 1;
   for (let page = 2; page <= last; page++) {
     const next = await read({ ...opts, limit: WALK_PAGE, page });
     if (!next.ok) break;
@@ -245,14 +249,17 @@ export interface UserMemberships {
 export const userMemberships = (id: string) =>
   getOptional<UserMemberships>(`/api/admin/users/${encodeURIComponent(id)}/memberships`);
 
-/** Reads just the `total` of a scoped collection. Every page carries `meta.total`
- * — the count taken server-side by the same `COUNT(*)` whatever the size — so the
- * smallest page answers it. This is how the overview tiles, the sidebar badges
- * and the detail-page counts are sourced now that no view holds a whole
- * collection to measure. A read the caller may not make counts as zero: a badge
- * is not the place to raise a permission error the view itself will state. */
+/** Reads just the `total` of one collection. Every page carries `meta.total` —
+ * the count taken server-side by the same `COUNT(*)` whatever the size — so the
+ * smallest page answers it, and the page asked for is one row. This is how the
+ * overview tiles, the sidebar badges and the detail-page counts are sourced now
+ * that no view holds a whole collection to measure. A caller that already holds
+ * a page reads `page.total` and does not call this at all.
+ *
+ * A read the caller may not make counts as zero: a badge is not the place to
+ * raise a permission error the view itself will state. */
 export async function getTotal(path: string, opts: PageOpts = {}): Promise<number> {
-  const out = await getPage<unknown>(path, { ...opts, limit: 10 });
+  const out = await getPage<unknown>(path, { ...opts, limit: 1 });
   return out.ok ? (out.data.total ?? 0) : 0;
 }
 
@@ -760,9 +767,14 @@ const MUTATION_MESSAGES: Record<string, string> = {
   // this tenant signed — including the one this console is holding.
   primary_domain: "This is the tenant's primary domain and can't be removed.",
   invalid_input: "Some fields are invalid — check the form and try again.",
-  server_error: "The server hit an error. Please try again.",
+  internal_server_error: "The server hit an error. Please try again.",
   protected_claim: "That claim name is reserved (a protocol or trust claim) and can't be used.",
   scope_in_use: "This scope is still assigned to a client and can't be deleted.",
+  // Rotate-secret answers both. Only a confidential OIDC client holds a secret,
+  // so an application that carries no client, and a public client that
+  // authenticates with PKCE, have nothing to rotate.
+  no_client: "This application holds no OIDC client, so there is no secret to rotate.",
+  public_client: "This is a public client. It authenticates with PKCE and holds no secret.",
   limit_exceeded: "Limit exceeded — too many mappers on this scope, or the value is too large.",
   send_failed: "The transport rejected the send — check the SMTP host, credentials, and TLS mode.",
   // Migration 00020 seeds the OIDC standard scopes. The provider resolves claims
