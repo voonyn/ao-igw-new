@@ -494,9 +494,19 @@ func mountAccount(
 		Log:   log,
 	})
 
+	// A person's own activity: the audit events where they were the actor. The
+	// service narrows the read to the subject of the token, so this stack takes
+	// the one repository read and nothing that decides who may read it.
+	activitySvc := audit.NewAccountService(audit.AccountDeps{
+		List: audit.NewRepository(bdb, log).ListEvents,
+		Log:  log,
+	})
+
 	group := app.Group(accountPrefix, tenantMW, bearer)
 	user.AccountRoutes(group, user.NewAccountHandler(accountSvc))
 	session.AccountRoutes(group, session.NewAccountHandler(sessionSvc))
+	audit.AccountRoutes(group, audit.NewAccountHandler(activitySvc, auditActor),
+		middlewares.Paginate(audit.SortKeys...))
 }
 
 // tenantActor, providerActor, and auditActor read the person behind one admin

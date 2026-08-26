@@ -112,12 +112,6 @@ export interface ActivityEventWire {
   createdAt: string
 }
 
-// ActivityPage is one keyset page of the feed. nextCursor is absent once the feed
-// is exhausted; it is opaque and must be echoed back verbatim to page further.
-export interface ActivityPage {
-  events: ActivityEventWire[]
-  nextCursor?: string
-}
 
 // HealthCheck is one row of the derived account-health checklist (lib/health.ts).
 // `state` is three-valued on purpose: a check whose endpoint failed or whose

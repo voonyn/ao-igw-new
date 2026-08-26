@@ -119,12 +119,12 @@ export function HomeView({ spaceId, spaces, A, heroStyle }: { spaceId: string; s
           const s = (d as { sessions?: unknown }).sessions;
           setSessionCount(Array.isArray(s) ? s.length : 0);
         }, setSessionsErr),
-        // ponytail: one page at the service maximum, and the cursor is never
-        // walked — so on a busy account the chart covers fewer than CHART_DAYS
-        // days and labels the span it actually read. Walking the keyset to
-        // guarantee 14 days is unbounded work on the landing page for a
-        // decorative chart. Upgrade path when the short window bites: a
-        // server-side GET /account/activity/summary returning per-day counts (D3).
+        // ponytail: one page at the service maximum, and no later page is read
+        // — so on a busy account the chart covers fewer than CHART_DAYS days and
+        // labels the span it actually read. Reading page after page to guarantee
+        // 14 days is unbounded work on the landing page for a decorative chart.
+        // Upgrade path when the short window bites: a server-side
+        // GET /account/activity/summary returning per-day counts (D3).
         readCard("/api/account/activity?limit=" + ACTIVITY_PAGE, function (d) {
           const e = (d as { events?: unknown }).events;
           setActivity(Array.isArray(e) ? (e as ActivityEventWire[]) : []);

@@ -13,8 +13,8 @@ export const dynamic = "force-dynamic"
 // Forwards the user's access token server-side (keyed by the sealed cookie; the
 // browser never sees it) to the gateway account API, which scopes the feed to the
 // token `sub` — the BFF passes no actor and could not widen it if it tried.
-// `limit` and `cursor` ride through verbatim; the cursor is opaque here (the
-// gateway owns the keyset codec), so it is never parsed or rewritten.
+// `page` and `limit` ride through verbatim: the feed pages by offset, like every
+// other list of this deployment, and the gateway clamps both.
 export async function GET(req: NextRequest) {
   const session = await openSession(req.cookies.get(PORTAL_SESSION_COOKIE)?.value)
   const { accessToken, session: next, rotated } = await resolveAccessToken(session)
@@ -24,7 +24,7 @@ export async function GET(req: NextRequest) {
   }
 
   const url = new URL("/api/v1/account/activity", getOidcConfig().issuer)
-  for (const key of ["limit", "cursor"]) {
+  for (const key of ["limit", "page"]) {
     const value = req.nextUrl.searchParams.get(key)
     if (value) url.searchParams.set(key, value)
   }
@@ -33,9 +33,20 @@ export async function GET(req: NextRequest) {
       headers: { Authorization: `Bearer ${accessToken}`, Accept: "application/json" },
       cache: "no-store",
     })
+    if (res.status === 200) {
+      // The gateway answers this deployment's one envelope,
+      // `{code, status, message, data, meta}`. The page is `data` and the count
+      // of the whole feed is `meta.total`; anything else on the wire is a shape
+      // the view cannot render, so it degrades to an empty page rather than to a
+      // crash.
+      const body = await res.json().catch(() => null)
+      const events = Array.isArray(body?.data) ? body.data : []
+      const total = typeof body?.meta?.total === "number" ? body.meta.total : 0
+      return await withRotation(NextResponse.json({ events, total }), rotated, next)
+    }
     // Relay the gateway's status + body as-is so the view can distinguish
-    // unauthorized (re-login), rate_limited (wait) and invalid_request (bad
-    // cursor) exactly as the sessions route does.
+    // unauthorized (re-login), rate_limited (wait) and invalid_request (a page
+    // the gateway refused) exactly as the sessions route does.
     const data = await res.json().catch(() => ({ error: "server_error" }))
     return await withRotation(NextResponse.json(data, { status: res.status }), rotated, next)
   } catch (err) {

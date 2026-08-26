@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 
 import { Icon } from "../icons";
 import { PageHead, KV, Seg, NotWiredBanner } from "../primitives";
@@ -8,8 +8,8 @@ import { presentActivity } from "@/lib/activity";
 import { accountErrorFrom, type AccountErr } from "@/lib/format";
 import type { Actions, ActivityEvent, ActivityEventWire } from "@/lib/types";
 
-// One of the page sizes the account API serves (10 / 50 / 100); anything else is
-// refused, not resized.
+// The rows one page carries. The gateway clamps a limit above 100, so this value
+// is inside what the account API serves.
 const PAGE_SIZE = 50;
 
 // AlphaOmega User Portal — Activity (NotificationsDrawer lives in the shell, not here)
@@ -22,55 +22,48 @@ const PAGE_SIZE = 50;
 export function ActivityView({ A }: { A: Actions }) {
   const [filter, setFilter] = useState("all");
   const [events, setEvents] = useState<ActivityEvent[]>([]);
-  const [cursor, setCursor] = useState("");
+  const [page, setPage] = useState(1);
+  const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
-  const [loadingMore, setLoadingMore] = useState(false);
   const [err, setErr] = useState<AccountErr>("");
 
-  // loadPage fetches one keyset page. An empty `after` starts at the head and
-  // replaces the list; a cursor appends the next older page. The cursor is opaque
-  // — it is echoed back to the gateway verbatim, never parsed here.
-  const loadPage = useCallback(async function (after: string) {
-    try {
-      const q = new URLSearchParams({ limit: String(PAGE_SIZE) });
-      if (after) q.set("cursor", after);
-      const res = await fetch("/api/account/activity?" + q.toString(), { headers: { Accept: "application/json" } });
-      const data = await res.json().catch(function () { return {}; });
-      if (res.status === 200) {
-        const page = (Array.isArray(data.events) ? data.events : []) as ActivityEventWire[];
-        const rows = page.map(presentActivity);
-        setEvents(function (prev) { return after ? prev.concat(rows) : rows; });
-        setCursor(typeof data.nextCursor === "string" ? data.nextCursor : "");
-        setErr("");
-      } else {
-        setErr(accountErrorFrom(res.status, data && data.error));
-      }
-    } catch {
-      setErr("error");
-    }
-  }, []);
+  // The feed pages by offset, so one page replaces the list rather than
+  // extending it. `total` counts the whole feed, and the pager is derived from
+  // it, so the last page is known before the reader reaches it.
+  const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
-  // Fetch the first page on mount inside an async IIFE so no setState runs
-  // synchronously in the effect body.
+  // loadPage fetches one page by number. Page 1 is the newest.
   useEffect(function () {
+    let live = true;
+    // Every setState runs inside the async IIFE, so none of them runs
+    // synchronously in the effect body.
     void (async function () {
-      await loadPage("");
-      setLoading(false);
+      setLoading(true);
+      try {
+        const q = new URLSearchParams({ limit: String(PAGE_SIZE), page: String(page) });
+        const res = await fetch("/api/account/activity?" + q.toString(), { headers: { Accept: "application/json" } });
+        const data = await res.json().catch(function () { return {}; });
+        if (!live) return;
+        if (res.status === 200) {
+          const rows = (Array.isArray(data.events) ? data.events : []) as ActivityEventWire[];
+          setEvents(rows.map(presentActivity));
+          setTotal(typeof data.total === "number" ? data.total : 0);
+          setErr("");
+        } else {
+          setErr(accountErrorFrom(res.status, data && data.error));
+        }
+      } catch {
+        if (live) setErr("error");
+      } finally {
+        if (live) setLoading(false);
+      }
     })();
-  }, [loadPage]);
+    // A page the reader left is not allowed to overwrite the one they moved to.
+    return function () { live = false; };
+  }, [page]);
 
-  async function loadMore() {
-    if (!cursor) return;
-    setLoadingMore(true);
-    try {
-      await loadPage(cursor);
-    } finally {
-      setLoadingMore(false);
-    }
-  }
-
-  // The segment narrows what has already been loaded; it never gates paging, so a
-  // filtered view that looks sparse can still be extended with "Load more".
+  // The segment narrows the page that is loaded; it never gates paging, so a
+  // filtered page that looks sparse can still be followed by the next page.
   const shown = events.filter(function (e) {
     if (filter === "all") return true;
     if (filter === "security") return ["signin", "newdevice", "mfa", "password"].indexOf(e.type) !== -1;
@@ -109,7 +102,7 @@ export function ActivityView({ A }: { A: Actions }) {
               <div style={{ fontSize: 13, color: "var(--muted)" }}>No activity yet. Sign-ins and security changes will appear here.</div>
             )}
             {!loading && events.length > 0 && shown.length === 0 && (
-              <div style={{ fontSize: 13, color: "var(--muted)" }}>Nothing in this category yet{cursor ? " — load more to keep looking." : "."}</div>
+              <div style={{ fontSize: 13, color: "var(--muted)" }}>Nothing in this category on this page{page < pages ? " — open the next page to keep looking." : "."}</div>
             )}
             <div className="timeline">
               {shown.map(function (e) {
@@ -124,11 +117,14 @@ export function ActivityView({ A }: { A: Actions }) {
                 );
               })}
             </div>
-            {/* Paging is driven only by nextCursor, never by the active filter. */}
-            {cursor && (
-              <button type="button" className="btn ghost" style={{ width: "100%", marginTop: 14 }} onClick={loadMore} disabled={loadingMore}>
-                {loadingMore ? "Loading…" : "Load more"}
-              </button>
+            {/* Paging is driven only by the total the gateway counted, never by
+                the active filter. */}
+            {pages > 1 && (
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 14 }}>
+                <button type="button" className="btn ghost" onClick={function () { setPage(function (p) { return Math.max(1, p - 1); }); }} disabled={loading || page <= 1}>Previous</button>
+                <span style={{ flex: 1, textAlign: "center", fontSize: 13, color: "var(--muted)" }}>Page {page} of {pages}</span>
+                <button type="button" className="btn ghost" onClick={function () { setPage(function (p) { return Math.min(pages, p + 1); }); }} disabled={loading || page >= pages}>Next</button>
+              </div>
             )}
           </div>
         </div>
