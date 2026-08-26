@@ -175,6 +175,22 @@ func mountAdmin(
 	orgs := organization.NewRepository(bdb, log)
 	providers := oidc.NewProviderRepository(bdb, log)
 
+	// The lockout, password, and recovery rules of the tenant, and the override
+	// of each organization. A read resolves the two levels, and a write
+	// replaces one of them.
+	policies := authpolicy.NewRepository(bdb, log)
+	policySvc := authpolicy.NewService(authpolicy.Deps{
+		Find:        policies.Find,
+		Upsert:      policies.Upsert,
+		Remove:      policies.Remove,
+		Org:         orgs.FindByID,
+		TenantRoles: tenants.MemberRoles,
+		Memberships: orgs.ListMemberships,
+		InTx:        tx,
+		Audit:       recorder,
+		Log:         log,
+	})
+
 	svc := user.NewService(user.Deps{
 		Find:           users.FindByID,
 		Tenant:         tenants.FindByID,
@@ -198,6 +214,11 @@ func mountAdmin(
 		TenantMember: tenants.FindMember,
 
 		CountTenantOwners: tenants.CountOwners,
+
+		// The password of an administrative create meets the policy of the
+		// organization it lands in. It is the same check the self-service change
+		// runs, so the console policy is enforced wherever a password is chosen.
+		CheckPassword: policySvc.Enforce,
 
 		InTx:  tx,
 		Audit: recorder,
@@ -340,22 +361,6 @@ func mountAdmin(
 		Log:         log,
 	})
 
-	// The lockout, password, and recovery rules of the tenant, and the override
-	// of each organization. A read resolves the two levels, and a write
-	// replaces one of them.
-	policies := authpolicy.NewRepository(bdb, log)
-	policySvc := authpolicy.NewService(authpolicy.Deps{
-		Find:        policies.Find,
-		Upsert:      policies.Upsert,
-		Remove:      policies.Remove,
-		Org:         orgs.FindByID,
-		TenantRoles: tenants.MemberRoles,
-		Memberships: orgs.ListMemberships,
-		InTx:        tx,
-		Audit:       recorder,
-		Log:         log,
-	})
-
 	// How the tenant sends mail, and the message each key renders. The relay is
 	// tenant-wide, and a template resolves the organization override over the
 	// tenant one over the message the gateway ships.
@@ -446,12 +451,13 @@ func mountAccount(
 	keys := oidc.NewKeyService(oidc.NewKeyRepository(bdb, log), cipher, log)
 	bearer := middlewares.Bearer(keys.PublicKeySet, oidc.ResourceAccountAPI, log)
 
-	users := user.NewRepository(bdb, log)
-	accountSvc := user.NewAccountService(user.AccountDeps{
-		UpdateProfile: users.UpdateProfile,
-		InTx:          tx,
-		Audit:         recorder,
-		Log:           log,
+	// The password policy a new password is checked against. Enforce reads the
+	// stored row of each level and nothing else, so this service is built with
+	// the one dependency it needs. The console writes the policy, and that is
+	// mounted on the admin API.
+	policySvc := authpolicy.NewService(authpolicy.Deps{
+		Find: authpolicy.NewRepository(bdb, log).Find,
+		Log:  log,
 	})
 
 	// A person's own login sessions, and the grants each of them fanned out to.
@@ -467,6 +473,25 @@ func mountAccount(
 		InTx:         tx,
 		Audit:        recorder,
 		Log:          log,
+	})
+
+	// The profile and the password of the person the token names. A password
+	// change ends every other login session of that person, so the service takes
+	// the bulk revoke above: the write, the revoke, and the audit event land on
+	// one transaction, and the transaction runner joins the one already open.
+	users := user.NewRepository(bdb, log)
+	accountSvc := user.NewAccountService(user.AccountDeps{
+		UpdateProfile: users.UpdateProfile,
+		Credential:    users.FindCredential,
+		SetPassword:   users.SetPassword,
+		CheckPassword: policySvc.Enforce,
+		RevokeOthers: func(ctx context.Context, a user.Actor, exceptID string) error {
+			_, err := sessionSvc.RevokeOthers(ctx, session.Actor(a), exceptID)
+			return err
+		},
+		InTx:  tx,
+		Audit: recorder,
+		Log:   log,
 	})
 
 	group := app.Group(accountPrefix, tenantMW, bearer)
@@ -507,14 +532,19 @@ func newSessionService(
 	sessions := session.NewRepository(bdb, cipher, log)
 
 	return session.NewService(session.Deps{
-		Identity:   identityFinder(users),
-		Credential: users.FindPasswordHash,
-		Save:       session.CachingSaver(rdb, sessions.Save, cipher, log),
-		Find:       session.CachedFinder(rdb, sessions.FindByTokenHash, cipher, log),
-		Terminate:  session.CachingTerminator(rdb, sessions.Terminate, log),
-		InTx:       tx,
-		Audit:      recorder,
-		Log:        log,
+		Identity: identityFinder(users),
+		// The one credential read of the user domain answers the organization
+		// beside the hash. The sign-in needs the hash only.
+		Credential: func(ctx context.Context, tenantID, userID string) (string, error) {
+			row, err := users.FindCredential(ctx, tenantID, userID)
+			return row.PasswordHash, err
+		},
+		Save:      session.CachingSaver(rdb, sessions.Save, cipher, log),
+		Find:      session.CachedFinder(rdb, sessions.FindByTokenHash, cipher, log),
+		Terminate: session.CachingTerminator(rdb, sessions.Terminate, log),
+		InTx:      tx,
+		Audit:     recorder,
+		Log:       log,
 	})
 }
 

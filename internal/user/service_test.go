@@ -115,6 +115,32 @@ func createBody() CreateBody {
 	}
 }
 
+// TestCreateRefusesAPasswordThePolicyRefuses proves that the policy an
+// administrator sets in the console governs the administrative create too. The
+// refusal is the one a person reads when they change their own password, and it
+// names no rule.
+//
+// The check runs before anything is written, so a refused create leaves no
+// account, no person, no membership, and no event.
+func TestCreateRefusesAPasswordThePolicyRefuses(t *testing.T) {
+	svc := adminService(t, adminDeps{
+		memberships:  []organization.Membership{{OrgID: testOrgID, Roles: []string{organization.RoleOrgUserManager}}},
+		weakPassword: true,
+	})
+
+	_, err := svc.Create(context.Background(), admin, createBody())
+	if !errors.Is(err, policyRefusal) {
+		t.Fatalf("err = %v, want the refusal of the check", err)
+	}
+	if len(writtenUsers) != 0 || len(writtenHumans) != 0 || len(writtenMembers) != 0 {
+		t.Errorf("the refused create wrote %d accounts, %d people and %d memberships, want none",
+			len(writtenUsers), len(writtenHumans), len(writtenMembers))
+	}
+	if len(events) != 0 {
+		t.Errorf("the refused create recorded %d events, want none", len(events))
+	}
+}
+
 // TestCreateWritesTheAccountAndItsMembership is the whole create rule. The
 // account, the person, the membership, and the audit event land on one
 // transaction, because a person with no membership belongs nowhere.
@@ -719,6 +745,9 @@ type adminDeps struct {
 	// take an owner out of service read it.
 	owners     int64
 	auditFails bool
+	// weakPassword refuses the password of a create, as the policy of the
+	// organization does when the password fails one of its rules.
+	weakPassword bool
 }
 
 // What the writes of one admin test did. adminService clears them, and the
@@ -832,6 +861,13 @@ func adminService(t *testing.T, d adminDeps) *Service {
 		TenantRoles: func(context.Context, string, string) ([]string, error) {
 			return d.tenantRoles, nil
 		},
+		CheckPassword: func(context.Context, string, string, string) error {
+			if d.weakPassword {
+				return policyRefusal
+			}
+			return nil
+		},
+
 		CountTenantOwners: func(context.Context, string) (int64, error) {
 			return d.owners, nil
 		},

@@ -54,3 +54,80 @@ func TestUpdateProfile(t *testing.T) {
 		t.Errorf("err = %v, want ErrNoSuchUser for another tenant", err)
 	}
 }
+
+// TestFindCredential covers the read one password change makes. It answers the
+// organization of the person and the hash of the password they hold.
+//
+// The predicate is what refuses an account behind a token that outlived it. A
+// locked account, a soft-deleted account, a machine account, and another tenant
+// all answer ErrNotFound, so a caller cannot tell which of them is the case.
+func TestFindCredential(t *testing.T) {
+	repo, ctx := testRepo(t)
+
+	row, err := repo.FindCredential(ctx, testTenantID, testUserID)
+	if err != nil {
+		t.Fatalf("read the credential: %v", err)
+	}
+	if row.OrgID != testOrgID || row.PasswordHash != "a-bcrypt-hash" {
+		t.Errorf("the read answers %+v, want the organization and the stored hash", row)
+	}
+
+	for name, userID := range map[string]string{
+		"a locked account":       lockedUserID,
+		"a soft-deleted account": deletedUserID,
+		"a machine account":      machineUserID,
+	} {
+		if _, err := repo.FindCredential(ctx, testTenantID, userID); !errors.Is(err, ErrNotFound) {
+			t.Errorf("err = %v for %s, want ErrNotFound", err, name)
+		}
+	}
+
+	if _, err := repo.FindCredential(ctx, testOrgID, testUserID); !errors.Is(err, ErrNotFound) {
+		t.Errorf("err = %v for another tenant, want ErrNotFound", err)
+	}
+}
+
+// TestSetPassword covers the write one password change makes. It replaces the
+// hash, stamps the change, and clears the flag that forces a change at the next
+// sign-in.
+//
+// It reaches a live account only, for the reason UpdateProfile does: the bearer
+// guard reads no store, so the query is what refuses a token of an account that
+// can no longer sign in.
+func TestSetPassword(t *testing.T) {
+	repo, ctx := testRepo(t)
+
+	if err := repo.SetPassword(ctx, testTenantID, testUserID, "a-new-bcrypt-hash"); err != nil {
+		t.Fatalf("set the password: %v", err)
+	}
+
+	read, err := repo.Read(ctx, testTenantID, testUserID)
+	if err != nil {
+		t.Fatalf("read the account: %v", err)
+	}
+	if read.PasswordHash != "a-new-bcrypt-hash" {
+		t.Errorf("the account holds the hash %q, want the new one", read.PasswordHash)
+	}
+	if read.PasswordChangedAt.IsZero() {
+		t.Error("the account carries no password_changed_at, want the moment of the change")
+	}
+	if read.PasswordChangeReq {
+		t.Error("the account still forces a change at the next sign-in, want the flag cleared")
+	}
+	if read.Email != "admin@acme.com" || read.DisplayName != "AlphaOmega Admin" {
+		t.Errorf("the account reads %+v, want the identity fields left alone", read)
+	}
+
+	err = repo.SetPassword(ctx, testTenantID, deletedUserID, "a-new-bcrypt-hash")
+	if !errors.Is(err, ErrNoSuchUser) {
+		t.Errorf("err = %v for a soft-deleted account, want ErrNoSuchUser", err)
+	}
+	err = repo.SetPassword(ctx, testTenantID, lockedUserID, "a-new-bcrypt-hash")
+	if !errors.Is(err, ErrNoSuchUser) {
+		t.Errorf("err = %v for a locked account, want ErrNoSuchUser", err)
+	}
+	err = repo.SetPassword(ctx, testOrgID, testUserID, "a-new-bcrypt-hash")
+	if !errors.Is(err, ErrNoSuchUser) {
+		t.Errorf("err = %v for another tenant, want ErrNoSuchUser", err)
+	}
+}

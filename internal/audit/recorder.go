@@ -48,6 +48,11 @@ const (
 	ActionUserMFAReset      Action = "user.mfa_reset"
 	ActionUserInvited       Action = "user.invited"
 
+	// ActionPasswordChanged records a person changing their own password. The
+	// administrative reset is ActionUserPasswordReset: an operator mints a token,
+	// and the person here chose the new secret themselves.
+	ActionPasswordChanged Action = "password.changed"
+
 	ActionMemberAdded   Action = "member.added"
 	ActionMemberUpdated Action = "member.updated"
 	ActionMemberRemoved Action = "member.removed"
@@ -182,6 +187,7 @@ var actionResults = map[Action]string{
 	ActionUserPasswordReset:  ResultSuccess,
 	ActionUserMFAReset:       ResultSuccess,
 	ActionUserInvited:        ResultSuccess,
+	ActionPasswordChanged:    ResultSuccess,
 	ActionMemberAdded:        ResultSuccess,
 	ActionMemberUpdated:      ResultSuccess,
 	ActionMemberRemoved:      ResultSuccess,

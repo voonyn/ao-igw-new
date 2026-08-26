@@ -95,7 +95,9 @@ export function SecurityView({ A }: { A: Actions }) {
         setPwError('Current password is incorrect.');
       } else if (res.status === 400 && code === 'weak_password') {
         setPwError('That password is too weak or has appeared in a data breach. Choose a stronger one.');
-      } else if (res.status === 400 && code === 'invalid_request') {
+      } else if ((res.status === 400 || res.status === 422) && code === 'invalid_input') {
+        // The gateway validates the body and answers one slug for both statuses:
+        // 422 names the fields that failed, and 400 means the body did not parse.
         setPwError('Please fill in every field.');
       } else if (res.status === 401 && (code === 'unauthenticated' || code === 'unauthorized')) {
         // Both codes mean re-auth: `unauthenticated` = no server-side token (BFF),

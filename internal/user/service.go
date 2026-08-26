@@ -156,6 +156,12 @@ type Deps struct {
 
 	CountTenantOwners TenantOwnerCounter
 
+	// CheckPassword refuses a password the policy of the organization does not
+	// accept. It is the same function value the self-service change takes, so
+	// the policy an administrator sets in the console is enforced wherever a
+	// password is chosen.
+	CheckPassword PasswordChecker
+
 	InTx  db.TxRunner
 	Audit *audit.Recorder
 	Log   logger.Logger
@@ -347,6 +353,13 @@ func (s *Service) Create(ctx context.Context, a Actor, body CreateBody) (View, e
 			return View{}, err
 		}
 		return View{}, s.fail(a.TenantID, a.UserID, "read organization", err)
+	}
+
+	// The password the administrator chose meets the policy of the organization
+	// the account lands in, or the create is refused. The refusal names no rule,
+	// and it is the refusal a person reads when they change their own password.
+	if err := s.deps.CheckPassword(ctx, a.TenantID, body.OrgID, body.Password); err != nil {
+		return View{}, err
 	}
 
 	hash, err := crypto.HashPassword(body.Password)

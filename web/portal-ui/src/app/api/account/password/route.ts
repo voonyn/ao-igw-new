@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server"
 
 import { getOidcConfig } from "@/lib/server/oidc-config"
 import { cookieOptions, openSession, PORTAL_SESSION_COOKIE, sealSession, type SessionTokens } from "@/lib/server/secure-cookie"
+import { sidFromIdToken } from "@/lib/server/session-sid"
 import { resolveAccessToken } from "@/lib/server/token"
 
 // Route reads the server-held token and calls the gateway on Node.
@@ -35,9 +36,16 @@ export async function POST(req: NextRequest) {
     return await withRotation(NextResponse.json({ error: "invalid_request" }, { status: 400 }), rotated, next)
   }
 
-  const url = new URL("/api/v1/account/password", getOidcConfig().issuer).toString()
+  // A successful change ends every other login session of this person. The
+  // caller's own session is named here, from the server-held ID token, so the
+  // device in front of the user survives the change. When the ID token carries no
+  // `sid`, `except` is omitted and the gateway ends every session including this
+  // one — a safe degradation, never a reach into another person's sessions.
+  const url = new URL("/api/v1/account/password", getOidcConfig().issuer)
+  const sid = sidFromIdToken(next?.idToken)
+  if (sid) url.searchParams.set("except", sid)
   try {
-    const res = await fetch(url, {
+    const res = await fetch(url.toString(), {
       method: "POST",
       headers: {
         Authorization: `Bearer ${accessToken}`,

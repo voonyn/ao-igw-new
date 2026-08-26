@@ -8,6 +8,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"alphaomega/identitygateway/internal/platform/crypto"
 	"alphaomega/identitygateway/internal/platform/logger"
 )
 
@@ -23,8 +24,12 @@ var ErrWeakPassword = errors.New("password does not meet the policy")
 // database, so every rule is testable on its own.
 //
 // Length is counted in runes. A person who types eight accented characters meets
-// a minimum of eight. bcrypt still reads the first 72 bytes only, and the DTO of
-// every password write bounds the input at 72.
+// a minimum of eight.
+//
+// The ceiling is counted in bytes, because that is what bcrypt refuses above. A
+// password of 72 accented characters is 144 bytes, so a rune bound on the DTO
+// would admit a password the hash step cannot store. It is refused here, with
+// the refusal every other rule answers, and the write never reaches bcrypt.
 //
 // A deny word matches anywhere in the password, and case does not matter. That is
 // what the list is for: a tenant that denies its own product name means to refuse
@@ -36,6 +41,9 @@ var ErrWeakPassword = errors.New("password does not meet the policy")
 // The password reaches no log line, here or anywhere below.
 func CheckPassword(view View, plain string) error {
 	if utf8.RuneCountInString(plain) < view.PwMinLength {
+		return ErrWeakPassword
+	}
+	if len(plain) > crypto.MaxPasswordBytes {
 		return ErrWeakPassword
 	}
 	if passwordClasses(plain) < view.PwMinClasses {

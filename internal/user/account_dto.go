@@ -19,3 +19,21 @@ type ProfileBody struct {
 	DisplayName string `json:"displayName" validate:"max=255"`
 	Locale      string `json:"locale" validate:"max=20"`
 }
+
+// PasswordBody is what a self-service password change carries: the password the
+// person holds now, and the one they want next.
+//
+// The body names no account. The write reaches the subject of the caller's
+// token, exactly as the profile write does.
+//
+// Both fields are bounded at 72 characters. That is the widest password bcrypt
+// stores, counted in characters here so the bound reads as the person typed it.
+// The byte ceiling behind it belongs to the policy check, which every password
+// write runs, so a 72-character password of accented letters is refused there
+// and never reaches the hash step.
+//
+// Neither field reaches a log line, at any level and in any environment.
+type PasswordBody struct {
+	CurrentPassword string `json:"currentPassword" validate:"required,max=72"`
+	NewPassword     string `json:"newPassword" validate:"required,max=72"`
+}

@@ -2,6 +2,7 @@ package authpolicy
 
 import (
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -24,6 +25,10 @@ func TestCheckPasswordLength(t *testing.T) {
 		{"exactly the minimum", "12345678", false},
 		{"longer than the minimum", "123456789", false},
 		{"eight multi-byte runes", "áéíóúàèì", false},
+		// bcrypt refuses a password above 72 bytes, so the check refuses it
+		// first. Both of these are 73 bytes and neither reaches the hash step.
+		{"seventy-three ASCII characters", strings.Repeat("a", 73), true},
+		{"thirty-seven accented runes", strings.Repeat("é", 36) + "a", true},
 	}
 
 	for _, tc := range cases {

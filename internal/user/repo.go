@@ -154,37 +154,6 @@ func (r *Repository) FindByIdentifier(ctx context.Context, tenantID, identifier 
 	return row, nil
 }
 
-// FindPasswordHash reads the stored bcrypt hash of one person. An inactive
-// account and a soft-deleted one never come back, so a disabled person cannot
-// sign in with a session the identifier step opened before.
-//
-// The hash is a credential. It never reaches a log line and never leaves this
-// package in a response. A miss returns ErrNotFound.
-func (r *Repository) FindPasswordHash(ctx context.Context, tenantID, userID string) (string, error) {
-	r.log.Debug("read password hash",
-		logger.String("tenant_id", tenantID), logger.String("user_id", userID), logger.RequestID(ctx))
-
-	var row User
-	err := db.Conn(ctx, r.db).NewSelect().
-		Model(&row).
-		ColumnExpr("u.id").
-		ColumnExpr("h.password_hash AS password_hash").
-		Join("JOIN user_humans AS h ON h.user_id = u.id AND h.tenant_id = u.tenant_id").
-		Where("u.tenant_id = ?", tenantID).
-		Where("u.id = ?", userID).
-		Where("u.state = ?", stateActive).
-		Where("u.user_type = ?", typeHuman).
-		Scan(ctx)
-	if errors.Is(err, sql.ErrNoRows) {
-		return "", fmt.Errorf("%w: tenant %s, user %s", ErrNotFound, tenantID, userID)
-	}
-	if err != nil {
-		return "", fmt.Errorf("read password hash of tenant %s: %w", tenantID, err)
-	}
-
-	return row.PasswordHash, nil
-}
-
 // FindByID reads one person by the id an access token carries, with the human
 // profile the admin front door answers with.
 //
