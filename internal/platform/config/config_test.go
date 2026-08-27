@@ -132,3 +132,98 @@ func TestValidateLoginPATsRejectsBlankEntry(t *testing.T) {
 		t.Fatalf("valid PAT set rejected: %v", err)
 	}
 }
+
+// TestDIValidate pins the two rules that decide whether the Digital Identity
+// integration starts. A credential pair is set on both halves or on neither, and
+// the callback pair is required.
+func TestDIValidate(t *testing.T) {
+	complete := DIConfig{
+		Enabled:              true,
+		BaseURL:              "https://verifier.example",
+		ClientID:             "spass_iam",
+		ClientSecret:         "s3cr3t",
+		CallbackClientID:     "callback_id",
+		CallbackClientSecret: "callback_secret",
+	}
+
+	tests := []struct {
+		name    string
+		change  func(c *DIConfig)
+		wantErr bool
+	}{
+		{name: "a complete configuration starts"},
+		{
+			name:   "the switch off is valid and starts nothing",
+			change: func(c *DIConfig) { c.Enabled = false; c.BaseURL = "" },
+		},
+		{
+			name:    "no address",
+			change:  func(c *DIConfig) { c.BaseURL = "" },
+			wantErr: true,
+		},
+		{
+			name:    "an outbound pair set on one half only",
+			change:  func(c *DIConfig) { c.ClientSecret = "" },
+			wantErr: true,
+		},
+		{
+			name:    "an absent outbound pair is allowed",
+			change:  func(c *DIConfig) { c.ClientID, c.ClientSecret = "", "" },
+			wantErr: false,
+		},
+		{
+			name:    "a callback pair set on one half only",
+			change:  func(c *DIConfig) { c.CallbackClientID = "" },
+			wantErr: true,
+		},
+		{
+			name:    "absent callback credentials",
+			change:  func(c *DIConfig) { c.CallbackClientID, c.CallbackClientSecret = "", "" },
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := complete
+			if tt.change != nil {
+				tt.change(&cfg)
+			}
+			err := cfg.Validate()
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("Validate() = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+// TestDISettingsFromEnv pins the env bindings and the defaults, so an operator
+// who sets AO_DI_* reaches the loaded configuration.
+func TestDISettingsFromEnv(t *testing.T) {
+	viper.Reset()
+	defer viper.Reset()
+
+	t.Setenv("AO_DI_ENABLED", "true")
+	t.Setenv("AO_DI_BASE_URL", "https://verifier.example/")
+	t.Setenv("AO_DI_CLIENT_ID", "spass_iam")
+	t.Setenv("AO_DI_CLIENT_SECRET", "s3cr3t")
+	t.Setenv("AO_DI_CALLBACK_CLIENT_ID", "callback_id")
+	t.Setenv("AO_DI_CALLBACK_CLIENT_SECRET", "callback_secret")
+
+	cfg, err := InitConfig()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if err := cfg.DI.Validate(); err != nil {
+		t.Fatalf("a fully configured integration was refused: %v", err)
+	}
+	if cfg.DI.BaseURL != "https://verifier.example/" {
+		t.Errorf("BaseURL = %q", cfg.DI.BaseURL)
+	}
+	if cfg.DI.InputDescriptorID != "identity" {
+		t.Errorf("InputDescriptorID = %q, want identity", cfg.DI.InputDescriptorID)
+	}
+	if cfg.DI.Timeout != 10*time.Second {
+		t.Errorf("Timeout = %s, want 10s", cfg.DI.Timeout)
+	}
+}

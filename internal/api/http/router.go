@@ -38,11 +38,20 @@ const adminPrefix = "/api/v1/admin"
 // accountPrefix is where the portal reaches the self-service account API.
 const accountPrefix = "/api/v1/account"
 
+// capabilitiesPath is where every front end reads what this deployment runs. It
+// is open, and it carries no tenant and no person.
+const capabilitiesPath = "/api/v1/capabilities"
+
 func Routes(app *fiber.App, cfg *config.Config, bdb *bun.DB, rdb cache.Client, log logger.Logger) error {
 	app.Use(requestid.New())
 	app.Use(middlewares.RequestLog(log))
 
 	healthCheckHandler(app)
+
+	// Whether this deployment runs a Scan Verifier. Both front ends read the one
+	// answer, so there is one switch and not two that drift apart. The value also
+	// gates the Digital Identity routes and every outbound call.
+	mountCapabilities(app, digitalIdentityOn(cfg.DI, log))
 
 	// The cipher seals the private signing keys, the protocol state, and the
 	// login sessions at rest. A nil cipher stores them as plain JSON, which
@@ -586,6 +595,33 @@ func identityFinder(users *user.Repository) session.IdentityFinder {
 		}
 		return session.Identity{UserID: row.ID, Email: row.Email}, nil
 	}
+}
+
+// digitalIdentityOn reports whether the Digital Identity integration starts.
+//
+// The operator turns the whole integration on with one setting. A configuration
+// that is on but incomplete does not start, and the reason is logged: a
+// credential pair set on one half only is a typo, and a typo must never decide
+// who gets in. Absent callback credentials do not start it either, because an
+// endpoint whose success means "sign this person in" is never mounted open.
+func digitalIdentityOn(cfg config.DIConfig, log logger.Logger) bool {
+	if !cfg.Enabled {
+		return false
+	}
+	if err := cfg.Validate(); err != nil {
+		log.Error("digital identity: the integration did not start", logger.Err(err))
+		return false
+	}
+	return true
+}
+
+// mountCapabilities publishes what this deployment runs. The capability names the
+// integration and not one flow, because it gates DI Enrolment as well as QR
+// Login.
+func mountCapabilities(app *fiber.App, digitalIdentity bool) {
+	app.Get(capabilitiesPath, func(c fiber.Ctx) error {
+		return response.OK(c, fiber.Map{"digital_identity": digitalIdentity})
+	})
 }
 
 func healthCheckHandler(app *fiber.App) {

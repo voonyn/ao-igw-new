@@ -21,6 +21,69 @@ type Config struct {
 	OIDC         OIDCConfig
 	Auth         AuthConfig
 	Notification NotificationConfig
+	DI           DIConfig
+}
+
+// DIConfig holds the Digital Identity settings: the address of the Scan Verifier
+// and the two credential pairs. It is deployment-wide process configuration, and
+// it is a deliberate exception to the rule that a setting which varies per tenant
+// lives in the database. There is one Scan Verifier today. Per-tenant credentials
+// become an additive table the day a second tenant needs different ones.
+//
+// Enabled switches the whole integration. With it false, no route is mounted, no
+// call goes out, and the capability endpoint answers off.
+//
+// The two pairs are different credentials in opposite directions. ClientID and
+// ClientSecret authenticate this deployment to the Scan Verifier. CallbackClientID
+// and CallbackClientSecret are what the Scan Verifier presents on its push
+// callback. Both pairs also differ from the login PAT of the sign-in front end. A
+// shared value would turn one compromise into the power to sign in as anybody.
+//
+// Bound to AO_DI_* env vars.
+type DIConfig struct {
+	Enabled      bool   `mapstructure:"enabled"`
+	BaseURL      string `mapstructure:"base_url"`
+	ClientID     string `mapstructure:"client_id"`
+	ClientSecret string `mapstructure:"client_secret"`
+
+	CallbackClientID     string `mapstructure:"callback_client_id"`
+	CallbackClientSecret string `mapstructure:"callback_client_secret"`
+
+	// InputDescriptorID is the presentation-definition descriptor id the wallet
+	// is asked for. The Scan Verifier matches the credential by it, and the
+	// vendor names it per deployment. An empty value falls back to the default of
+	// the di package.
+	InputDescriptorID string `mapstructure:"input_descriptor_id"`
+
+	// Timeout bounds one round trip to the Scan Verifier.
+	Timeout time.Duration `mapstructure:"timeout"`
+}
+
+// Validate reports why the Digital Identity integration cannot start. It returns
+// nil when the integration is off, because off is a valid deployment.
+//
+// A credential pair is set on both halves or on neither. A half-set pair is a
+// typo, and a typo must never decide who gets in.
+//
+// The callback pair is required. The endpoint behind it succeeds by signing a
+// person in, so it is never mounted open.
+func (d DIConfig) Validate() error {
+	if !d.Enabled {
+		return nil
+	}
+	if d.BaseURL == "" {
+		return fmt.Errorf("di.base_url is empty")
+	}
+	if (d.ClientID == "") != (d.ClientSecret == "") {
+		return fmt.Errorf("di.client_id and di.client_secret are set on one half only")
+	}
+	if (d.CallbackClientID == "") != (d.CallbackClientSecret == "") {
+		return fmt.Errorf("di.callback_client_id and di.callback_client_secret are set on one half only")
+	}
+	if d.CallbackClientID == "" {
+		return fmt.Errorf("di.callback_client_id and di.callback_client_secret are required")
+	}
+	return nil
 }
 
 // NotificationConfig is the deployment-wide default and fallback for outbound mail.
@@ -267,6 +330,17 @@ func InitConfig() (*Config, error) {
 	_ = viper.BindEnv("notification.tls_mode", "AO_NOTIFICATION_TLS_MODE")
 	_ = viper.BindEnv("notification.send_timeout", "AO_NOTIFICATION_SEND_TIMEOUT")
 
+	// Digital Identity: the switch, the address of the Scan Verifier, and the two
+	// credential pairs (AO_DI_*).
+	_ = viper.BindEnv("di.enabled", "AO_DI_ENABLED")
+	_ = viper.BindEnv("di.base_url", "AO_DI_BASE_URL")
+	_ = viper.BindEnv("di.client_id", "AO_DI_CLIENT_ID")
+	_ = viper.BindEnv("di.client_secret", "AO_DI_CLIENT_SECRET")
+	_ = viper.BindEnv("di.callback_client_id", "AO_DI_CALLBACK_CLIENT_ID")
+	_ = viper.BindEnv("di.callback_client_secret", "AO_DI_CALLBACK_CLIENT_SECRET")
+	_ = viper.BindEnv("di.input_descriptor_id", "AO_DI_INPUT_DESCRIPTOR_ID")
+	_ = viper.BindEnv("di.timeout", "AO_DI_TIMEOUT")
+
 	// Set defaults (fallback if neither config file nor env var exists)
 	SetDefaultValue()
 
@@ -307,4 +381,9 @@ func SetDefaultValue() {
 	viper.SetDefault("notification.smtp_port", 587)
 	viper.SetDefault("notification.tls_mode", "starttls")
 	viper.SetDefault("notification.send_timeout", "10s")
+	// Digital Identity is off until an operator turns it on. The descriptor id and
+	// the timeout carry the values the vendor ships with.
+	viper.SetDefault("di.enabled", false)
+	viper.SetDefault("di.input_descriptor_id", "identity")
+	viper.SetDefault("di.timeout", "10s")
 }
