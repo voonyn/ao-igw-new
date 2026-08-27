@@ -70,3 +70,6 @@ target/
 *.log
 coverage/
 .cache/
+
+# mattpocock files
+.scratch/
