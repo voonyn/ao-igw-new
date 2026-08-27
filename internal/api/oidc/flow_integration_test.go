@@ -248,6 +248,12 @@ type clientFixture struct {
 	secret     string
 	redirect   string
 	postLogout string
+
+	// resource is the API the client asks a token for (RFC 8707). An empty
+	// value asks for none, and the access token then carries no audience. The
+	// account flow test copies one client and sets this, so one registration
+	// mints a token for either API.
+	resource string
 }
 
 // fixture is what one run of the test owns: two clients and one person. Every
@@ -761,6 +767,9 @@ func (g *gateway) startAuthorization(t *testing.T, cl clientFixture) authorizati
 		"code_challenge":        {s256(auth.verifier)},
 		"code_challenge_method": {"S256"},
 	}
+	if cl.resource != "" {
+		query.Set("resource", cl.resource)
+	}
 
 	answer := g.oidc(t, fiber.MethodGet, "/authorize?"+query.Encode(), nil)
 	if answer.StatusCode != fiber.StatusSeeOther {
@@ -852,6 +861,9 @@ func (g *gateway) token(t *testing.T, cl clientFixture, form url.Values) tokens 
 		form.Set("client_id", cl.clientID)
 	} else {
 		header = append(header, fiber.HeaderAuthorization, basicAuth(cl))
+	}
+	if cl.resource != "" {
+		form.Set("resource", cl.resource)
 	}
 
 	var issued tokens
