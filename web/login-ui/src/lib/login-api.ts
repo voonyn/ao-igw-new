@@ -118,3 +118,28 @@ export async function resolveSession(token: string, host: string): Promise<Sessi
   }
   return null
 }
+
+/**
+ * digitalIdentityOn reports whether this deployment runs a Scan Verifier. The
+ * gateway publishes it at /api/v1/capabilities, outside the login group and
+ * without a credential.
+ *
+ * The sign-in page reads this one source of truth instead of a setting of its
+ * own. Two unlinked switches would let an operator offer a tab whose routes do
+ * not exist. A failed read answers false: the extra tab is the thing that must
+ * not appear when the routes are absent.
+ */
+export async function digitalIdentityOn(): Promise<boolean> {
+  try {
+    const res = await fetch(`${GO_API}/api/v1/capabilities`, {
+      // The answer changes only when the deployment restarts, so a short cache
+      // keeps this off the hot path of every sign-in.
+      next: { revalidate: 60 },
+    })
+    if (!res.ok) return false
+    const body = (await res.json()) as { data?: { digital_identity?: unknown } }
+    return body.data?.digital_identity === true
+  } catch {
+    return false
+  }
+}

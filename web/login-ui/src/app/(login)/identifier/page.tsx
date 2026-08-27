@@ -2,7 +2,7 @@ import { cookies, headers } from "next/headers"
 import { redirect } from "next/navigation"
 
 import { SESSION_COOKIE, parseSessionCookie } from "@/lib/session-cookie"
-import { resolveSession, silentComplete } from "@/lib/login-api"
+import { digitalIdentityOn, resolveSession, silentComplete } from "@/lib/login-api"
 import { sanitizeRedirectUri } from "@/lib/redirect"
 import { IdentifierClient } from "./identifier-client"
 
@@ -43,5 +43,16 @@ export default async function LoginIdentifierPage({
     redirect(redirectUri || "/success")
   }
 
-  return <IdentifierClient authRequest={authRequest ?? ""} redirectUri={redirectUri} />
+  // The scan tab is offered only where the routes behind it exist. The
+  // capability endpoint is the one source of truth for that, so this page holds
+  // no setting of its own.
+  const digitalIdentity = await digitalIdentityOn()
+
+  return (
+    <IdentifierClient
+      authRequest={authRequest ?? ""}
+      redirectUri={redirectUri}
+      digitalIdentity={digitalIdentity}
+    />
+  )
 }
