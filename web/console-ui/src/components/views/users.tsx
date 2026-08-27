@@ -41,7 +41,7 @@ export function UserDetailPage({
   /** Re-read this record from the server after a write (EH-6). */
   onChanged?: () => Promise<void>;
 }) {
-  const { accessibleOrgs, me } = useConsole();
+  const { accessibleOrgs, digitalIdentity, me } = useConsole();
   const h = user.human;
   // The investigation tabs are the point of this screen: what can this person
   // reach, what are they signed into, and what have they done — three questions
@@ -277,9 +277,11 @@ export function UserDetailPage({
           </SectionCard>
 
           {/* Read-only, and rendered only when this deployment runs a Scan
-              Verifier: the API leaves the field out otherwise. "Not enrolled"
-              is how an operator finds the people an outage left unmirrored. */}
-          {h.diEnrolled !== undefined && (
+              Verifier. The gate is the gateway's own capability, not the
+              presence of the field: an absent field answers "the API left it
+              out", which is a different question. "Not enrolled" is how an
+              operator finds the people an outage left unmirrored. */}
+          {digitalIdentity && (
             <SectionCard title="Digital identity" desc="Whether this person is registered with the Scan Verifier. It is written when the account is created and cannot be edited here.">
               <KV
                 k="Enrolment"

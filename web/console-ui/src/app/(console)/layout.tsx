@@ -1,7 +1,7 @@
 import { Suspense } from "react";
 import { redirect } from "next/navigation";
 
-import { loadConsoleData } from "@/lib/server/console-data";
+import { digitalIdentityOn, loadConsoleData } from "@/lib/server/console-data";
 import { ConsoleProvider } from "@/components/console/store";
 import { CrumbProvider } from "@/components/console/page-head";
 import { Sidebar } from "@/components/console/sidebar";
@@ -17,12 +17,16 @@ export default async function ConsoleLayout({ children }: { children: React.Reac
   const initial = await loadConsoleData();
   if (!initial) redirect("/auth/login");
 
+  // The one switch both front ends read. The console renders the enrolment
+  // field only where the gateway runs a Scan Verifier.
+  const digitalIdentity = await digitalIdentityOn();
+
   // Server-only, per the console's no-NEXT_PUBLIC_ policy: read here and handed
   // down as a prop rather than inlined into the client bundle. Unset stays
   // undefined all the way to the badge, which then renders nothing.
   const env = process.env.AO_CONSOLE_ENV?.trim() || undefined;
   return (
-    <ConsoleProvider initial={initial}>
+    <ConsoleProvider initial={initial} digitalIdentity={digitalIdentity}>
       <CrumbProvider>
         <div className="shell">
           {/* First focusable element in the document, so Tab on a fresh page

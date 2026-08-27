@@ -727,7 +727,7 @@ func diEnrol(c *di.Client) user.DIEnroller {
 // Login.
 func mountCapabilities(app *fiber.App, digitalIdentity bool) {
 	app.Get(capabilitiesPath, func(c fiber.Ctx) error {
-		return response.OK(c, fiber.Map{"digital_identity": digitalIdentity})
+		return response.OK(c, fiber.Map{"digitalIdentity": digitalIdentity})
 	})
 }
 

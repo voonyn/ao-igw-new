@@ -72,6 +72,10 @@ interface ConsoleContextValue {
    * instead of the console blanking on one failed request. */
   status: Record<CollectionKey, CollectionStatus>;
   accessibleOrgs: OrgRef[];
+  /** Whether this deployment runs a Scan Verifier, read from the gateway's own
+   * capability endpoint. A view gates a Digital Identity surface on this and
+   * never on whether the API sent a field. */
+  digitalIdentity: boolean;
   selectedOrgId: string | null;
   /** Bumped by every successful write. Paged lists depend on it, so a write
    * invalidates them without this store knowing what any view is showing. */
@@ -101,9 +105,13 @@ const ConsoleContext = createContext<ConsoleContextValue | null>(null);
  */
 export function ConsoleProvider({
   initial,
+  digitalIdentity = false,
   children,
 }: {
   initial?: ConsoleData | null;
+  /** Read on the server, in the layout. It is deployment-wide and it changes
+   * only when the gateway restarts, so no reload re-reads it. */
+  digitalIdentity?: boolean;
   children: React.ReactNode;
 }) {
   const router = useRouter();
@@ -238,6 +246,7 @@ export function ConsoleProvider({
       bootstrap,
       status: collections,
       accessibleOrgs: me.accessibleOrgs,
+      digitalIdentity,
       selectedOrgId,
       dataVersion,
       A,
@@ -247,7 +256,7 @@ export function ConsoleProvider({
       theme,
       toggleTheme,
     };
-  }, [db, me, bootstrap, collections, selectedOrgId, dataVersion, A, legacy, legacyActions, toasts, theme, toggleTheme]);
+  }, [db, me, bootstrap, collections, digitalIdentity, selectedOrgId, dataVersion, A, legacy, legacyActions, toasts, theme, toggleTheme]);
 
   if (status === "loading" || !db || !me || !collections) return <Splash label="Loading console…" />;
   if (status === "error") return <Splash label="Couldn't load the console. Check the admin API and reload." error />;

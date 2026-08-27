@@ -68,14 +68,14 @@ func TestCapabilityEndpointAnswersTheSwitch(t *testing.T) {
 			body, _ := io.ReadAll(resp.Body)
 			var out struct {
 				Data struct {
-					DigitalIdentity bool `json:"digital_identity"`
+					DigitalIdentity bool `json:"digitalIdentity"`
 				} `json:"data"`
 			}
 			if err := json.Unmarshal(body, &out); err != nil {
 				t.Fatalf("decode %s: %v", body, err)
 			}
 			if out.Data.DigitalIdentity != tt.want {
-				t.Errorf("digital_identity = %v, want %v", out.Data.DigitalIdentity, tt.want)
+				t.Errorf("digitalIdentity = %v, want %v", out.Data.DigitalIdentity, tt.want)
 			}
 		})
 	}

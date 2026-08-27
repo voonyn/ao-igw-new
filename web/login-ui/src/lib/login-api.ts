@@ -137,8 +137,8 @@ export async function digitalIdentityOn(): Promise<boolean> {
       next: { revalidate: 60 },
     })
     if (!res.ok) return false
-    const body = (await res.json()) as { data?: { digital_identity?: unknown } }
-    return body.data?.digital_identity === true
+    const body = (await res.json()) as { data?: { digitalIdentity?: unknown } }
+    return body.data?.digitalIdentity === true
   } catch {
     return false
   }

@@ -16,6 +16,7 @@ import { cookies } from "next/headers"
 
 import { adminFetch } from "./admin-client"
 import { unwrapJSON } from "./envelope"
+import { getOidcConfig } from "./oidc-config"
 import { CONSOLE_SESSION_COOKIE, openSession } from "./secure-cookie"
 import type { CollectionKey, CollectionStatus, ConsoleData, Me, Outcome } from "@/lib/console-api"
 import type { Bootstrap, Db, Key, ProviderConfig, Tenant } from "@/lib/types"
@@ -101,6 +102,33 @@ export async function loadConsoleData(): Promise<ConsoleData | null> {
     bootstrap: sBootstrap,
   }
   return { me, db, bootstrap, status }
+}
+
+/**
+ * Whether this deployment runs a Scan Verifier.
+ *
+ * The console reads the gateway's own switch instead of inferring one from a
+ * field the API happened to send. Two unlinked switches is not one switch: an
+ * absent field means "the API left it out", which is not the same question.
+ *
+ * The endpoint carries no credential, and it answers a deployment-wide value, so
+ * the read attaches no token. A failed read answers false: the enrolment field
+ * is the thing that must not appear when the integration is off.
+ */
+export async function digitalIdentityOn(): Promise<boolean> {
+  const { adminApiBase } = getOidcConfig()
+  try {
+    const res = await fetch(`${adminApiBase}/api/v1/capabilities`, {
+      // The answer changes only when the deployment restarts, so a short cache
+      // keeps this off the hot path of every console render.
+      next: { revalidate: 60 },
+    })
+    if (!res.ok) return false
+    const body = (await res.json()) as { data?: { digitalIdentity?: unknown } }
+    return body.data?.digitalIdentity === true
+  } catch {
+    return false
+  }
 }
 
 /**
