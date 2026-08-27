@@ -71,14 +71,22 @@ type gateway struct {
 	tenantID string
 }
 
-// newGateway builds the routes the server builds, against the configured MySQL
-// and Redis.
-func newGateway(t *testing.T) *gateway {
+// skipUnlessIntegration skips a test that needs MySQL and Redis. Every test in
+// this package that drives the assembled gateway calls it first.
+func skipUnlessIntegration(t *testing.T) {
 	t.Helper()
 
 	if os.Getenv(integrationEnv) == "" {
 		t.Skipf("set %s=1 to run the end-to-end flow against MySQL and Redis", integrationEnv)
 	}
+}
+
+// newGateway builds the routes the server builds, against the configured MySQL
+// and Redis.
+func newGateway(t *testing.T) *gateway {
+	t.Helper()
+
+	skipUnlessIntegration(t)
 
 	// The configuration lives at the repository root: .env and cmd/config.yaml.
 	// The loader reads both from the working directory, so the test moves there.
@@ -825,8 +833,14 @@ func (g *gateway) resume(t *testing.T, cl clientFixture, auth authorization, red
 // returns what the token endpoint issued.
 func (g *gateway) grant(t *testing.T, cl clientFixture, loginToken string) tokens {
 	t.Helper()
+	return g.finish(t, cl, g.startAuthorization(t, cl), loginToken)
+}
 
-	auth := g.startAuthorization(t, cl)
+// finish carries one authorization request that is already open through to the
+// tokens. It is where grant ends, and it is also where a sign-in that started
+// before the authorization request rejoins the flow.
+func (g *gateway) finish(t *testing.T, cl clientFixture, auth authorization, loginToken string) tokens {
+	t.Helper()
 
 	var finished struct {
 		RedirectTo      string `json:"redirectTo"`
