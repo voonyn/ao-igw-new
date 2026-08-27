@@ -12,6 +12,16 @@ An isolated customer of the gateway. A tenant owns its own users, applications,
 signing keys, and provider configuration.
 _Avoid_: Account, workspace, realm, instance
 
+**Deployment**:
+One installation of the gateway, holding every tenant it serves. It owns what is
+configured outside the database: the `AO_NOTIFICATION_*` defaults, and the
+one-time `bootstrap`.
+_Avoid_: Instance, installation, environment
+
+**Instance**:
+One running process of the gateway. A deployment runs several, and any one of
+them serves any request. Use the word for nothing else.
+
 **Organization**:
 A group of people and projects inside one tenant. It is the unit a tenant
 delegates administration to, and the unit a person self-registers into.
@@ -87,6 +97,15 @@ One authorization request in flight, from the moment the client arrives until th
 gateway answers. It is short lived and it belongs to one client.
 _Avoid_: Auth session, request session, transaction, flow state
 
+**Factor**:
+One thing a person proved during a Login Session, recorded with the moment they
+proved it. The ID token carries the names in `amr`.
+_Avoid_: Method, credential, step, AMR
+
+Note: a factor name is a value of the AMR registry of RFC 8176 where one fits. A
+password is `pwd`. Where the registry lists no value, this deployment names the
+factor itself, and the registry permits that. A scan is `vc`.
+
 **Consent**:
 A record that one person allowed one client to receive a set of scopes. Consent
 outlives the authorization request that created it.
@@ -136,3 +155,33 @@ _Avoid_: Mapper, claim rule, attribute mapping
 **Signing Key**:
 A key pair a tenant uses to sign tokens. Only the public half is ever published.
 _Avoid_: Certificate, secret, JWK (that is an encoding, not the concept)
+
+### Digital Identity
+
+**Scan Verifier**:
+An external service that turns a credential a person presents into a proven
+identity. Digital Identity is the first one, and today the only one.
+_Avoid_: Verifier (unqualified), DI, wallet service, identity provider
+
+**QR Login**:
+The flow where a person proves who they are by presenting a wallet credential,
+instead of typing a password.
+_Avoid_: QR sign-in, scan login, wallet login, passwordless
+
+**QR Login Transaction**:
+One QR Login in flight: the code on screen, the nonce it binds, and the result the
+verifier sends back.
+_Avoid_: Session, scan session, QR session, request
+
+Note: the Scan Verifier keeps its own session identifier for one scan. That
+identifier is a fourth meaning of the word "session" in this system. It is not a
+Login Session, and it is not an Authn Session.
+
+**Wallet**:
+The application on the person's phone that holds the credential and answers a scan.
+_Avoid_: App, holder, agent, digital wallet
+
+**DI Enrolment**:
+The account the Scan Verifier keeps for one gateway person, keyed by that person's
+username.
+_Avoid_: Registration, onboarding, enrollment (see Membership), provisioning
