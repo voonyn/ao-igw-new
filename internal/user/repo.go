@@ -90,7 +90,8 @@ const humanColumns = `h.first_name AS first_name, h.last_name AS last_name,
 	h.email AS email, h.is_email_verified AS is_email_verified,
 	h.phone AS phone, h.is_phone_verified AS is_phone_verified,
 	h.password_change_required AS password_change_required,
-	h.password_changed_at AS password_changed_at`
+	h.password_changed_at AS password_changed_at,
+	h.di_user_uuid AS di_user_uuid`
 
 // mfaColumn reports whether the account holds a second factor: an activated TOTP
 // secret, or one registered passkey. The console renders one flag for both, so
@@ -435,6 +436,31 @@ func (r *Repository) SoftDelete(ctx context.Context, tenantID, userID string) er
 		logger.String("tenant_id", tenantID), logger.String("user_id", userID),
 		logger.RequestID(ctx))
 	return oneRow(res, tenantID, userID, "delete")
+}
+
+// SetDIUserUUID stores the identifier the Scan Verifier answered for one person.
+//
+// It runs on its own, outside the transaction that created the account. The Scan
+// Verifier is a third party, and an outage there must not roll back a person this
+// tenant already created.
+func (r *Repository) SetDIUserUUID(ctx context.Context, tenantID, userID, uuid string) error {
+	r.log.Debug("write digital identity enrolment",
+		logger.String("tenant_id", tenantID), logger.String("user_id", userID),
+		logger.RequestID(ctx))
+
+	res, err := db.Conn(ctx, r.db).NewUpdate().
+		Model((*Human)(nil)).
+		Set("di_user_uuid = ?", uuid).
+		Where("tenant_id = ?", tenantID).
+		Where("user_id = ?", userID).
+		Exec(ctx)
+	if err != nil {
+		return fmt.Errorf("write the enrolment of user %s of tenant %s: %w", userID, tenantID, err)
+	}
+	r.log.Debug("wrote digital identity enrolment",
+		logger.String("tenant_id", tenantID), logger.String("user_id", userID),
+		logger.RequestID(ctx))
+	return oneRow(res, tenantID, userID, "write the enrolment of")
 }
 
 // InsertToken writes one account token. It runs on the caller's transaction. The

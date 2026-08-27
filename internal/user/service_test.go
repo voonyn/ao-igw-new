@@ -8,9 +8,12 @@ import (
 	"testing"
 	"time"
 
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 	"go.uber.org/zap/zaptest/observer"
 
 	"alphaomega/identitygateway/internal/audit"
+	"alphaomega/identitygateway/internal/di"
 	"alphaomega/identitygateway/internal/organization"
 	"alphaomega/identitygateway/internal/platform/crypto"
 	"alphaomega/identitygateway/internal/platform/logger"
@@ -748,6 +751,12 @@ type adminDeps struct {
 	// weakPassword refuses the password of a create, as the policy of the
 	// organization does when the password fails one of its rules.
 	weakPassword bool
+	// digitalIdentity turns the Scan Verifier on, as the deployment setting does.
+	// With it false the service holds no enroller, and nothing calls out.
+	digitalIdentity bool
+	// enrolFails answers a failure from the Scan Verifier, as an outage there
+	// does.
+	enrolFails bool
 }
 
 // What the writes of one admin test did. adminService clears them, and the
@@ -763,6 +772,8 @@ var (
 	writtenTokens  []AccountToken
 	clearedMFA     []string
 	events         []audit.Event
+	enrolled       []di.EnrolUser
+	storedDI       []string
 	rolledBack     bool
 	logs           *observer.ObservedLogs
 )
@@ -774,6 +785,7 @@ func adminService(t *testing.T, d adminDeps) *Service {
 	writtenUsers, writtenHumans, writtenMembers, updatedHumans = nil, nil, nil, nil
 	states, unlocked, deletedUsers, writtenTokens = nil, nil, nil, nil
 	clearedMFA, events, rolledBack = nil, nil, false
+	enrolled, storedDI = nil, nil
 
 	record := func(_ context.Context, e audit.Event) error {
 		if d.auditFails {
@@ -871,11 +883,31 @@ func adminService(t *testing.T, d adminDeps) *Service {
 		CountTenantOwners: func(context.Context, string) (int64, error) {
 			return d.owners, nil
 		},
+		Enrol: enroller(d),
+		SetDI: func(_ context.Context, _, userID, uuid string) error {
+			storedDI = append(storedDI, userID+"="+uuid)
+			return nil
+		},
 		OrgMemberships: func(context.Context, string, string) ([]organization.Membership, error) {
 			return d.memberships, nil
 		},
 		Log: log,
 	})
+}
+
+// enroller is the Scan Verifier of one admin test. It answers nil when the
+// deployment runs none, which is the switch the service reads.
+func enroller(d adminDeps) DIEnroller {
+	if !d.digitalIdentity {
+		return nil
+	}
+	return func(_ context.Context, u di.EnrolUser) (string, error) {
+		enrolled = append(enrolled, u)
+		if d.enrolFails {
+			return "", errors.New("the scan verifier is down")
+		}
+		return "verifier-" + u.IDNumber, nil
+	}
 }
 
 // meService builds the service over a fixed tenant, two organizations, and one
@@ -1004,5 +1036,126 @@ func TestMeRefusesPersonWithoutAdminRole(t *testing.T) {
 	_, err := svc.Me(context.Background(), testTenantID, testUserID)
 	if !errors.Is(err, ErrNoAdminRole) {
 		t.Fatalf("err = %v, want ErrNoAdminRole", err)
+	}
+}
+
+// TestCreateEnrolsThePersonWithTheScanVerifier is the mirroring rule. A person
+// the tenant provisions is registered with the Scan Verifier, keyed on the
+// username, and the identifier it answers is stored against them.
+func TestCreateEnrolsThePersonWithTheScanVerifier(t *testing.T) {
+	svc := adminService(t, adminDeps{
+		digitalIdentity: true,
+		tenantRoles:     []string{tenant.RoleIAMOwner},
+	})
+
+	view, err := svc.Create(context.Background(), admin, createBody())
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if len(enrolled) != 1 || enrolled[0].IDNumber != "ada" || enrolled[0].Email != "ada@example.com" {
+		t.Fatalf("the enrolment sent %+v, want the username and the email of the person", enrolled)
+	}
+	if len(storedDI) != 1 || storedDI[0] != view.ID+"=verifier-ada" {
+		t.Fatalf("the write stored %v, want the identifier of the verifier", storedDI)
+	}
+	if view.Human == nil || view.Human.DIEnrolled == nil || !*view.Human.DIEnrolled {
+		t.Errorf("the view reads %+v, want an enrolled person", view.Human)
+	}
+}
+
+// TestInviteEnrolsThePersonWithTheScanVerifier proves that both administrative
+// writes mirror. An invitation produces a person with a username too.
+func TestInviteEnrolsThePersonWithTheScanVerifier(t *testing.T) {
+	svc := adminService(t, adminDeps{
+		digitalIdentity: true,
+		tenantRoles:     []string{tenant.RoleIAMOwner},
+	})
+
+	view, err := svc.Invite(context.Background(), admin, inviteBody())
+	if err != nil {
+		t.Fatalf("Invite: %v", err)
+	}
+	// The invitation names no username, so the email address becomes one, and
+	// the Scan Verifier keys on that.
+	if len(enrolled) != 1 || enrolled[0].IDNumber != "grace@example.com" {
+		t.Fatalf("the enrolment sent %+v, want the username of the person", enrolled)
+	}
+	if len(storedDI) != 1 || storedDI[0] != view.UserID+"=verifier-grace@example.com" {
+		t.Fatalf("the write stored %v, want the identifier of the verifier", storedDI)
+	}
+}
+
+// TestCreateSurvivesAScanVerifierOutage is the ordering rule. The call runs
+// after the commit and outside it, so an outage at a third party leaves the
+// person created and answers the console normally. The failure is a warning
+// naming the person, and it leaves the stored identifier empty.
+func TestCreateSurvivesAScanVerifierOutage(t *testing.T) {
+	svc := adminService(t, adminDeps{
+		digitalIdentity: true,
+		enrolFails:      true,
+		tenantRoles:     []string{tenant.RoleIAMOwner},
+	})
+
+	view, err := svc.Create(context.Background(), admin, createBody())
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if len(writtenUsers) != 1 || rolledBack {
+		t.Fatalf("the write wrote %+v and rolled back %v, want the person created", writtenUsers, rolledBack)
+	}
+	if len(storedDI) != 0 {
+		t.Errorf("the write stored %v, want nothing", storedDI)
+	}
+	if view.Human == nil || view.Human.DIEnrolled == nil || *view.Human.DIEnrolled {
+		t.Errorf("the view reads %+v, want a person who is not enrolled", view.Human)
+	}
+	warnings := logs.FilterLevelExact(zapcore.WarnLevel).FilterField(zap.String("user_id", view.ID))
+	if warnings.Len() == 0 {
+		t.Errorf("the log holds %v, want a warning naming the person", logs.All())
+	}
+	if got := logs.FilterLevelExact(zapcore.ErrorLevel).Len(); got != 0 {
+		t.Errorf("the log holds %d error lines, want none: an outage is not this deployment failing", got)
+	}
+}
+
+// TestCreateSkipsAPersonWithNoUsername proves the skip. The Scan Verifier keys
+// on the username, so a person without one cannot be mirrored, and the skip is
+// logged rather than sent.
+func TestCreateSkipsAPersonWithNoUsername(t *testing.T) {
+	svc := adminService(t, adminDeps{
+		digitalIdentity: true,
+		tenantRoles:     []string{tenant.RoleIAMOwner},
+	})
+
+	body := createBody()
+	body.Username = ""
+	view, err := svc.Create(context.Background(), admin, body)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if len(enrolled) != 0 {
+		t.Fatalf("the enrolment sent %+v, want nothing", enrolled)
+	}
+	warnings := logs.FilterLevelExact(zapcore.WarnLevel).FilterField(zap.String("user_id", view.ID))
+	if warnings.Len() == 0 {
+		t.Errorf("the log holds %v, want a warning naming the skipped person", logs.All())
+	}
+}
+
+// TestCreateWithTheIntegrationOffCallsNothing is the switch. With no Scan
+// Verifier configured nothing calls out, and the console answer carries no
+// enrolment field at all.
+func TestCreateWithTheIntegrationOffCallsNothing(t *testing.T) {
+	svc := adminService(t, adminDeps{tenantRoles: []string{tenant.RoleIAMOwner}})
+
+	view, err := svc.Create(context.Background(), admin, createBody())
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if len(enrolled) != 0 || len(storedDI) != 0 {
+		t.Fatalf("the enrolment sent %+v and stored %v, want nothing", enrolled, storedDI)
+	}
+	if view.Human == nil || view.Human.DIEnrolled != nil {
+		t.Errorf("the view reads %+v, want no enrolment field", view.Human)
 	}
 }

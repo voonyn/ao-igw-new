@@ -15,6 +15,7 @@ import (
 	"alphaomega/identitygateway/internal/application"
 	"alphaomega/identitygateway/internal/audit"
 	"alphaomega/identitygateway/internal/authpolicy"
+	"alphaomega/identitygateway/internal/di"
 	"alphaomega/identitygateway/internal/notification"
 	"alphaomega/identitygateway/internal/oidc"
 	"alphaomega/identitygateway/internal/organization"
@@ -51,7 +52,15 @@ func Routes(app *fiber.App, cfg *config.Config, bdb *bun.DB, rdb cache.Client, l
 	// Whether this deployment runs a Scan Verifier. Both front ends read the one
 	// answer, so there is one switch and not two that drift apart. The value also
 	// gates the Digital Identity routes and every outbound call.
-	mountCapabilities(app, digitalIdentityOn(cfg.DI, log))
+	digitalIdentity := digitalIdentityOn(cfg.DI, log)
+	mountCapabilities(app, digitalIdentity)
+
+	// The outbound client is built only when the integration is on. A nil client
+	// is the switch every caller reads.
+	var diClient *di.Client
+	if digitalIdentity {
+		diClient = di.New(cfg.DI, log)
+	}
 
 	// The cipher seals the private signing keys, the protocol state, and the
 	// login sessions at rest. A nil cipher stores them as plain JSON, which
@@ -100,7 +109,7 @@ func Routes(app *fiber.App, cfg *config.Config, bdb *bun.DB, rdb cache.Client, l
 
 	mountOIDCRoutes(app, cfg, bdb, storage, scopes, claims, recorder, cipher, sessions, tenantMW, tx.RunInTx, log)
 	mountLogin(app, cfg, bdb, cipher, storage, scopes, recorder, sessions, tenantMW, tx.RunInTx, log)
-	mountAdmin(app, bdb, rdb, cipher, storage, recorder, cfg.Notification, tenantMW, tx.RunInTx, log)
+	mountAdmin(app, bdb, rdb, cipher, storage, recorder, cfg.Notification, diClient, tenantMW, tx.RunInTx, log)
 	mountAccount(app, bdb, rdb, cipher, storage, recorder, tenantMW, tx.RunInTx, log)
 
 	return nil
@@ -172,8 +181,8 @@ func mountLogin(
 func mountAdmin(
 	app *fiber.App, bdb *bun.DB, rdb cache.Client, cipher *crypto.Cipher,
 	storage *oidc.StorageRepository, recorder *audit.Recorder,
-	notify config.NotificationConfig, tenantMW fiber.Handler, tx db.TxRunner,
-	log logger.Logger,
+	notify config.NotificationConfig, diClient *di.Client, tenantMW fiber.Handler,
+	tx db.TxRunner, log logger.Logger,
 ) {
 	keyRepo := oidc.NewKeyRepository(bdb, log)
 	keys := oidc.NewKeyService(keyRepo, cipher, log)
@@ -223,6 +232,12 @@ func mountAdmin(
 		TenantMember: tenants.FindMember,
 
 		CountTenantOwners: tenants.CountOwners,
+
+		// A person the tenant provisions is mirrored into the Scan Verifier, so a
+		// later scan resolves to a real account. Both halves stay nil when the
+		// integration is off, and nothing calls out.
+		Enrol: diEnrol(diClient),
+		SetDI: users.SetDIUserUUID,
 
 		// The password of an administrative create meets the policy of the
 		// organization it lands in. It is the same check the self-service change
@@ -613,6 +628,16 @@ func digitalIdentityOn(cfg config.DIConfig, log logger.Logger) bool {
 		return false
 	}
 	return true
+}
+
+// diEnrol adapts the outbound client to the dependency the user service takes.
+// A nil client answers a nil function, which is how the service knows that this
+// deployment runs no Scan Verifier.
+func diEnrol(c *di.Client) user.DIEnroller {
+	if c == nil {
+		return nil
+	}
+	return c.EnrolUser
 }
 
 // mountCapabilities publishes what this deployment runs. The capability names the

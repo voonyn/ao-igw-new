@@ -9,6 +9,7 @@ import (
 
 	"alphaomega/identitygateway/internal/actor"
 	"alphaomega/identitygateway/internal/audit"
+	"alphaomega/identitygateway/internal/di"
 	"alphaomega/identitygateway/internal/organization"
 	"alphaomega/identitygateway/internal/platform/crypto"
 	"alphaomega/identitygateway/internal/platform/db"
@@ -128,6 +129,13 @@ type (
 
 	// TenantOwnerCounter counts how many people sit as IAM_OWNER of the tenant.
 	TenantOwnerCounter func(ctx context.Context, tenantID string) (int64, error)
+
+	// DIEnroller registers one person with the Scan Verifier and answers the
+	// identifier it keeps for them.
+	DIEnroller func(ctx context.Context, u di.EnrolUser) (string, error)
+
+	// DIWriter stores the identifier the Scan Verifier answered.
+	DIWriter func(ctx context.Context, tenantID, userID, uuid string) error
 )
 
 // Deps is the database side of the service. The first block serves the admin
@@ -155,6 +163,13 @@ type Deps struct {
 	TenantMember TenantMemberFinder
 
 	CountTenantOwners TenantOwnerCounter
+
+	// Enrol and SetDI mirror a newly provisioned person into the Scan Verifier.
+	// Both are nil when this deployment runs no Scan Verifier, and a nil Enrol is
+	// the one switch: no call goes out, and the console answer carries no
+	// enrolment field.
+	Enrol DIEnroller
+	SetDI DIWriter
 
 	// CheckPassword refuses a password the policy of the organization does not
 	// accept. It is the same function value the self-service change takes, so
@@ -300,7 +315,7 @@ func (s *Service) List(ctx context.Context, a Actor, q Query) ([]View, int64, er
 
 	views := make([]View, 0, len(rows))
 	for _, row := range rows {
-		views = append(views, newView(row))
+		views = append(views, newView(row, s.deps.Enrol != nil))
 	}
 
 	s.log.Debug("listed users",
@@ -322,7 +337,7 @@ func (s *Service) Find(ctx context.Context, a Actor, userID string) (View, error
 	if err != nil {
 		return View{}, err
 	}
-	return newView(row), nil
+	return newView(row, s.deps.Enrol != nil), nil
 }
 
 // Create registers one person in the organization the body names, and writes the
@@ -420,7 +435,9 @@ func (s *Service) Create(ctx context.Context, a Actor, body CreateBody) (View, e
 		logger.String("tenant_id", a.TenantID),
 		logger.String("user_id", a.UserID),
 		logger.String("created_user_id", row.ID))
-	return newView(withProfile(row, person)), nil
+
+	person.DIUserUUID = s.enrol(ctx, row, person)
+	return newView(withProfile(row, person), s.deps.Enrol != nil), nil
 }
 
 // Invite registers one person who has no account yet, puts them in the
@@ -531,6 +548,8 @@ func (s *Service) Invite(ctx context.Context, a Actor, body InviteBody) (InviteV
 		return InviteView{}, s.fail(a.TenantID, a.UserID, "invite a person", err)
 	}
 
+	s.enrol(ctx, row, person)
+
 	s.log.Info("invited a person",
 		logger.String("tenant_id", a.TenantID),
 		logger.String("user_id", a.UserID),
@@ -590,7 +609,7 @@ func (s *Service) Update(ctx context.Context, a Actor, userID string, body Updat
 	row.DisplayName = body.DisplayName
 	row.Lang = body.Lang
 	row.Phone = body.Phone
-	return newView(row), nil
+	return newView(row, s.deps.Enrol != nil), nil
 }
 
 // Activate returns one account to the state where it can sign in.
@@ -834,6 +853,66 @@ func (s *Service) Memberships(ctx context.Context, a Actor, userID string) (Memb
 	return out, nil
 }
 
+// enrol mirrors one committed person into the Scan Verifier and stores the
+// identifier it answers. It returns that identifier, or an empty string.
+//
+// It runs after the commit and outside the transaction. The Scan Verifier is a
+// third party with no compensating delete on this side, so letting its outage
+// roll back a committed person would trade a missing mirror for a lost person.
+// Every failure here is a warning naming the person, never an error the caller
+// sees: the account exists, and the console reads it normally.
+//
+// The call is synchronous and bounded by the configured timeout. A background
+// call would be in-process state, and any instance of this deployment must serve
+// any request.
+//
+// The Scan Verifier keys on the username, so a person with no username is
+// skipped. The empty identifier that a skip and a failure both leave is how an
+// operator finds who is not mirrored, and how a later retry knows whom to skip.
+func (s *Service) enrol(ctx context.Context, row User, person Human) string {
+	if s.deps.Enrol == nil || s.deps.SetDI == nil {
+		return ""
+	}
+	if row.Username == "" {
+		s.log.Warn("digital identity: skipped a person with no username",
+			logger.String("tenant_id", row.TenantID), logger.String("user_id", row.ID))
+		return ""
+	}
+
+	uuid, err := s.deps.Enrol(ctx, di.EnrolUser{
+		FullName: person.DisplayName, // the client falls back to the username
+		IDNumber: row.Username,
+		Email:    person.Email,
+		// EmailVerified stays false. verifiedBy and verifiedAt are attestations
+		// that this gateway checked the address. It checked nothing here: the
+		// flag on the body is what the administrator typed, and a claim this
+		// gateway does not hold must not be written into the record of a third
+		// party.
+	})
+	if err != nil {
+		s.log.Warn("digital identity: enrolment failed",
+			logger.String("tenant_id", row.TenantID),
+			logger.String("user_id", row.ID),
+			logger.Err(err))
+		return ""
+	}
+	if err := s.deps.SetDI(ctx, row.TenantID, row.ID, uuid); err != nil {
+		// The person is enrolled and the column stays empty, so a retry reading
+		// that column enrols them twice. The identifier is carried into this line
+		// because the log is then the only place it exists. It is an identifier,
+		// not a credential.
+		s.log.Warn("digital identity: the enrolment could not be stored",
+			logger.String("tenant_id", row.TenantID),
+			logger.String("user_id", row.ID),
+			logger.String("di_user_uuid", uuid),
+			logger.Err(err))
+		return ""
+	}
+	s.log.Info("digital identity: enrolled a person",
+		logger.String("tenant_id", row.TenantID), logger.String("user_id", row.ID))
+	return uuid
+}
+
 // displayName is what the console renders for one person. A profile with no
 // display name falls back to the username, because a blank row names nobody.
 func displayName(row User) string {
@@ -937,6 +1016,7 @@ func withProfile(row User, person Human) User {
 	row.Lang = person.Lang
 	row.Email = person.Email
 	row.IsEmailVerified = person.IsEmailVerified
+	row.DIUserUUID = person.DIUserUUID
 	return row
 }
 

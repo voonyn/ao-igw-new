@@ -41,6 +41,11 @@ type User struct {
 	PasswordChangedAt time.Time `bun:"password_changed_at,scanonly,nullzero"`
 	MFAEnabled        bool      `bun:"mfa_enabled,scanonly"`
 
+	// DIUserUUID is the identifier the Scan Verifier keeps for this person. It is
+	// empty when this deployment runs no Scan Verifier, and empty when the
+	// enrolment failed.
+	DIUserUUID string `bun:"di_user_uuid,scanonly"`
+
 	DeletedAt time.Time `bun:",soft_delete,nullzero"`
 }
 
@@ -65,6 +70,10 @@ type Human struct {
 	Phone           string `bun:"phone,nullzero"`
 
 	PasswordHash string `bun:"password_hash,nullzero"`
+
+	// DIUserUUID is the identifier the Scan Verifier keeps for this person. It is
+	// written after the account commits, never with it. See Service.enrol.
+	DIUserUUID string `bun:"di_user_uuid,nullzero"`
 
 	CreatedAt time.Time `bun:"created_at,nullzero"`
 }

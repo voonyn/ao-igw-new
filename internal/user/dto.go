@@ -97,6 +97,12 @@ type HumanView struct {
 
 	PwdChangeRequired bool       `json:"pwdChangeRequired"`
 	PwdChangedAt      *time.Time `json:"pwdChangedAt"`
+
+	// DIEnrolled says whether the Scan Verifier keeps an account for this person.
+	// It is absent from the answer when this deployment runs no Scan Verifier, so
+	// the console renders nothing that does not apply. The identifier itself
+	// stays on the server: the console needs the state, not the value.
+	DIEnrolled *bool `json:"diEnrolled,omitempty"`
 }
 
 // MembershipsView is every scope one person holds a membership in. Both halves
@@ -136,8 +142,10 @@ type ResetView struct {
 	Expires time.Time `json:"expires"`
 }
 
-// newView maps one account, and the person behind it, into the answer.
-func newView(row User) View {
+// newView maps one account, and the person behind it, into the answer. di says
+// whether this deployment runs a Scan Verifier, and it decides whether the
+// enrolment field is in the answer at all.
+func newView(row User, di bool) View {
 	view := View{
 		ID:         row.ID,
 		TenantID:   row.TenantID,
@@ -173,6 +181,10 @@ func newView(row User) View {
 	if !row.PasswordChangedAt.IsZero() {
 		changed := row.PasswordChangedAt
 		view.Human.PwdChangedAt = &changed
+	}
+	if di {
+		enrolled := row.DIUserUUID != ""
+		view.Human.DIEnrolled = &enrolled
 	}
 	return view
 }

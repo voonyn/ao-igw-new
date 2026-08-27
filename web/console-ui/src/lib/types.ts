@@ -93,6 +93,10 @@ export interface Human {
   phoneVerified: boolean;
   pwdChangeRequired: boolean;
   pwdChangedAt: string | null;
+  /** Whether the Scan Verifier keeps an account for this person. Absent when
+   * this deployment runs no Scan Verifier, and the console then renders no
+   * enrolment row. Read-only: the console never writes it. */
+  diEnrolled?: boolean;
 }
 
 export interface User {

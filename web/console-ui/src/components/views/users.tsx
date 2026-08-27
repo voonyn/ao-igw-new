@@ -275,6 +275,24 @@ export function UserDetailPage({
               }
             />
           </SectionCard>
+
+          {/* Read-only, and rendered only when this deployment runs a Scan
+              Verifier: the API leaves the field out otherwise. "Not enrolled"
+              is how an operator finds the people an outage left unmirrored. */}
+          {h.diEnrolled !== undefined && (
+            <SectionCard title="Digital identity" desc="Whether this person is registered with the Scan Verifier. It is written when the account is created and cannot be edited here.">
+              <KV
+                k="Enrolment"
+                v={
+                  h.diEnrolled ? (
+                    <span className="badge accent">Enrolled</span>
+                  ) : (
+                    <span className="badge gray">Not enrolled</span>
+                  )
+                }
+              />
+            </SectionCard>
+          )}
         </div>
       )}
 
