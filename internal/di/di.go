@@ -62,13 +62,6 @@ const (
 	enrolCountryID = "9574"
 )
 
-// enrolVerifiedBy is the attester recorded against a verified email address. The
-// vocabulary belongs to the Scan Verifier. This gateway is the SPASS side.
-const enrolVerifiedBy = "SPASS"
-
-// enrolTimeLayout is the timestamp format of the verifiedAt field.
-const enrolTimeLayout = "2006-01-02 15:04:05"
-
 // maxResponseBytes caps how much of an answer is read. The Scan Verifier is a
 // third party. An unbounded read makes the memory of this deployment its
 // decision.
@@ -225,11 +218,9 @@ func (c *Client) InitializeVPTransaction(ctx context.Context, nonce string) (Tra
 // Login resolves a scan against. An enrolment under anything else mints a wallet
 // credential that does not match the account it was minted for.
 type EnrolUser struct {
-	FullName      string
-	IDNumber      string
-	Email         string // left out of the request when empty
-	EmailVerified bool
-	VerifiedAt    time.Time // read only when EmailVerified. Zero means now.
+	FullName string
+	IDNumber string
+	Email    string // left out of the request when empty
 }
 
 // EnrolUser registers a person with the Scan Verifier and returns the identifier
@@ -254,24 +245,16 @@ func (c *Client) EnrolUser(ctx context.Context, u EnrolUser) (string, error) {
 		},
 	}
 	if u.Email != "" {
-		email := map[string]any{
+		// The address goes out unverified. verifiedBy and verifiedAt are
+		// attestations that this gateway checked it, and this gateway checks
+		// nothing: the flag on the administrative body is what an administrator
+		// typed. A claim this gateway does not hold must not be written into the
+		// record of a third party.
+		req["emailInfo"] = []map[string]any{{
 			"emailAddress": u.Email,
 			"isPrimary":    1,
 			"isVerified":   0,
-		}
-		// verifiedBy and verifiedAt are attestations. They go out only when this
-		// gateway holds the verification. A claim it does not hold writes a false
-		// attestation into the record of the Scan Verifier.
-		if u.EmailVerified {
-			at := u.VerifiedAt
-			if at.IsZero() {
-				at = time.Now()
-			}
-			email["isVerified"] = 1
-			email["verifiedBy"] = enrolVerifiedBy
-			email["verifiedAt"] = at.UTC().Format(enrolTimeLayout)
-		}
-		req["emailInfo"] = []map[string]any{email}
+		}}
 	}
 	// The documented body carries no credentials. The Scan Verifier authenticates
 	// the caller in the body everywhere else, and an unknown field is ignored

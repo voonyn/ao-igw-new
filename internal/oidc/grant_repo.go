@@ -3,6 +3,7 @@ package oidc
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/uptrace/bun"
 
@@ -118,9 +119,7 @@ func (r *StorageRepository) DeleteGrantsByLoginSession(
 	if sessionID == "" {
 		return 0, nil
 	}
-	return r.deleteGrants(ctx, tenantID, "login_session_id", func(q *bun.SelectQuery) *bun.SelectQuery {
-		return q.Where("g.login_session_id = ?", sessionID)
-	})
+	return r.deleteGrants(ctx, tenantID, grantNarrow{"login_session_id", sessionID})
 }
 
 // DeleteGrantsBySubject hard deletes every grant one person holds, whatever
@@ -134,9 +133,7 @@ func (r *StorageRepository) DeleteGrantsBySubject(
 	if subject == "" {
 		return 0, nil
 	}
-	return r.deleteGrants(ctx, tenantID, "subject", func(q *bun.SelectQuery) *bun.SelectQuery {
-		return q.Where("g.subject = ?", subject)
-	})
+	return r.deleteGrants(ctx, tenantID, grantNarrow{"subject", subject})
 }
 
 // DeleteGrantsBySubjectClient hard deletes every grant one person holds for one
@@ -155,29 +152,48 @@ func (r *StorageRepository) DeleteGrantsBySubjectClient(
 	if subject == "" || clientID == "" {
 		return 0, nil
 	}
-	return r.deleteGrants(ctx, tenantID, "subject and client_id", func(q *bun.SelectQuery) *bun.SelectQuery {
-		return q.Where("g.subject = ?", subject).Where("g.client_id = ?", clientID)
-	})
+	return r.deleteGrants(ctx, tenantID,
+		grantNarrow{"subject", subject}, grantNarrow{"client_id", clientID})
+}
+
+// grantNarrow is one column of the predicate that selects the grants to delete.
+// Column is a literal of this file and never a value from a request.
+type grantNarrow struct {
+	Column string
+	Value  string
 }
 
 // deleteGrants removes the grants narrow selects, and the superseded refresh
-// token digests that belonged to them. by names the narrowing for the log line
-// and for the error, and never reaches the SQL.
+// token digests that belonged to them.
+//
+// The narrowing is passed as columns rather than as a closure, so the name the
+// log line and the error carry is read off the predicate that ran. A label
+// beside a closure is a second thing to keep in step, and it drifts.
 //
 // The digests go too, because a grant that no longer exists has nothing left to
 // detect: they are kept only to recognise a replay against a live grant.
 func (r *StorageRepository) deleteGrants(
-	ctx context.Context, tenantID, by string, narrow func(*bun.SelectQuery) *bun.SelectQuery,
+	ctx context.Context, tenantID string, narrow ...grantNarrow,
 ) (int, error) {
+	columns := make([]string, 0, len(narrow))
+	for _, n := range narrow {
+		columns = append(columns, n.Column)
+	}
+	by := strings.Join(columns, " and ")
+
 	r.log.Debug("revoke grants",
 		logger.String("tenant_id", tenantID), logger.String("by", by), logger.RequestID(ctx))
 
-	var ids []string
-	if err := narrow(db.Conn(ctx, r.db).NewSelect().
+	q := db.Conn(ctx, r.db).NewSelect().
 		Model((*GrantRecord)(nil)).
 		Column("id").
-		Where("g.tenant_id = ?", tenantID)).
-		Scan(ctx, &ids); err != nil {
+		Where("g.tenant_id = ?", tenantID)
+	for _, n := range narrow {
+		q = q.Where("g."+n.Column+" = ?", n.Value)
+	}
+
+	var ids []string
+	if err := q.Scan(ctx, &ids); err != nil {
 		return 0, fmt.Errorf("read the grants of tenant %s by %s: %w", tenantID, by, err)
 	}
 	if len(ids) == 0 {

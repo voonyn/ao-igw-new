@@ -92,9 +92,17 @@ func queryFrom(c fiber.Ctx) (Query, error) {
 		To:         to,
 	}
 
-	// The sort is read from Fiber's own middleware, and the direction from the
-	// console's `dir` parameter. middlewares.SortFrom does the same, and this
-	// package cannot import it.
+	pageFrom(c, &q)
+	return q, nil
+}
+
+// pageFrom reads the window and the order of one page onto q. Both feeds of this
+// package page the same way, so the reading lives here once.
+//
+// The sort is read from Fiber's own middleware, and the direction from the
+// console's `dir` parameter. middlewares.SortFrom does the same, and this package
+// cannot import it.
+func pageFrom(c fiber.Ctx, q *Query) {
 	if info, ok := paginate.FromContext(c); ok && info != nil {
 		q.Limit, q.Offset = info.Limit, info.Start()
 		if len(info.Sort) > 0 {
@@ -104,7 +112,6 @@ func queryFrom(c fiber.Ctx) (Query, error) {
 	if dir := c.Query("dir"); dir != "" {
 		q.Desc = strings.EqualFold(dir, "desc")
 	}
-	return q, nil
 }
 
 // timeQuery reads one RFC 3339 bound of the range. An absent bound is not a

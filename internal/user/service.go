@@ -883,11 +883,8 @@ func (s *Service) enrol(ctx context.Context, row User, person Human) string {
 		FullName: person.DisplayName, // the client falls back to the username
 		IDNumber: row.Username,
 		Email:    person.Email,
-		// EmailVerified stays false. verifiedBy and verifiedAt are attestations
-		// that this gateway checked the address. It checked nothing here: the
-		// flag on the body is what the administrator typed, and a claim this
-		// gateway does not hold must not be written into the record of a third
-		// party.
+		// The address goes out unverified. The client asserts no verification,
+		// because this gateway holds none.
 	})
 	if err != nil {
 		s.log.Warn("digital identity: enrolment failed",

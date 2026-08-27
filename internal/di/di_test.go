@@ -295,7 +295,9 @@ func TestClient_EnrolUserBody(t *testing.T) {
 			},
 		},
 		{
-			name: "an unverified email carries no verifiedBy or verifiedAt",
+			// This gateway holds no verification of the address, so it asserts
+			// none. verifiedBy and verifiedAt never go out.
+			name: "an email goes out unverified and carries no attestation",
 			in:   EnrolUser{IDNumber: "950218130004", Email: "a@example.com"},
 			want: func(t *testing.T, body map[string]any) {
 				e := body["emailInfo"].([]any)[0].(map[string]any)
@@ -307,22 +309,6 @@ func TestClient_EnrolUserBody(t *testing.T) {
 				}
 				if _, ok := e["verifiedAt"]; ok {
 					t.Error("verifiedAt asserted for an unverified email")
-				}
-			},
-		},
-		{
-			name: "a verified email carries the attestation in the expected format",
-			in: EnrolUser{
-				IDNumber: "950218130004", Email: "a@example.com", EmailVerified: true,
-				VerifiedAt: time.Date(2025, 5, 26, 10, 0, 0, 0, time.UTC),
-			},
-			want: func(t *testing.T, body map[string]any) {
-				e := body["emailInfo"].([]any)[0].(map[string]any)
-				if e["isVerified"] != float64(1) || e["verifiedBy"] != enrolVerifiedBy {
-					t.Errorf("emailInfo = %v", e)
-				}
-				if e["verifiedAt"] != "2025-05-26 10:00:00" {
-					t.Errorf("verifiedAt = %v", e["verifiedAt"])
 				}
 			},
 		},

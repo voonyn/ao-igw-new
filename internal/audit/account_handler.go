@@ -1,10 +1,7 @@
 package audit
 
 import (
-	"strings"
-
 	"github.com/gofiber/fiber/v3"
-	"github.com/gofiber/fiber/v3/middleware/paginate"
 
 	"alphaomega/identitygateway/internal/api/http/response"
 )
@@ -51,14 +48,6 @@ func (h *AccountHandler) list(c fiber.Ctx) error {
 // A read that asks for no order reads newest first.
 func accountQueryFrom(c fiber.Ctx) Query {
 	var q Query
-	if info, ok := paginate.FromContext(c); ok && info != nil {
-		q.Limit, q.Offset = info.Limit, info.Start()
-		if len(info.Sort) > 0 {
-			q.Sort, q.Desc = info.Sort[0].Field, info.Sort[0].Order == paginate.DESC
-		}
-	}
-	if dir := c.Query("dir"); dir != "" {
-		q.Desc = strings.EqualFold(dir, "desc")
-	}
+	pageFrom(c, &q)
 	return q
 }
