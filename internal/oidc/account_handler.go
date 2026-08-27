@@ -38,11 +38,14 @@ func NewAccountHandler(svc *AccountService, actor AccountActorReader) *AccountHa
 // tenant middleware and the bearer guard on the group, so both routes below read
 // a resolved tenant and a verified subject.
 //
+// The addresses are the ones the portal calls. The portal defines the contract
+// here: it is a complete front end, and this API is built to match it.
+//
 // The list is bounded and pages nothing: it holds one row per application the
 // person connected, and the whole list fits one answer.
 func AccountRoutes(router fiber.Router, h *AccountHandler) {
-	router.Get("/connections", h.list)
-	router.Delete("/connections/:clientId", h.disconnect)
+	router.Get("/connected-apps", h.list)
+	router.Delete("/connected-apps/:clientId", h.disconnect)
 }
 
 func (h *AccountHandler) list(c fiber.Ctx) error {
