@@ -155,6 +155,43 @@ func (r *Repository) FindByIdentifier(ctx context.Context, tenantID, identifier 
 	return row, nil
 }
 
+// FindByUsername reads the person one username names, and only that column.
+//
+// QR Login resolves a scan through it. The Scan Verifier keys a person by their
+// username, so the claim a wallet presents is a username and never an email
+// address. FindByIdentifier matches either one, and a match on the wrong column
+// would sign in a person the scan did not name.
+//
+// An inactive account and a soft-deleted one never come back. A miss returns
+// ErrNotFound. The username is personal data, so it never reaches a log line.
+func (r *Repository) FindByUsername(ctx context.Context, tenantID, username string) (User, error) {
+	r.log.Debug("read user by username", logger.String("tenant_id", tenantID), logger.RequestID(ctx))
+
+	var row User
+	err := db.Conn(ctx, r.db).NewSelect().
+		Model(&row).
+		ColumnExpr(userColumns).
+		ColumnExpr("h.email AS email").
+		ColumnExpr("h.is_email_verified AS is_email_verified").
+		Join("JOIN user_humans AS h ON h.user_id = u.id AND h.tenant_id = u.tenant_id").
+		Where("u.tenant_id = ?", tenantID).
+		Where("u.state = ?", stateActive).
+		Where("u.user_type = ?", typeHuman).
+		Where("u.username = ?", username).
+		Limit(1).
+		Scan(ctx)
+	if errors.Is(err, sql.ErrNoRows) {
+		return User{}, fmt.Errorf("%w: tenant %s", ErrNotFound, tenantID)
+	}
+	if err != nil {
+		return User{}, fmt.Errorf("read user of tenant %s: %w", tenantID, err)
+	}
+
+	r.log.Debug("read user by username",
+		logger.String("tenant_id", tenantID), logger.String("user_id", row.ID), logger.RequestID(ctx))
+	return row, nil
+}
+
 // FindByID reads one person by the id an access token carries, with the human
 // profile the admin front door answers with.
 //

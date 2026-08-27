@@ -20,9 +20,15 @@ const (
 	StateTerminated = 2
 )
 
-// FactorPassword names the password factor in the factor map. The names are the
-// AMR values of RFC 8176, so the ID token can carry them unchanged.
+// FactorPassword names the password factor in the factor map. A factor name is a
+// registry value of RFC 8176 where one fits, so the ID token carries it
+// unchanged.
 const FactorPassword = "pwd"
+
+// FactorScan names the factor a person proves by presenting a Wallet credential
+// to the Scan Verifier. The AMR registry lists no value for it, and the registry
+// permits values outside its own list.
+const FactorScan = "vc"
 
 // partialLifetime bounds the identifier step. The person has proved nothing
 // yet, so the session lives only long enough to type a password.
@@ -42,6 +48,11 @@ const fullLifetime = 12 * time.Hour
 // ErrNotAuthenticated reports a session that exists but carries no factor. The
 // identifier step opens such a session, and the password step upgrades it.
 var ErrNotAuthenticated = errors.New("login session is not authenticated")
+
+// ErrSubjectBound reports a login session that already names a different person.
+// A step that binds a person refuses one, because that is the shape of an
+// attempt to point a live session at somebody else.
+var ErrSubjectBound = errors.New("login session already names another person")
 
 // ErrBadCredentials reports a refused password. A wrong password, a session
 // that names nobody, and a broken stored hash all give it, so the answer never

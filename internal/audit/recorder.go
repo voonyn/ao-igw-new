@@ -225,6 +225,9 @@ var allowedMetadata = map[string]bool{
 	"scopes":     true,
 	"reason":     true,
 	"error_code": true,
+	// The factor a sign-in was proved with, such as "pwd" or "vc". It names a
+	// method, never the secret behind it.
+	"factor":     true,
 	"scope_id":   true,
 	"scope_name": true,
 	"claim_name": true,

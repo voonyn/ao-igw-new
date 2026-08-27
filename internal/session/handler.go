@@ -26,6 +26,7 @@ func init() {
 	response.Map(ErrBadCredentials, fiber.StatusUnauthorized, "unauthenticated", "Unauthorized")
 	response.Map(ErrLoginSessionNotFound, fiber.StatusUnauthorized, "unauthenticated", "Unauthorized")
 	response.Map(ErrNotAuthenticated, fiber.StatusUnauthorized, "unauthenticated", "Unauthorized")
+	response.Map(ErrSubjectBound, fiber.StatusUnauthorized, "unauthenticated", "Unauthorized")
 }
 
 // Handler serves the login steps the login UI drives. It binds the request,

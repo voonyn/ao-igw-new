@@ -77,7 +77,24 @@ func (s *Service) Identify(ctx context.Context, tenantID, identifier, ip, userAg
 		s.log.Error("read user", logger.String("tenant_id", tenantID), logger.Err(err))
 		return Opened{}, err
 	}
+	return s.open(ctx, tenantID, person, ip, userAgent)
+}
 
+// Open opens a partial login session that names nobody.
+//
+// A flow that learns the person later calls it. QR Login is the first: the code
+// goes on screen before anybody has said who they are, and the poll binds the
+// person the scan resolved to.
+func (s *Service) Open(ctx context.Context, tenantID, ip, userAgent string) (Opened, error) {
+	s.log.Debug("open login session", logger.String("tenant_id", tenantID), logger.RequestID(ctx))
+	return s.open(ctx, tenantID, Identity{}, ip, userAgent)
+}
+
+// open writes one partial login session and hands out the token that
+// credentials it. person is the zero Identity when the caller names nobody.
+func (s *Service) open(
+	ctx context.Context, tenantID string, person Identity, ip, userAgent string,
+) (Opened, error) {
 	now := time.Now().UTC()
 	live := LoginSession{
 		ID:        utils.NewUUIDv7(),
@@ -234,6 +251,96 @@ func (s *Service) entry(live LoginSession, action audit.Action, metadata map[str
 		UserAgent:  live.UserAgent,
 		Metadata:   metadata,
 	}
+}
+
+// Find returns the login session the token credentials, whether or not the
+// person verified a factor. A caller that must act on a partial session uses it,
+// and every other caller uses Resolve.
+//
+// The token is a credential. Only the session id reaches a log line.
+func (s *Service) Find(ctx context.Context, tenantID, token string) (LoginSession, error) {
+	s.log.Debug("read login session", logger.String("tenant_id", tenantID), logger.RequestID(ctx))
+
+	live, err := s.deps.Find(ctx, tenantID, aocrypto.Digest(token))
+	if err != nil {
+		if !errors.Is(err, ErrLoginSessionNotFound) {
+			s.log.Error("read login session", logger.String("tenant_id", tenantID), logger.Err(err))
+		}
+		return LoginSession{}, err
+	}
+
+	s.log.Debug("read login session",
+		logger.String("tenant_id", tenantID), logger.String("session_id", live.ID), logger.RequestID(ctx))
+	return live, nil
+}
+
+// Complete binds a person to a partial login session and records one named
+// factor on it.
+//
+// The upgraded session lives for fullLifetime and answers to a new token. The old
+// token dies with the rotation, and the new one is disclosed exactly once, here.
+// This is the same rule the password step follows, so one writer holds it.
+//
+// The factor name is a parameter, and this method knows nothing about how the
+// factor was proved. A later factor reuses it unchanged.
+//
+// A session that already names a different person gives ErrSubjectBound. A
+// session that already names this person is bound again, which changes nothing.
+func (s *Service) Complete(
+	ctx context.Context, tenantID, token, userID, factor string,
+) (Opened, error) {
+	s.log.Debug("complete login session",
+		logger.String("tenant_id", tenantID), logger.String("factor", factor), logger.RequestID(ctx))
+
+	live, err := s.deps.Find(ctx, tenantID, aocrypto.Digest(token))
+	if err != nil {
+		if !errors.Is(err, ErrLoginSessionNotFound) {
+			s.log.Error("read login session", logger.String("tenant_id", tenantID), logger.Err(err))
+		}
+		return Opened{}, err
+	}
+	if live.UserID != "" && live.UserID != userID {
+		return Opened{}, fmt.Errorf("%w: session %s", ErrSubjectBound, live.ID)
+	}
+
+	now := time.Now().UTC()
+	live.UserID = userID
+	if live.Factors == nil {
+		live.Factors = make(map[string]time.Time, 1)
+	}
+	live.Factors[factor] = now
+	live.ExpiresAt = now.Add(fullLifetime)
+
+	rotated, err := mintToken()
+	if err != nil {
+		s.log.Error("mint session token",
+			logger.String("tenant_id", tenantID),
+			logger.String("session_id", live.ID),
+			logger.Err(err))
+		return Opened{}, err
+	}
+
+	err = s.deps.InTx(ctx, func(ctx context.Context) error {
+		if err := s.deps.Save(ctx, live, aocrypto.Digest(rotated), aocrypto.Digest(token)); err != nil {
+			return err
+		}
+		return s.deps.Audit.Record(ctx, s.entry(live, audit.ActionLoginSucceeded,
+			map[string]any{"factor": factor}))
+	})
+	if err != nil {
+		s.log.Error("complete login session",
+			logger.String("tenant_id", tenantID),
+			logger.String("session_id", live.ID),
+			logger.Err(err))
+		return Opened{}, err
+	}
+
+	s.log.Info("completed login session",
+		logger.String("tenant_id", tenantID),
+		logger.String("session_id", live.ID),
+		logger.String("user_id", live.UserID),
+		logger.String("factor", factor), logger.RequestID(ctx))
+	return Opened{ID: live.ID, Token: rotated}, nil
 }
 
 // Resolve returns the login session the token credentials, and only when the

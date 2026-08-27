@@ -25,6 +25,7 @@ import (
 	"alphaomega/identitygateway/internal/platform/db"
 	"alphaomega/identitygateway/internal/platform/logger"
 	"alphaomega/identitygateway/internal/project"
+	"alphaomega/identitygateway/internal/qrlogin"
 	"alphaomega/identitygateway/internal/session"
 	"alphaomega/identitygateway/internal/tenant"
 	"alphaomega/identitygateway/internal/user"
@@ -42,6 +43,19 @@ const accountPrefix = "/api/v1/account"
 // capabilitiesPath is where every front end reads what this deployment runs. It
 // is open, and it carries no tenant and no person.
 const capabilitiesPath = "/api/v1/capabilities"
+
+// qrLoginSuffix is where the sign-in front end reaches the two browser steps of
+// QR Login, inside the login group. It carries the same credential as the other
+// login steps.
+const qrLoginSuffix = "/qr"
+
+// qrLoginPrefix is the full path of those two steps.
+const qrLoginPrefix = loginPrefix + qrLoginSuffix
+
+// qrCallbackPath is where the Scan Verifier pushes the result of a scan. It sits
+// outside every group: the push carries its own credential, and its host names no
+// tenant. See docs/adr/0008-scan-verifier-push-callback.md.
+const qrCallbackPath = "/api/v1/di/callback"
 
 func Routes(app *fiber.App, cfg *config.Config, bdb *bun.DB, rdb cache.Client, log logger.Logger) error {
 	app.Use(requestid.New())
@@ -108,9 +122,20 @@ func Routes(app *fiber.App, cfg *config.Config, bdb *bun.DB, rdb cache.Client, l
 	sessions := newSessionService(bdb, rdb, cipher, recorder, tx.RunInTx, log)
 
 	mountOIDCRoutes(app, cfg, bdb, storage, scopes, claims, recorder, cipher, sessions, tenantMW, tx.RunInTx, log)
-	mountLogin(app, cfg, bdb, cipher, storage, scopes, recorder, sessions, tenantMW, tx.RunInTx, log)
+
+	// The login group carries the credential of the sign-in front end and the
+	// tenant lookup. QR Login mounts inside it, so both run once per request.
+	loginGroup := app.Group(loginPrefix, middlewares.LoginPAT(cfg.Auth.LoginPATs(), log), tenantMW)
+	mountLogin(loginGroup, cfg, bdb, cipher, storage, scopes, recorder, sessions, tx.RunInTx, log)
 	mountAdmin(app, bdb, rdb, cipher, storage, recorder, cfg.Notification, diClient, tenantMW, tx.RunInTx, log)
 	mountAccount(app, bdb, rdb, cipher, storage, recorder, tenantMW, tx.RunInTx, log)
+
+	// QR Login exists only where a Scan Verifier does. With the integration off,
+	// none of the three routes are mounted, so the sign-in front end reads the
+	// capability and offers no dead option.
+	if digitalIdentity {
+		mountQRLogin(app, loginGroup, cfg.DI, bdb, diClient, sessions, recorder, log)
+	}
 
 	return nil
 }
@@ -139,12 +164,13 @@ func mountOIDCRoutes(
 	mountOIDC(app, cfg.OIDC.PathPrefix, tenantMW, apioidc.NewRegistry(build, log), tx, log)
 }
 
-// mountLogin builds the login stack the login UI drives. Only the login UI
-// reaches it, so the group carries the PAT check before the tenant lookup.
+// mountLogin builds the login stack the login UI drives. The caller mounts the
+// PAT check and the tenant lookup on the group, because only the login UI
+// reaches it.
 func mountLogin(
-	app *fiber.App, cfg *config.Config, bdb *bun.DB, cipher *crypto.Cipher,
+	group fiber.Router, cfg *config.Config, bdb *bun.DB, cipher *crypto.Cipher,
 	storage *oidc.StorageRepository, scopes *oidc.ScopeService, recorder *audit.Recorder,
-	svc *session.Service, tenantMW fiber.Handler, tx db.TxRunner, log logger.Logger,
+	svc *session.Service, tx db.TxRunner, log logger.Logger,
 ) {
 	consents := oidc.NewConsentRepository(bdb, log)
 	consent := oidc.NewConsentService(oidc.ConsentDeps{
@@ -164,8 +190,64 @@ func mountLogin(
 		Log:        log,
 	})
 
-	group := app.Group(loginPrefix, middlewares.LoginPAT(cfg.Auth.LoginPATs(), log), tenantMW)
 	session.Routes(group, session.NewHandler(svc, complete, scopes.Describe, log))
+}
+
+// mountQRLogin builds the three routes that turn a scan into a sign-in.
+//
+// The two browser steps mount beside the other login steps, behind the credential
+// of the sign-in front end and the tenant lookup of the host. The push callback
+// mounts outside both: it reaches one fixed address that names no tenant, and it
+// carries a credential of its own.
+//
+// The callback credential is a different value from the login credential and from
+// the credentials this deployment presents to the Scan Verifier. A shared value
+// would turn one compromise into the power to sign in as anybody.
+func mountQRLogin(
+	app *fiber.App, loginGroup fiber.Router, diCfg config.DIConfig, bdb *bun.DB,
+	diClient *di.Client, sessions *session.Service, recorder *audit.Recorder,
+	log logger.Logger,
+) {
+	users := user.NewRepository(bdb, log)
+	transactions := qrlogin.NewRepository(bdb, log)
+
+	svc := qrlogin.NewService(qrlogin.Deps{
+		Start: diClient.InitializeVPTransaction,
+
+		Insert:        transactions.Insert,
+		ByVerifierRef: transactions.FindByVerifierRef,
+		ByLoginSess:   transactions.FindByLoginSession,
+		Consume:       transactions.Consume,
+		SetResult:     transactions.SetResult,
+
+		OpenSession:     sessions.Open,
+		FindSession:     sessions.Find,
+		CompleteSession: sessions.Complete,
+
+		// The scan resolves against the username, which is the key the Scan
+		// Verifier holds a person by. A read that also matched an email address
+		// would sign in a person the scan did not name.
+		User: func(ctx context.Context, tenantID, username string) (string, error) {
+			row, err := users.FindByUsername(ctx, tenantID, username)
+			return row.ID, err
+		},
+
+		Audit: recorder,
+		Log:   log,
+	})
+
+	handler := qrlogin.NewHandler(svc)
+	// The two browser steps mount inside the login group, so its credential and
+	// its tenant lookup run once each. A group of their own would match the same
+	// prefix and run both a second time.
+	qrlogin.Routes(loginGroup.Group(qrLoginSuffix), handler)
+	qrlogin.CallbackRoute(app, qrCallbackPath,
+		middlewares.StaticBasic(diCfg.CallbackClientID, diCfg.CallbackClientSecret, log),
+		handler)
+
+	log.Info("qr login mounted",
+		logger.String("prefix", qrLoginPrefix),
+		logger.String("callback_path", qrCallbackPath))
 }
 
 // mountAdmin builds the admin management API the console drives.
