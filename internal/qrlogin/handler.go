@@ -1,6 +1,7 @@
 package qrlogin
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/gofiber/fiber/v3"
@@ -91,14 +92,24 @@ func (h *Handler) poll(c fiber.Ctx) error {
 
 // callback takes the push of the Scan Verifier.
 //
-// The body reaches the service as raw bytes. The contract belongs to a third
-// party, so its shape is understood in one place, parseCallback, and not half in
-// a request struct here.
+// The body is validated like every other body this gateway takes. The contract
+// belongs to a third party, so its shape lives in CallbackRequest and the rule
+// that a body must name a transaction lives in parseCallback.
 //
-// Everything the service tolerates answers the same 200. Only a body that names
-// no transaction at all is refused.
+// A bind failure answers the one sentinel this endpoint has, and not the field
+// list response.Validation writes. Everything about this endpoint answers alike
+// on purpose: its success means "sign somebody in", so a refusal that named the
+// field that failed would hand a caller the shape of the body it must forge.
+//
+// Everything past a usable body answers the same 200.
 func (h *Handler) callback(c fiber.Ctx) error {
-	if err := h.svc.Callback(c.Context(), c.Body(), metaFrom(c)); err != nil {
+	var req CallbackRequest
+	if err := c.Bind().Body(&req); err != nil {
+		return response.Fail(c, fmt.Errorf("%w: %v", ErrUnusableCallback, err))
+	}
+	req.Raw = c.Body()
+
+	if err := h.svc.Callback(c.Context(), req, metaFrom(c)); err != nil {
 		return response.Fail(c, err)
 	}
 	return response.OK(c, CallbackResponse{Status: "ok"})

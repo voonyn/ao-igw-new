@@ -230,19 +230,32 @@ func testServiceWithLogs(t *testing.T) (*Service, *store, *observer.ObservedLogs
 	return svc, st, logs
 }
 
-// pushBody renders one push of the Scan Verifier.
-func pushBody(t *testing.T, fields map[string]any) []byte {
+// pushBody renders one push of the Scan Verifier, as the handler hands it to the
+// service: decoded into the request, with the bytes that arrived kept beside it.
+func pushBody(t *testing.T, fields map[string]any) CallbackRequest {
 	t.Helper()
 
 	body, err := json.Marshal(fields)
 	if err != nil {
 		t.Fatalf("render the push body: %v", err)
 	}
-	return body
+	return pushRaw(t, string(body))
+}
+
+// pushRaw decodes one push body written as it arrives on the wire.
+func pushRaw(t *testing.T, body string) CallbackRequest {
+	t.Helper()
+
+	var req CallbackRequest
+	if err := json.Unmarshal([]byte(body), &req); err != nil {
+		t.Fatalf("decode the push body: %v", err)
+	}
+	req.Raw = []byte(body)
+	return req
 }
 
 // verifiedPush is the push a successful scan sends.
-func verifiedPush(t *testing.T, nonce string) []byte {
+func verifiedPush(t *testing.T, nonce string) CallbackRequest {
 	t.Helper()
 
 	fields := map[string]any{
@@ -470,17 +483,17 @@ func TestCallbackClaimsOnce(t *testing.T) {
 func TestCallbackFailsTheTransaction(t *testing.T) {
 	tests := []struct {
 		name string
-		push func(t *testing.T, st *store) []byte
+		push func(t *testing.T, st *store) CallbackRequest
 	}{
 		{
 			name: "a nonce that does not match",
-			push: func(t *testing.T, _ *store) []byte {
+			push: func(t *testing.T, _ *store) CallbackRequest {
 				return verifiedPush(t, "a-nonce-of-another-transaction")
 			},
 		},
 		{
 			name: "a presented name that resolves to no person",
-			push: func(t *testing.T, st *store) []byte {
+			push: func(t *testing.T, st *store) CallbackRequest {
 				return pushBody(t, map[string]any{
 					"presentationId": "presentation-1",
 					"nonce":          st.nonces[0],
@@ -492,7 +505,7 @@ func TestCallbackFailsTheTransaction(t *testing.T) {
 			// The Scan Verifier reports a refusal inside a successful push, under
 			// a result code of its own. A push it did not accept signs nobody in.
 			name: "a result code the verifier refused with",
-			push: func(t *testing.T, st *store) []byte {
+			push: func(t *testing.T, st *store) CallbackRequest {
 				return pushBody(t, map[string]any{
 					"stateWord":      "1",
 					"message":        "VERIFICATION_FAILED",
@@ -504,7 +517,7 @@ func TestCallbackFailsTheTransaction(t *testing.T) {
 		},
 		{
 			name: "a result code the verifier refused with, as a number",
-			push: func(t *testing.T, st *store) []byte {
+			push: func(t *testing.T, st *store) CallbackRequest {
 				return pushBody(t, map[string]any{
 					"stateWord":      2,
 					"presentationId": "presentation-1",
@@ -515,7 +528,7 @@ func TestCallbackFailsTheTransaction(t *testing.T) {
 		},
 		{
 			name: "a push that names nobody at all",
-			push: func(t *testing.T, st *store) []byte {
+			push: func(t *testing.T, st *store) CallbackRequest {
 				return pushBody(t, map[string]any{
 					"presentationId": "presentation-1",
 					"nonce":          st.nonces[0],
@@ -595,25 +608,27 @@ func TestCallbackTolerates(t *testing.T) {
 }
 
 // TestCallbackRefusesAnUnusableBody covers the one failure a caller can observe.
+//
+// A body that is not JSON never reaches here. The bind refuses it, and
+// TestCallbackAnswersOneRefusal covers that seam.
 func TestCallbackRefusesAnUnusableBody(t *testing.T) {
 	tests := []struct {
 		name string
-		body []byte
+		body string
 	}{
-		{name: "a body that is not JSON", body: []byte("not json")},
-		{name: "a body that names no transaction", body: []byte(`{"message":"success"}`)},
+		{name: "a body that names no transaction", body: `{"message":"success"}`},
 		{
 			// stateWord is a result code and not a reference. Reading it as one
 			// would look up a transaction named "0".
 			name: "a body that carries only a result code",
-			body: []byte(`{"stateWord":"0","message":"success"}`),
+			body: `{"stateWord":"0","message":"success"}`,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			svc, _ := testService(t)
-			if err := svc.Callback(context.Background(), tt.body, Meta{}); !errors.Is(err, ErrUnusableCallback) {
+			if err := svc.Callback(context.Background(), pushRaw(t, tt.body), Meta{}); !errors.Is(err, ErrUnusableCallback) {
 				t.Errorf("callback gave %v, want %v", err, ErrUnusableCallback)
 			}
 		})

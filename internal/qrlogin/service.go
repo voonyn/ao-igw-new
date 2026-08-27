@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"sort"
-	"strings"
 	"time"
 
 	"alphaomega/identitygateway/internal/audit"
@@ -160,14 +159,14 @@ func (s *Service) Start(ctx context.Context, tenantID string, meta Meta) (Starte
 // reference, an already claimed one, which is also what a retry of the push looks
 // like, and a push that resolved to nobody. The endpoint must never say which
 // transactions exist.
-func (s *Service) Callback(ctx context.Context, body []byte, meta Meta) error {
+func (s *Service) Callback(ctx context.Context, req CallbackRequest, meta Meta) error {
 	s.log.Debug("qr login callback", logger.RequestID(ctx))
 
-	ref, err := parseCallback(body)
+	ref, err := parseCallback(req)
 	if err != nil {
 		s.log.Warn("qr login callback: unusable body",
-			logger.Int("body_bytes", len(body)),
-			logger.Any("body_keys", callbackKeys(body)),
+			logger.Int("body_bytes", len(req.Raw)),
+			logger.Any("body_keys", callbackKeys(req.Raw)),
 			logger.Err(err))
 		return err
 	}
@@ -175,8 +174,8 @@ func (s *Service) Callback(ctx context.Context, body []byte, meta Meta) error {
 	// asserted username, which is personal data. The key set is what a contract
 	// change is diagnosed from.
 	s.log.Info("qr login callback: received",
-		logger.Int("body_bytes", len(body)),
-		logger.Any("body_keys", callbackKeys(body)), logger.RequestID(ctx))
+		logger.Int("body_bytes", len(req.Raw)),
+		logger.Any("body_keys", callbackKeys(req.Raw)), logger.RequestID(ctx))
 
 	row, err := s.deps.ByVerifierRef(ctx, ref.SessionID, ref.PresentationID)
 	if errors.Is(err, ErrNotFound) {
@@ -384,75 +383,9 @@ type callbackRef struct {
 	StateWord string
 }
 
-// callbackFields is the field set parseCallback reads, at the top level and again
-// inside a data envelope.
-//
-// The confirmed body is:
-//
-//	{"stateWord":"0","presentationId":"6c7b...","message":"success",
-//	 "DecodedVpToken":{"Username":"person@example.com"}}
-//
-// Snake case and session_id are taken beside it. The start operation answers in
-// snake case, so the vendor spells both, and taking a wobble here costs less than
-// an outage. stateWord is a result code and not the echo of the wallet: mapping it
-// to a reference would look up a transaction named "0".
-type callbackFields struct {
-	SessionID      string `json:"session_id"`
-	State          string `json:"state"` // the wallet echoes the verifier session id here
-	PresentationID string `json:"presentation_id"`
-	Nonce          string `json:"nonce"`
-
-	// StateWord is the result code of the Scan Verifier. It arrives as "0" in a
-	// push and as 0 in an answer, so it is read raw and normalised below.
-	StateWord json.RawMessage `json:"stateWord"`
-
-	SessionIDCamel      string `json:"sessionId"`
-	PresentationIDCamel string `json:"presentationId"`
-
-	// DecodedVpToken is what the Scan Verifier decoded out of the presentation.
-	// The capitals are the vendor's. The decoder of Go matches a field name
-	// without case, so the lower-case spellings arrive here too.
-	DecodedVpToken *struct {
-		Username string `json:"Username"`
-		Nonce    string `json:"Nonce"`
-	} `json:"DecodedVpToken"`
-}
-
-func (f *callbackFields) username() string {
-	if f == nil || f.DecodedVpToken == nil {
-		return ""
-	}
-	return f.DecodedVpToken.Username
-}
-
-// stateWord renders the result code as text. A JSON string and a JSON number
-// both read as the same value, so 0 and "0" mean one thing.
-func (f *callbackFields) stateWord() string {
-	if f == nil || len(f.StateWord) == 0 {
-		return ""
-	}
-	var text string
-	if err := json.Unmarshal(f.StateWord, &text); err == nil {
-		return text
-	}
-	return strings.Trim(string(f.StateWord), `"`)
-}
-
-func (f *callbackFields) nonce() string {
-	if f == nil {
-		return ""
-	}
-	if f.Nonce != "" {
-		return f.Nonce
-	}
-	if f.DecodedVpToken == nil {
-		return ""
-	}
-	return f.DecodedVpToken.Nonce
-}
-
 // parseCallback is the one function the contract of the push is confined to. When
-// the shape of the vendor changes, this function and its test are what change.
+// the shape of the vendor changes, CallbackRequest, this function, and their
+// tests are what change.
 //
 // The body must name the transaction, by presentationId or by session_id, which
 // the wallet also echoes as state. Either can be wrapped in a data envelope, the
@@ -462,27 +395,19 @@ func (f *callbackFields) nonce() string {
 // identifier is a value the Scan Verifier mints and never sends to the browser,
 // and it lives for TransactionTTL. The endpoint sits behind its own credential,
 // which is what stops anybody who can reach the address from asserting a scan.
-func parseCallback(body []byte) (callbackRef, error) {
-	var raw struct {
-		callbackFields
-		Data *callbackFields `json:"data"`
-	}
-	if err := json.Unmarshal(body, &raw); err != nil {
-		return callbackRef{}, fmt.Errorf("%w: %v", ErrUnusableCallback, err)
-	}
-
-	data := raw.Data
+func parseCallback(req CallbackRequest) (callbackRef, error) {
+	data := req.Data
 	if data == nil {
-		data = &callbackFields{}
+		data = &CallbackFields{}
 	}
 	ref := callbackRef{
-		SessionID: firstSet(raw.SessionID, raw.SessionIDCamel, raw.State,
+		SessionID: firstSet(req.SessionID, req.SessionIDCamel, req.State,
 			data.SessionID, data.SessionIDCamel, data.State),
-		PresentationID: firstSet(raw.PresentationID, raw.PresentationIDCamel,
+		PresentationID: firstSet(req.PresentationID, req.PresentationIDCamel,
 			data.PresentationID, data.PresentationIDCamel),
-		Nonce:     firstSet(raw.callbackFields.nonce(), data.nonce()),
-		Username:  firstSet(raw.username(), data.username()),
-		StateWord: firstSet(raw.callbackFields.stateWord(), data.stateWord()),
+		Nonce:     firstSet(req.CallbackFields.nonce(), data.nonce()),
+		Username:  firstSet(req.username(), data.username()),
+		StateWord: firstSet(req.CallbackFields.stateWord(), data.stateWord()),
 	}
 	if ref.SessionID == "" && ref.PresentationID == "" {
 		return callbackRef{}, fmt.Errorf("%w: no session_id and no presentation_id", ErrUnusableCallback)
