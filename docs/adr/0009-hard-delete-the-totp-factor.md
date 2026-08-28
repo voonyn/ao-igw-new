@@ -25,8 +25,17 @@ from that call and `user.Repository.ClearPasskeys`.
 
 `user_totp` leaves the list in ADR 0001.
 
-Enrolment writes a plain `INSERT`. A person with no live row holds no Second Factor,
-and that is the only state which reads as "no second factor".
+Enrolment writes a guarded `UPDATE` first, and an `INSERT` only when that `UPDATE`
+changes no row. The `UPDATE` names `activated_at IS NULL`, so it can replace a
+pending secret and never an active one. The `INSERT` then meets one of two states.
+No row at all is written. An active row gives a duplicate key, which becomes
+`ErrAlreadyEnrolled`.
+
+The two-column write is possible because the hard delete removed the third state.
+A person with no live row holds no Second Factor, and that is the only state which
+reads as "no second factor". With soft delete, the write had to reset `deleted_at`
+as well, and a missed reset carried the spent `last_step` of the old secret into
+the new one.
 
 ## Alternatives
 

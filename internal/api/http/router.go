@@ -141,7 +141,7 @@ func Routes(app *fiber.App, cfg *config.Config, bdb *bun.DB, rdb cache.Client, l
 	// enrolment steps and its challenge, and the portal drives the same enrolment
 	// under an access token, so one build is handed to each.
 	factorSvc := mountMFA(loginGroup, bdb, rdb, cipher, factors, recorder, sessions, tx.RunInTx, log)
-	mountAdmin(app, bdb, rdb, cipher, storage, recorder, cfg.Notification, diClient, tenantMW, tx.RunInTx, log)
+	mountAdmin(app, bdb, rdb, cipher, storage, factors, recorder, cfg.Notification, diClient, tenantMW, tx.RunInTx, log)
 	mountAccount(app, bdb, rdb, cipher, storage, recorder, factorSvc, tenantMW, tx.RunInTx, log)
 
 	// QR Login exists only where a Scan Verifier does. With the integration off,
@@ -383,7 +383,7 @@ func mountQRLogin(
 // stack takes.
 func mountAdmin(
 	app *fiber.App, bdb *bun.DB, rdb cache.Client, cipher *crypto.Cipher,
-	storage *oidc.StorageRepository, recorder *audit.Recorder,
+	storage *oidc.StorageRepository, factors *totp.Repository, recorder *audit.Recorder,
 	notify config.NotificationConfig, diClient *di.Client, tenantMW fiber.Handler,
 	tx db.TxRunner, log logger.Logger,
 ) {
@@ -431,7 +431,7 @@ func mountAdmin(
 		Unlock:       users.Unlock,
 		SoftDelete:   users.SoftDelete,
 		InsertToken:  users.InsertToken,
-		ClearMFA:     clearSecondFactors(totp.NewRepository(bdb, log).Clear, users.ClearPasskeys),
+		ClearMFA:     clearSecondFactors(factors.Clear, users.ClearPasskeys),
 		TenantMember: tenants.FindMember,
 
 		CountTenantOwners: tenants.CountOwners,

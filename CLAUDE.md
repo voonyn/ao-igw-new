@@ -101,4 +101,9 @@ No in-process state. Any instance must serve any request.
 - Read: read Redis. On a miss, read the database and refill Redis.
 - Logout: delete from the database and from Redis.
 
+One exception. The Guessing Budget in `totp.Service.spendGuess` lives only in Redis,
+and no table holds it. A cache failure there refuses the submission, because a
+failure that let the guess through would leave second-factor guessing unbounded. The
+comment on that function carries the reasoning and the upgrade path.
+
 See `docs/adr/0002-session-storage.md`.

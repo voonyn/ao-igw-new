@@ -33,8 +33,13 @@ The three claims describe one sign-in event. The values are written onto the Aut
 Session store at authorization, and read back when a token is minted, so they never
 change afterwards.
 
-A requested `acr_values` is not honoured. It is a voluntary hint. A client that needs
-two Factors reads `acr` back and decides for itself.
+A requested `acr_values` never raises the bar of the sign-in. It is a voluntary hint,
+and a client that needs two Factors reads `acr` back and decides for itself.
+
+The two values are a closed set. An authorization request that names any other value
+is refused with `invalid_request`. goidc feeds one list to both the discovery
+document and that check, so advertising the pair and refusing a third value are one
+decision, not two.
 
 ## Alternatives
 
@@ -54,6 +59,9 @@ two Factors reads `acr` back and decides for itself.
 - **A second store writer for the array** — the store round-trips through JSON, so a
   `[]string` returns as `[]any`. One space-delimited string reuses `remember`
   unchanged, the way `scope` already encodes a list.
+- **Strip an unknown `acr_values` before goidc validates it** — middleware on the hot
+  path of every authorization request, to accept a value the gateway then ignores. It
+  buys tolerance for a client that has not appeared.
 
 ## Consequences
 
@@ -66,3 +74,6 @@ two Factors reads `acr` back and decides for itself.
   changed after clients arrive.
 - `acr` says how many Factors, never which. A relying party that needs the names
   reads `amr`.
+- A client that sends an `acr_values` outside the two published values receives
+  `invalid_request` at `/authorize`. Nothing regressed. An empty list refused every
+  value before these two were published.
