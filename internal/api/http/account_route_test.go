@@ -29,6 +29,8 @@ var accountContract = []string{
 	fiber.MethodGet + " " + accountPrefix + "/mfa",
 	fiber.MethodPost + " " + accountPrefix + "/mfa/totp/enroll/start",
 	fiber.MethodPost + " " + accountPrefix + "/mfa/totp/enroll/activate",
+	fiber.MethodPost + " " + accountPrefix + "/mfa/totp/remove",
+	fiber.MethodPost + " " + accountPrefix + "/mfa/totp/recovery-codes",
 }
 
 // TestAccountRoutesMatchThePortal pins the addresses of the account API against
