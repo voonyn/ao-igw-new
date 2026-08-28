@@ -65,6 +65,15 @@ const fullLifetime = 12 * time.Hour
 // identifier step opens such a session, and the password step upgrades it.
 var ErrNotAuthenticated = errors.New("login session is not authenticated")
 
+// ErrInsufficientFactors reports a login session that proved a factor but still
+// owes one. The finalize step answers it, and the login UI routes the person
+// back to the step they skipped.
+//
+// It is not ErrNotAuthenticated. That one reports a session that proved nothing,
+// and the two need different answers: one restarts the sign-in, and this one
+// resumes it. See docs/adr/0011-the-mfa-gate-is-at-the-finalize-step.md.
+var ErrInsufficientFactors = errors.New("login session owes a factor")
+
 // ErrSubjectBound reports a login session that already names a different person.
 // A step that binds a person refuses one, because that is the shape of an
 // attempt to point a live session at somebody else.

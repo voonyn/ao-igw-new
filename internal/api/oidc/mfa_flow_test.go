@@ -34,6 +34,10 @@ const (
 	enrolActivatePath = "/mfa/totp/enroll/activate"
 )
 
+// completePath is the finalize step, inside the login group. The gate that
+// refuses a sign-in still owing a Factor sits on it.
+const completePath = "/complete"
+
 // recoveryCodesIssued is how many Recovery Codes one activation answers.
 const recoveryCodesIssued = 10
 
@@ -99,6 +103,17 @@ func TestForcedEnrolmentFlow(t *testing.T) {
 			if strings.Contains(method, "webauthn") || strings.Contains(method, "passkey") {
 				t.Errorf("methods names a passkey: %v", verified.Methods)
 			}
+		}
+	})
+
+	t.Run("the finalize step refuses a person who skipped enrolment", func(t *testing.T) {
+		// The step signal is the route forward, and this is the enforcement. The
+		// finalize step is reachable on its own, so a person who never visits
+		// enrolment arrives here holding one factor.
+		refused := gw.refuse(t, completePath,
+			fmt.Sprintf(`{"authRequest":%q}`, auth.request), token, fiber.StatusUnauthorized)
+		if refused != "insufficient_factors" {
+			t.Errorf("slug is %q, want %q", refused, "insufficient_factors")
 		}
 	})
 

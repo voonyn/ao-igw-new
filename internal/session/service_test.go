@@ -530,3 +530,113 @@ func TestVerifyPassword_StepsUnreadable(t *testing.T) {
 		t.Error("the session was upgraded although the requirement could not be read")
 	}
 }
+
+// finalizeService is a service whose step seam names one fixed list, and one
+// live session in the state the caller describes. It is the setup every gate
+// test below shares.
+func finalizeService(
+	t *testing.T, owed []string, proved map[string]time.Time,
+) (*Service, string) {
+	t.Helper()
+
+	svc, st := testService(t, knownPerson("person@example.com", Identity{UserID: "user-1"}))
+	svc.deps.Steps = func(context.Context, string, string) ([]string, error) {
+		return owed, nil
+	}
+
+	opened, err := svc.Identify(context.Background(), "tenant-1", "person@example.com", "", "")
+	if err != nil {
+		t.Fatalf("identify: %v", err)
+	}
+	st.saved.Factors = proved
+	return svc, opened.Token
+}
+
+// TestResolveForFinalize covers the sign-in that owes nothing. The gate reads
+// the same session Resolve does.
+func TestResolveForFinalize(t *testing.T) {
+	svc, token := finalizeService(t, nil, map[string]time.Time{FactorPassword: time.Now().UTC()})
+
+	live, err := svc.ResolveForFinalize(context.Background(), "tenant-1", token)
+	if err != nil {
+		t.Fatalf("resolve for finalize: %v", err)
+	}
+	if live.UserID != "user-1" {
+		t.Errorf("the resolved session names %q, want %q", live.UserID, "user-1")
+	}
+}
+
+// TestResolveForFinalize_OwedFactor covers the gate. The person proved a
+// password and skipped the challenge, so the finalize step refuses them.
+func TestResolveForFinalize_OwedFactor(t *testing.T) {
+	svc, token := finalizeService(t,
+		[]string{FactorOTP}, map[string]time.Time{FactorPassword: time.Now().UTC()})
+
+	_, err := svc.ResolveForFinalize(context.Background(), "tenant-1", token)
+	if !errors.Is(err, ErrInsufficientFactors) {
+		t.Errorf("resolve for finalize gave %v, want %v", err, ErrInsufficientFactors)
+	}
+}
+
+// TestResolveForFinalize_OwedEnrolment covers the person the requirement
+// governs who holds no factor. A step signal is not an AMR name, so nothing on
+// the session can ever answer it, and skipping enrolment is refused.
+func TestResolveForFinalize_OwedEnrolment(t *testing.T) {
+	svc, token := finalizeService(t,
+		[]string{StepEnrolOTP}, map[string]time.Time{FactorPassword: time.Now().UTC()})
+
+	_, err := svc.ResolveForFinalize(context.Background(), "tenant-1", token)
+	if !errors.Is(err, ErrInsufficientFactors) {
+		t.Errorf("resolve for finalize gave %v, want %v", err, ErrInsufficientFactors)
+	}
+}
+
+// TestResolveForFinalize_ProvedFactor covers the person who answered the
+// challenge. The seam still names the factor, because the account still holds
+// it, and the session says the demand was answered.
+func TestResolveForFinalize_ProvedFactor(t *testing.T) {
+	now := time.Now().UTC()
+	svc, token := finalizeService(t, []string{FactorOTP},
+		map[string]time.Time{FactorPassword: now, FactorOTP: now})
+
+	if _, err := svc.ResolveForFinalize(context.Background(), "tenant-1", token); err != nil {
+		t.Fatalf("resolve for finalize: %v", err)
+	}
+}
+
+// TestResolveForFinalize_ScanIsExempt covers the QR Login. A Wallet
+// presentation is a possession factor already, and the poll answers three fixed
+// states with no room to name a step still owed.
+func TestResolveForFinalize_ScanIsExempt(t *testing.T) {
+	svc, token := finalizeService(t,
+		[]string{FactorOTP}, map[string]time.Time{FactorScan: time.Now().UTC()})
+
+	if _, err := svc.ResolveForFinalize(context.Background(), "tenant-1", token); err != nil {
+		t.Fatalf("resolve for finalize: %v", err)
+	}
+}
+
+// TestResolveForFinalize_StepsUnreadable covers the fail-closed rule. A
+// requirement nobody could read must never read as "no factor is owed".
+func TestResolveForFinalize_StepsUnreadable(t *testing.T) {
+	svc, token := finalizeService(t, nil, map[string]time.Time{FactorPassword: time.Now().UTC()})
+	svc.deps.Steps = func(context.Context, string, string) ([]string, error) {
+		return nil, errors.New("the policy could not be read")
+	}
+
+	if _, err := svc.ResolveForFinalize(context.Background(), "tenant-1", token); err == nil {
+		t.Fatal("the finalize step succeeded with an unreadable requirement")
+	}
+}
+
+// TestResolveForFinalize_PartialSession covers the session the identifier step
+// leaves behind. It proved nothing, so the answer is the one that restarts the
+// sign-in and never the one that resumes it.
+func TestResolveForFinalize_PartialSession(t *testing.T) {
+	svc, token := finalizeService(t, []string{FactorOTP}, nil)
+
+	_, err := svc.ResolveForFinalize(context.Background(), "tenant-1", token)
+	if !errors.Is(err, ErrNotAuthenticated) {
+		t.Errorf("resolve for finalize gave %v, want %v", err, ErrNotAuthenticated)
+	}
+}

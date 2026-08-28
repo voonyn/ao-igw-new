@@ -198,6 +198,44 @@ func TestSecondFactorChallengeFlow(t *testing.T) {
 			t.Errorf("methods is %v, want %v", methods, []string{session.FactorOTP})
 		}
 	})
+
+	t.Run("the finalize step refuses a person who skipped the challenge", func(t *testing.T) {
+		// The account has spent time steps above, so the code below is computed
+		// for a step this factor has not proved yet.
+		forgetSpentStep(t, gw, fx)
+
+		auth := gw.startAuthorization(t, fx.confidential)
+		token, methods := signInToPassword(t, gw, fx)
+		if len(methods) != 1 || methods[0] != session.FactorOTP {
+			t.Fatalf("methods is %v, want %v", methods, []string{session.FactorOTP})
+		}
+
+		// The step signal is the route forward, and this is the enforcement. The
+		// finalize step is reachable on its own, so a person who never visits the
+		// challenge arrives here holding one factor.
+		refused := gw.refuse(t, completePath,
+			fmt.Sprintf(`{"authRequest":%q}`, auth.request), token, fiber.StatusUnauthorized)
+		if refused != "insufficient_factors" {
+			t.Fatalf("slug is %q, want %q", refused, "insufficient_factors")
+		}
+
+		// The refusal is not a dead end. The login UI reads that slug and routes
+		// the person back to the step they skipped, and the sign-in finishes on
+		// the same authorization request.
+		atFreshStep(t)
+		var challenged struct {
+			SessionToken string `json:"sessionToken"`
+		}
+		gw.login(t, verifyPath, fmt.Sprintf(`{"code":%q}`, code(t, secret)), token, &challenged)
+		if challenged.SessionToken == "" {
+			t.Fatal("the challenge answered no session token")
+		}
+
+		issued := gw.finish(t, fx.confidential, auth, challenged.SessionToken)
+		if issued.AccessToken == "" || issued.IDToken == "" {
+			t.Fatalf("the token endpoint answered %+v", issued)
+		}
+	})
 }
 
 // enrolFactor signs the person in once and enrols a Second Factor, over HTTP.

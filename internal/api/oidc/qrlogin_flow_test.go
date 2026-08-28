@@ -149,6 +149,12 @@ func TestQRLoginFlow(t *testing.T) {
 	gw := newGateway(t)
 	fx := seedFixture(t, gw)
 
+	// A QR Login is exempt from the MFA Requirement, so the whole run happens
+	// with the requirement on. A Wallet presentation is a possession factor
+	// already, and the poll answers pending, authenticated, or expired, with no
+	// room to name a step still owed. See ADR 0011.
+	requireMFA(t, gw, fx.orgID)
+
 	// Where the person arrives. The browser is at the sign-in page with this
 	// authorization request named on the query, and the scan must finish it.
 	auth := gw.startAuthorization(t, fx.confidential)

@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation"
 import { StepSuccess } from "@/components/login/steps/step-success"
 import { StepConsent } from "@/components/login/steps/step-consent"
 import { useLoginFlow } from "@/components/login/flow-context"
+import { stepFor } from "@/lib/login-client"
 import { completeLogin, submitConsent, type ScopeConsent } from "./actions"
 
 export function SuccessClient({
@@ -15,7 +16,7 @@ export function SuccessClient({
   serverSignedIn: boolean
   serverRedirectUri: string
 }) {
-  const { email, authRequest, redirectUri, hydrated, navigate } = useLoginFlow()
+  const { email, authRequest, redirectUri, methods, hydrated, navigate } = useLoginFlow()
   const router = useRouter()
   const [consent, setConsent] = React.useState<ScopeConsent[] | null>(null)
   const [consentBusy, setConsentBusy] = React.useState(false)
@@ -46,6 +47,23 @@ export function SuccessClient({
         navigate("/change-password", "forward")
         return
       }
+      // The gateway refused a session that still owes a second factor: the
+      // person reached this screen without answering the challenge or without
+      // enrolling. Route back to the step they skipped, named by the same
+      // methods the password step routed on. Without this branch they wait on a
+      // screen that never moves.
+      if (result.error === "insufficient_factors") {
+        // The password step writes the methods beside the authRequest, and a
+        // refusal needs a session that proved a password, so a refusal always
+        // has them. When they are somehow gone the step owed cannot be named,
+        // and routing to this screen again would spin, so that case falls
+        // through to the log below.
+        const next = stepFor(methods)
+        if (next !== "/success") {
+          navigate(next, "forward")
+          return
+        }
+      }
       // Any other failure here is genuinely unexpected, so log it rather than
       // trapping the user.
       console.error("login finalize failed", result.error)
@@ -53,7 +71,7 @@ export function SuccessClient({
     return () => {
       cancelled = true
     }
-  }, [authRequest, navigate])
+  }, [authRequest, methods, navigate])
 
   // Record the consent decision (approve or deny) and hand the browser to the
   // returned URL — the provider resume URL on approve, the client's error

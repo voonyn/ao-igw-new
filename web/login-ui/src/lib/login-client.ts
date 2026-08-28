@@ -6,6 +6,26 @@
  * module only maps backend error codes to user-facing copy.
  */
 
+/**
+ * stepFor maps the factors the gateway says are still owed to the route that
+ * collects them. `webauthn`/`otp` challenge an enrolled user, and
+ * `webauthn_enroll`/`otp_enroll` force setup when policy requires MFA. WebAuthn
+ * is preferred, because it is phishing-resistant, and the challenge step offers
+ * the other method as a picker. An empty set owes nothing, so the flow goes
+ * straight to the finalize step.
+ *
+ * Two steps read it. The password step routes forward on the answer it just
+ * received, and the finalize step routes back on the same answer when the
+ * gateway refuses a session that skipped one of these routes.
+ */
+export function stepFor(methods: string[]): string {
+  if (methods.includes("webauthn")) return "/passkey"
+  if (methods.includes("otp")) return "/verify"
+  if (methods.includes("webauthn_enroll")) return "/passkey-enroll"
+  if (methods.includes("otp_enroll")) return "/enroll"
+  return "/success"
+}
+
 /** messageForError maps a backend error code to user-facing copy. */
 export function messageForError(code: unknown): string {
   switch (code) {

@@ -27,6 +27,12 @@ func init() {
 	response.Map(ErrLoginSessionNotFound, fiber.StatusUnauthorized, "unauthenticated", "Unauthorized")
 	response.Map(ErrNotAuthenticated, fiber.StatusUnauthorized, "unauthenticated", "Unauthorized")
 	response.Map(ErrSubjectBound, fiber.StatusUnauthorized, "unauthenticated", "Unauthorized")
+
+	// This one carries its own slug. A person who owes a factor proved their
+	// password, so the sign-in resumes at the step they skipped instead of
+	// starting again, and only a slug of its own tells the login UI that.
+	response.Map(ErrInsufficientFactors, fiber.StatusUnauthorized,
+		"insufficient_factors", "Additional verification is required")
 }
 
 // Handler serves the login steps the login UI drives. It binds the request,
@@ -158,9 +164,13 @@ func (h *Handler) finalize(c fiber.Ctx, authRequest string, answered *bool) erro
 
 	// A dead session is not an error here. The completer decides what a silent
 	// request gets, and only it can write the marker that answers one.
+	//
+	// A session that owes a factor is an error, and it falls to the default arm.
+	// It proved a password, so the answer names the step the person skipped and
+	// the login UI routes them back to it.
 	var live LoginSession
 	if token := bearerToken(c); token != "" {
-		resolved, err := h.sessions.Resolve(c.Context(), tc.TenantID, token)
+		resolved, err := h.sessions.ResolveForFinalize(c.Context(), tc.TenantID, token)
 		switch {
 		case err == nil:
 			live = resolved

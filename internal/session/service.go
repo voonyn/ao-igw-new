@@ -388,6 +388,48 @@ func (s *Service) Resolve(ctx context.Context, tenantID, token string) (LoginSes
 	return live, nil
 }
 
+// ResolveForFinalize returns the login session the token credentials, and only
+// when the sign-in owes no further factor. The finalize step reads it, and every
+// other caller reads Resolve.
+//
+// The requirement is read through Steps, the one function that also answers the
+// step signal of the password step. Two copies of an authentication predicate
+// drift, and a drifted predicate is a security defect.
+//
+// A step the session already proved is met. Steps answers what the account and
+// the policy demand, not what this sign-in did, so the session is what says
+// whether the demand was answered.
+//
+// A QR Login is exempt. A Wallet presentation is a possession factor already,
+// and the poll answers pending, authenticated, or expired, with no room to name
+// a step still owed. See docs/adr/0011-the-mfa-gate-is-at-the-finalize-step.md.
+func (s *Service) ResolveForFinalize(ctx context.Context, tenantID, token string) (LoginSession, error) {
+	live, err := s.Resolve(ctx, tenantID, token)
+	if err != nil {
+		return LoginSession{}, err
+	}
+	if _, scanned := live.Factors[FactorScan]; scanned {
+		return live, nil
+	}
+
+	steps, err := s.deps.Steps(ctx, tenantID, live.UserID)
+	if err != nil {
+		return LoginSession{}, err
+	}
+	for _, step := range steps {
+		if _, proved := live.Factors[step]; proved {
+			continue
+		}
+		s.log.Warn("refused the finalize step: the sign-in owes a factor",
+			logger.String("tenant_id", tenantID),
+			logger.String("session_id", live.ID),
+			logger.String("user_id", live.UserID),
+			logger.String("step", step))
+		return LoginSession{}, fmt.Errorf("%w: session %s owes %s", ErrInsufficientFactors, live.ID, step)
+	}
+	return live, nil
+}
+
 // Logout ends the login session one token credentials, from the account side.
 //
 // A partial session ends too. The person asked to sign out, so whatever session
