@@ -8,6 +8,7 @@ import (
 	"alphaomega/identitygateway/internal/audit"
 	"alphaomega/identitygateway/internal/oidc"
 	"alphaomega/identitygateway/internal/session"
+	"alphaomega/identitygateway/internal/totp"
 	"alphaomega/identitygateway/internal/user"
 )
 
@@ -25,13 +26,16 @@ var accountContract = []string{
 	fiber.MethodGet + " " + accountPrefix + "/activity",
 	fiber.MethodGet + " " + accountPrefix + "/connected-apps",
 	fiber.MethodDelete + " " + accountPrefix + "/connected-apps/:clientId",
+	fiber.MethodGet + " " + accountPrefix + "/mfa",
+	fiber.MethodPost + " " + accountPrefix + "/mfa/totp/enroll/start",
+	fiber.MethodPost + " " + accountPrefix + "/mfa/totp/enroll/activate",
 }
 
 // TestAccountRoutesMatchThePortal pins the addresses of the account API against
 // the front end that calls them. Nothing else crosses this seam: a service test
 // proves the rule, and a route the portal cannot reach passes every one of them.
 //
-// The four domains mount their own routes, so no one file holds the whole list.
+// The five domains mount their own routes, so no one file holds the whole list.
 // This test is that list.
 func TestAccountRoutesMatchThePortal(t *testing.T) {
 	app := fiber.New()
@@ -43,6 +47,7 @@ func TestAccountRoutesMatchThePortal(t *testing.T) {
 	oidc.AccountRoutes(group, oidc.NewAccountHandler(nil, nil))
 	session.AccountRoutes(group, session.NewAccountHandler(nil))
 	audit.AccountRoutes(group, audit.NewAccountHandler(nil, nil), passThrough)
+	totp.AccountRoutes(group, totp.NewAccountHandler(nil))
 
 	mounted := map[string]bool{}
 	for _, route := range app.GetRoutes() {

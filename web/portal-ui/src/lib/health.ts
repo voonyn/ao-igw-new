@@ -12,9 +12,11 @@
 // cannot depress a score the user has no way to raise — and is never silently
 // counted as passing either.
 //
-// The checks are only the ones this deployment can serve. Passkey and
-// authenticator enrolment have no self-service API here, so no check rests on
-// them: a checklist row the user cannot act on is worse than no row.
+// The checks are only the ones this deployment can serve, and each one must be a
+// row the user can act on. Passkey enrolment has no self-service API here, so no
+// check rests on it. Two-step verification has one, and no check rests on it
+// either: this function takes only what Home and Security both already fetch,
+// and Home reads no second-factor state.
 
 import type { AccountHealth, ActivityEventWire, HealthCheck } from "./types"
 

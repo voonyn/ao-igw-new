@@ -137,9 +137,12 @@ func Routes(app *fiber.App, cfg *config.Config, bdb *bun.DB, rdb cache.Client, l
 	// tenant lookup. QR Login mounts inside it, so both run once per request.
 	loginGroup := app.Group(loginPrefix, middlewares.LoginPAT(cfg.Auth.LoginPATs(), log), tenantMW)
 	mountLogin(loginGroup, cfg, bdb, cipher, storage, scopes, recorder, sessions, tx.RunInTx, log)
-	mountMFA(loginGroup, bdb, rdb, cipher, factors, recorder, sessions, tx.RunInTx, log)
+	// The second-factor service serves both stacks. The sign-in drives its two
+	// enrolment steps and its challenge, and the portal drives the same enrolment
+	// under an access token, so one build is handed to each.
+	factorSvc := mountMFA(loginGroup, bdb, rdb, cipher, factors, recorder, sessions, tx.RunInTx, log)
 	mountAdmin(app, bdb, rdb, cipher, storage, recorder, cfg.Notification, diClient, tenantMW, tx.RunInTx, log)
-	mountAccount(app, bdb, rdb, cipher, storage, recorder, tenantMW, tx.RunInTx, log)
+	mountAccount(app, bdb, rdb, cipher, storage, recorder, factorSvc, tenantMW, tx.RunInTx, log)
 
 	// QR Login exists only where a Scan Verifier does. With the integration off,
 	// none of the three routes are mounted, so the sign-in front end reads the
@@ -217,11 +220,15 @@ func mountLogin(
 // so every crossing between them is composed here. That is the router's stated
 // job, and it is what keeps the login session domain, which already imports the
 // user domain, out of an import cycle.
+//
+// It answers the service it built. The portal drives the same enrolment under an
+// access token, and a second build would give that path its own dependencies to
+// drift from these.
 func mountMFA(
 	loginGroup fiber.Router, bdb *bun.DB, rdb cache.Client, cipher *crypto.Cipher,
 	factors *totp.Repository, recorder *audit.Recorder, sessions *session.Service,
 	tx db.TxRunner, log logger.Logger,
-) {
+) *totp.Service {
 	users := user.NewRepository(bdb, log)
 
 	svc := totp.NewService(totp.Deps{
@@ -265,6 +272,7 @@ func mountMFA(
 		SavePending:        factors.SavePending,
 		Activate:           factors.Activate,
 		SaveRecoveryCodes:  factors.ReplaceRecoveryCodes,
+		CountRecoveryCodes: factors.CountRecoveryCodes,
 		SpendStep:          factors.SpendStep,
 		RedeemRecoveryCode: factors.RedeemRecoveryCode,
 
@@ -281,6 +289,7 @@ func mountMFA(
 	})
 
 	totp.LoginRoutes(loginGroup.Group(mfaSuffix), totp.NewHandler(svc))
+	return svc
 }
 
 // mountQRLogin builds the three routes that turn a scan into a sign-in.
@@ -641,7 +650,7 @@ func mountAdmin(
 // take.
 func mountAccount(
 	app *fiber.App, bdb *bun.DB, rdb cache.Client, cipher *crypto.Cipher,
-	storage *oidc.StorageRepository, recorder *audit.Recorder,
+	storage *oidc.StorageRepository, recorder *audit.Recorder, factorSvc *totp.Service,
 	tenantMW fiber.Handler, tx db.TxRunner, log logger.Logger,
 ) {
 	keys := oidc.NewKeyService(oidc.NewKeyRepository(bdb, log), cipher, log)
@@ -716,6 +725,7 @@ func mountAccount(
 	user.AccountRoutes(group, user.NewAccountHandler(accountSvc))
 	oidc.AccountRoutes(group, oidc.NewAccountHandler(connectionSvc, accountActor))
 	session.AccountRoutes(group, session.NewAccountHandler(sessionSvc))
+	totp.AccountRoutes(group, totp.NewAccountHandler(factorSvc))
 	audit.AccountRoutes(group, audit.NewAccountHandler(activitySvc, auditActor),
 		middlewares.Paginate(audit.SortKeys...))
 }

@@ -5,6 +5,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Icon } from "../icons";
 import { useUser } from "../flow-context";
 import { PageHead, SecurityRing, Modal, NotWiredBanner } from "../primitives";
+import { MfaEnrollModal } from "./mfa-enroll-modal";
 import { accountErrorFrom, deviceIcon, deviceLabel, relTime, type AccountErr } from "@/lib/format";
 import { deriveHealth } from "@/lib/health";
 import { AOP } from "@/lib/portal-data";
@@ -25,17 +26,37 @@ type LiveSession = {
   userAgent: string;
 };
 
+// MfaState mirrors the gateway dto.StatusResponse returned by the BFF
+// (/api/account/mfa). It carries no secret and no code: the gateway sends
+// neither, because a page that states whether a factor is on needs neither.
+type MfaState = {
+  active: boolean;
+  // Absent while no factor is active.
+  activatedAt?: string;
+  recoveryCodesRemaining: number;
+};
+
 // One page of the caller's audit feed, read only to answer the "no failed
 // sign-ins" health check. 100 is the largest page the account API serves.
 const ACTIVITY_PAGE = 100;
 
-// Security view, ported from portal/views-security.jsx. Password change and
-// active-session management are WIRED to the self-service account API (via the
-// /api/account/* BFF routes). Password age/strength and the recovery options are
-// still placeholder data — no self-service API backs them.
-//
-// Passkey and authenticator enrolment are absent on purpose: this deployment
-// serves neither, and a screen must not offer what no API can complete.
+// Security view, ported from portal/views-security.jsx. Password change,
+// active-session management and two-step verification are WIRED to the
+// self-service account API (via the /api/account/* BFF routes). Password
+// age/strength and the recovery options are still placeholder data — no
+// self-service API backs them.
+// mfaSubtext says what the card knows. A failed read says nothing about the
+// account: a card that read "off" because the endpoint failed would invite a
+// person to enrol a factor they already hold.
+function mfaSubtext(state: MfaState | null, err: AccountErr): string {
+  if (err) return 'We couldn’t check this right now';
+  if (!state) return 'Checking…';
+  if (!state.active) return 'Add a code from your authenticator app when you sign in';
+  const left = state.recoveryCodesRemaining;
+  return 'Added ' + relTime(state.activatedAt ?? '') + ' · ' +
+    left + ' recovery code' + (left === 1 ? '' : 's') + ' left';
+}
+
 export function SecurityView({ A }: { A: Actions }) {
   const d = AOP;
   // Password age/strength and recovery options are still fixtures — the score and
@@ -54,6 +75,11 @@ export function SecurityView({ A }: { A: Actions }) {
   // Never rendered as a timeline; that is the Activity view's job.
   const [activity, setActivity] = useState<ActivityEventWire[] | null>(null);
   const [activityErr, setActivityErr] = useState<AccountErr>('');
+  // Two-step verification state is LIVE (self-service account API via the BFF).
+  // null means "not read yet"; a failed read leaves it null and the card says so.
+  const [mfa, setMfa] = useState<MfaState | null>(null);
+  const [mfaErr, setMfaErr] = useState<AccountErr>('');
+  const [mfaModal, setMfaModal] = useState(false);
   const [pwModal, setPwModal] = useState(false);
   // Change-password form — wired to the self-service account API via the BFF
   // route (/api/account/password → gateway /api/v1/account/password).
@@ -209,6 +235,30 @@ export function SecurityView({ A }: { A: Actions }) {
 
   useEffect(function () { void (async function () { await loadActivity(); })(); }, [loadActivity]);
 
+  // loadMfa reads the live second-factor state of the caller. The card renders
+  // exactly what this returns, including the remaining Recovery Code count, so
+  // nothing on it is derived from a fixture.
+  const loadMfa = useCallback(async function () {
+    try {
+      const res = await fetch('/api/account/mfa', { headers: { Accept: 'application/json' } });
+      const data = await res.json().catch(function () { return {}; });
+      if (res.status === 200) {
+        setMfa({
+          active: Boolean(data.active),
+          activatedAt: typeof data.activatedAt === 'string' ? data.activatedAt : undefined,
+          recoveryCodesRemaining: typeof data.recoveryCodesRemaining === 'number' ? data.recoveryCodesRemaining : 0,
+        });
+        setMfaErr('');
+      } else {
+        setMfaErr(accountErrorFrom(res.status, data && data.error));
+      }
+    } catch {
+      setMfaErr('error');
+    }
+  }, []);
+
+  useEffect(function () { void (async function () { await loadMfa(); })(); }, [loadMfa]);
+
   // The same derivation the Home dashboard rings, fed from the data this view
   // already loads plus the one activity page above — identical inputs, so the two
   // rings cannot report different numbers for the same account. A section that is
@@ -239,7 +289,7 @@ export function SecurityView({ A }: { A: Actions }) {
       <PageHead title="Security" sub="Protect your account with a strong password, and review where you are signed in.">
         <button type="button" className="btn ghost" onClick={endOthers} disabled={sessionBusy}><Icon name="logout" size={15} sw={2} />Sign out everywhere</button>
       </PageHead>
-      <NotWiredBanner>Your security score, password change and active-session management are live via the self-service account API. Password age, password strength and the recovery options are still placeholder data with no self-service API yet — wire them when those surfaces land.</NotWiredBanner>
+      <NotWiredBanner>Your security score, password change, two-step verification and active-session management are live via the self-service account API. Password age, password strength and the recovery options are still placeholder data with no self-service API yet — wire them when those surfaces land.</NotWiredBanner>
 
       {/* Score banner — LIVE: derived by lib/health.ts, the same function Home rings */}
       <div className="card card-pad" style={{ marginBottom: 16, display: 'flex', alignItems: 'center', gap: 22 }}>
@@ -293,6 +343,34 @@ export function SecurityView({ A }: { A: Actions }) {
         </div>
       </div>
 
+      {/* Two-step verification — LIVE via /api/account/mfa */}
+      <div className="card card-pad" style={{ marginTop: 16 }}>
+        <span className="sect-title"><Icon name="shield" size={13} sw={2} />Two-step verification</span>
+        <div className="lrow" style={{ paddingTop: 6, borderBottom: 'none' }}>
+          <span className={'licon' + (mfa?.active ? ' good' : '')}><Icon name={mfa?.active ? 'shield' : 'shieldHalf'} size={18} sw={2} /></span>
+          <div className="lmain">
+            <div className="lttl">
+              Authenticator app
+              {mfa?.active && <span className="badge green" style={{ marginLeft: 4 }}><span className="bdot"></span>On</span>}
+              {mfa && !mfa.active && <span className="badge gray" style={{ marginLeft: 4 }}>Off</span>}
+            </div>
+            <div className="lsub">{mfaSubtext(mfa, mfaErr)}</div>
+          </div>
+          <span className="lend">
+            {mfa && !mfa.active && (
+              <button type="button" className="btn sm" onClick={function () { setMfaModal(true); }}>Turn on</button>
+            )}
+          </span>
+        </div>
+        {mfaErr && (
+          <div style={{ marginTop: 8, fontSize: 13, color: mfaErr === 'reauth' ? 'var(--error)' : 'var(--warn)' }}>
+            {mfaErr === 'reauth' && <>Your session is no longer valid. <a href="/auth/login" style={{ color: 'var(--accent)', fontWeight: 600 }}>Sign in again</a></>}
+            {mfaErr === 'rate' && 'Too many attempts. Please wait a minute and try again.'}
+            {(mfaErr === 'error' || mfaErr === 'unavailable') && 'Could not read your two-step settings. Please try again in a moment.'}
+          </div>
+        )}
+      </div>
+
       {/* Active sessions — LIVE via /api/account/sessions */}
       <div className="card" style={{ marginTop: 16 }}>
         <div className="card-head">
@@ -334,6 +412,18 @@ export function SecurityView({ A }: { A: Actions }) {
           })}
         </div>
       </div>
+
+      {/* Two-step enrolment modal */}
+      {mfaModal && (
+        <MfaEnrollModal
+          onClose={function () { setMfaModal(false); }}
+          onEnrolled={function () {
+            setMfaModal(false);
+            A.toast('Two-step verification is on', 'shield');
+            void loadMfa();
+          }}
+        />
+      )}
 
       {/* Password modal */}
       {pwModal && (

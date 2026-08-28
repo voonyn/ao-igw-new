@@ -131,6 +131,10 @@ type (
 	// new set of digests.
 	RecoveryCodeWriter func(ctx context.Context, tenantID, userID string, digests []string) error
 
+	// RecoveryCodeCounter counts the Recovery Codes one person still holds. It
+	// reads no digest, because the number is the whole answer.
+	RecoveryCodeCounter func(ctx context.Context, tenantID, userID string) (int, error)
+
 	// StepSpender claims one TOTP time step for one person. It returns
 	// ErrCodeSpent for a step at or below the newest spent one.
 	StepSpender func(ctx context.Context, tenantID, userID string, step int64) error
@@ -160,6 +164,7 @@ type Deps struct {
 	SavePending        PendingSaver
 	Activate           Activator
 	SaveRecoveryCodes  RecoveryCodeWriter
+	CountRecoveryCodes RecoveryCodeCounter
 	SpendStep          StepSpender
 	RedeemRecoveryCode RecoveryCodeRedeemer
 
@@ -224,7 +229,18 @@ func (s *Service) Start(ctx context.Context, tenantID, issuer, token string) (St
 	if err != nil {
 		return Started{}, err
 	}
+	return s.start(ctx, tenantID, issuer, who)
+}
 
+// start mints the pending enrolment of one person, whichever path asked for it.
+//
+// The sign-in and the portal share it, so the two produce the same provisioning
+// URI: the same tenant label, the same person label, and the same refusal
+// against an active factor. A second copy of these rules is how the two would
+// drift apart.
+func (s *Service) start(
+	ctx context.Context, tenantID, issuer string, who Principal,
+) (Started, error) {
 	row, err := s.deps.Find(ctx, tenantID, who.UserID)
 	switch {
 	case err == nil && row.Active():
@@ -281,15 +297,37 @@ func (s *Service) Activate(ctx context.Context, tenantID, token, code string) (A
 		return Activated{}, err
 	}
 
+	var rotated string
+	shown, err := s.activate(ctx, tenantID, who, code, func(ctx context.Context) error {
+		upgraded, err := s.deps.CompleteSession(ctx, tenantID, token, who.UserID)
+		rotated = upgraded
+		return err
+	})
+	if err != nil {
+		return Activated{}, err
+	}
+	return Activated{SessionToken: rotated, RecoveryCodes: shown}, nil
+}
+
+// activate proves the pending enrolment of one person and records the Second
+// Factor, whichever path asked for it.
+//
+// finish runs on the same transaction, after the factor lands. The sign-in path
+// rotates the Login Session token there. The portal path passes nil: it holds an
+// access token, and no login session waits on this enrolment.
+func (s *Service) activate(
+	ctx context.Context, tenantID string, who Principal, code string,
+	finish func(context.Context) error,
+) ([]string, error) {
 	row, err := s.deps.Find(ctx, tenantID, who.UserID)
 	if errors.Is(err, ErrNoEnrolment) || (err == nil && row.Active()) {
-		return Activated{}, fmt.Errorf("%w: user %s", ErrNoPendingEnrolment, who.UserID)
+		return nil, fmt.Errorf("%w: user %s", ErrNoPendingEnrolment, who.UserID)
 	}
 	if err != nil {
 		s.log.Error("read the totp enrolment",
 			logger.String("tenant_id", tenantID),
 			logger.String("user_id", who.UserID), logger.Err(err))
-		return Activated{}, err
+		return nil, err
 	}
 
 	var secret string
@@ -297,7 +335,7 @@ func (s *Service) Activate(ctx context.Context, tenantID, token, code string) (A
 		s.log.Error("open the totp secret",
 			logger.String("tenant_id", tenantID),
 			logger.String("user_id", who.UserID), logger.Err(err))
-		return Activated{}, fmt.Errorf("open the totp secret of user %s: %w", who.UserID, err)
+		return nil, fmt.Errorf("open the totp secret of user %s: %w", who.UserID, err)
 	}
 
 	step, ok := verify(secret, code, time.Now().UTC())
@@ -306,7 +344,7 @@ func (s *Service) Activate(ctx context.Context, tenantID, token, code string) (A
 			logger.String("tenant_id", tenantID),
 			logger.String("session_id", who.SessionID),
 			logger.String("user_id", who.UserID))
-		return Activated{}, fmt.Errorf("%w: user %s", ErrBadCode, who.UserID)
+		return nil, fmt.Errorf("%w: user %s", ErrBadCode, who.UserID)
 	}
 
 	shown, digests, err := newRecoveryCodes()
@@ -314,10 +352,9 @@ func (s *Service) Activate(ctx context.Context, tenantID, token, code string) (A
 		s.log.Error("mint the recovery codes",
 			logger.String("tenant_id", tenantID),
 			logger.String("user_id", who.UserID), logger.Err(err))
-		return Activated{}, err
+		return nil, err
 	}
 
-	var rotated string
 	err = s.deps.InTx(ctx, func(ctx context.Context) error {
 		if err := s.deps.Activate(ctx, tenantID, who.UserID, row.SecretEncrypted, step); err != nil {
 			return err
@@ -337,28 +374,30 @@ func (s *Service) Activate(ctx context.Context, tenantID, token, code string) (A
 			return err
 		}
 
-		rotated, err = s.deps.CompleteSession(ctx, tenantID, token, who.UserID)
-		return err
+		if finish == nil {
+			return nil
+		}
+		return finish(ctx)
 	})
 	if err != nil {
 		// The pending row was replaced or activated while this request ran, so
 		// the guarded update matched nothing. The person starts again, which is
 		// what a refused activation asks them to do.
 		if errors.Is(err, ErrNoEnrolment) {
-			return Activated{}, fmt.Errorf("%w: user %s", ErrNoPendingEnrolment, who.UserID)
+			return nil, fmt.Errorf("%w: user %s", ErrNoPendingEnrolment, who.UserID)
 		}
 		s.log.Error("activate the totp enrolment",
 			logger.String("tenant_id", tenantID),
 			logger.String("session_id", who.SessionID),
 			logger.String("user_id", who.UserID), logger.Err(err))
-		return Activated{}, err
+		return nil, err
 	}
 
 	s.log.Info("activated a totp enrolment",
 		logger.String("tenant_id", tenantID),
 		logger.String("session_id", who.SessionID),
 		logger.String("user_id", who.UserID))
-	return Activated{SessionToken: rotated, RecoveryCodes: shown}, nil
+	return shown, nil
 }
 
 // Verify answers the second-factor challenge of one sign-in, and signs the

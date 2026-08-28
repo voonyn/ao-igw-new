@@ -368,3 +368,29 @@ func (r *Repository) RedeemRecoveryCode(ctx context.Context, tenantID, userID, d
 		logger.RequestID(ctx))
 	return nil
 }
+
+// CountRecoveryCodes counts the Recovery Codes one person still holds.
+//
+// A code is deleted when it is spent, and a fresh set replaces the whole table
+// for that person, so the row count is what remains. No digest is read: the
+// number is the whole answer, and the portal states it beside the factor.
+func (r *Repository) CountRecoveryCodes(ctx context.Context, tenantID, userID string) (int, error) {
+	r.log.Debug("count the recovery codes",
+		logger.String("tenant_id", tenantID), logger.String("user_id", userID),
+		logger.RequestID(ctx))
+
+	left, err := db.Conn(ctx, r.db).NewSelect().
+		Model((*RecoveryCode)(nil)).
+		Where("tenant_id = ?", tenantID).
+		Where("user_id = ?", userID).
+		Count(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("count the recovery codes of user %s of tenant %s: %w",
+			userID, tenantID, err)
+	}
+
+	r.log.Debug("counted the recovery codes",
+		logger.String("tenant_id", tenantID), logger.String("user_id", userID),
+		logger.Int("codes", left), logger.RequestID(ctx))
+	return left, nil
+}
