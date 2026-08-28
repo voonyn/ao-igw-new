@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -638,5 +639,71 @@ func TestResolveForFinalize_PartialSession(t *testing.T) {
 	_, err := svc.ResolveForFinalize(context.Background(), "tenant-1", token)
 	if !errors.Is(err, ErrNotAuthenticated) {
 		t.Errorf("resolve for finalize gave %v, want %v", err, ErrNotAuthenticated)
+	}
+}
+
+// TestFailSecondFactor covers the per-session cap on code guessing. The codes
+// before the last one are counted and nothing else happens. The last one ends
+// the session and records one login.failed naming a wrong second factor.
+//
+// Six digits is a million values, so a sign-in that never ends is a sign-in an
+// attacker can guess through.
+func TestFailSecondFactor(t *testing.T) {
+	person := Identity{UserID: "user-1", Email: "person@example.com"}
+	svc, st := testService(t, knownPerson("person@example.com", person))
+	opened := signedIn(t, svc, "person@example.com")
+
+	for wrong := 1; wrong < maxWrongCodes; wrong++ {
+		ended, err := svc.FailSecondFactor(context.Background(), "tenant-1", opened.Token)
+		if err != nil {
+			t.Fatalf("wrong code %d: %v", wrong, err)
+		}
+		if ended {
+			t.Fatalf("wrong code %d ended the sign-in, want %d codes", wrong, maxWrongCodes)
+		}
+		if st.saved.WrongCodes != wrong {
+			t.Errorf("the session counted %d wrong codes, want %d", st.saved.WrongCodes, wrong)
+		}
+	}
+
+	// Nothing is recorded until the sign-in ends. One refused sign-in is one
+	// audit row, not five.
+	if got := st.actions(); len(got) != 0 {
+		t.Fatalf("the trail holds %v before the cap, want nothing", got)
+	}
+
+	ended, err := svc.FailSecondFactor(context.Background(), "tenant-1", opened.Token)
+	if err != nil {
+		t.Fatalf("the last wrong code: %v", err)
+	}
+	if !ended {
+		t.Fatalf("%d wrong codes did not end the sign-in", maxWrongCodes)
+	}
+	if len(st.terminated) != 1 || st.terminated[0] != opened.ID {
+		t.Errorf("terminated sessions are %v, want [%s]", st.terminated, opened.ID)
+	}
+	if got := st.actions(); len(got) != 1 || got[0] != string(audit.ActionLoginFailed) {
+		t.Fatalf("the trail holds %v, want [%s]", got, audit.ActionLoginFailed)
+	}
+	// The trail says which credential failed. A reader who cannot tell a wrong
+	// password from a wrong code cannot tell a guessed account from a stolen one.
+	if reason := st.events[0].Metadata; !strings.Contains(reason, "bad_second_factor") {
+		t.Errorf("the event metadata is %q, want a wrong second factor", reason)
+	}
+}
+
+// TestFailSecondFactor_DeadToken covers a token no live session carries. Nothing
+// is counted, nothing is terminated, and the trail records nothing.
+func TestFailSecondFactor_DeadToken(t *testing.T) {
+	person := Identity{UserID: "user-1", Email: "person@example.com"}
+	svc, st := testService(t, knownPerson("person@example.com", person))
+	signedIn(t, svc, "person@example.com")
+
+	_, err := svc.FailSecondFactor(context.Background(), "tenant-1", "a-dead-token")
+	if !errors.Is(err, ErrLoginSessionNotFound) {
+		t.Fatalf("the wrong code answered %v, want %v", err, ErrLoginSessionNotFound)
+	}
+	if len(st.terminated) != 0 || len(st.actions()) != 0 {
+		t.Errorf("a dead token terminated %v and recorded %v", st.terminated, st.actions())
 	}
 }

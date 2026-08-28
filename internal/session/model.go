@@ -61,6 +61,14 @@ const partialLifetime = 10 * time.Minute
 // its own number.
 const fullLifetime = 12 * time.Hour
 
+// maxWrongCodes is how many wrong second-factor codes one login session takes
+// before it ends. Six digits is a million values, so a sign-in that never ends
+// is a sign-in an attacker can guess through.
+//
+// ponytail: a constant. Move it into a tenant policy row when a tenant asks for
+// its own number.
+const maxWrongCodes = 5
+
 // ErrNotAuthenticated reports a session that exists but carries no factor. The
 // identifier step opens such a session, and the password step upgrades it.
 var ErrNotAuthenticated = errors.New("login session is not authenticated")
@@ -89,14 +97,19 @@ var ErrBadCredentials = errors.New("identifier or password is wrong")
 //
 // UserID is empty until an identifier names a person. Factors maps an AMR name
 // to the moment that factor was verified, so a later step can honour max_age.
+//
+// WrongCodes counts the wrong second-factor codes this sign-in submitted. It
+// lives in the sealed blob, so it needs no column and every instance reads the
+// same number.
 type LoginSession struct {
-	ID        string               `json:"id"`
-	TenantID  string               `json:"tenant_id"`
-	UserID    string               `json:"user_id,omitempty"`
-	Email     string               `json:"email,omitempty"`
-	IP        string               `json:"ip,omitempty"`
-	UserAgent string               `json:"user_agent,omitempty"`
-	Factors   map[string]time.Time `json:"factors,omitempty"`
+	ID         string               `json:"id"`
+	TenantID   string               `json:"tenant_id"`
+	UserID     string               `json:"user_id,omitempty"`
+	Email      string               `json:"email,omitempty"`
+	IP         string               `json:"ip,omitempty"`
+	UserAgent  string               `json:"user_agent,omitempty"`
+	WrongCodes int                  `json:"wrong_codes,omitempty"`
+	Factors    map[string]time.Time `json:"factors,omitempty"`
 	CreatedAt time.Time            `json:"created_at"`
 	ExpiresAt time.Time            `json:"expires_at"`
 }

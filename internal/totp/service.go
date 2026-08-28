@@ -45,7 +45,42 @@ var (
 	// a Recovery Code no row still holds all give it. The answer never says
 	// which of them happened, and it never says which kind of value was sent.
 	ErrBadCode = errors.New("the code is wrong")
+
+	// ErrSignInEnded reports the wrong code that used up the Login Session. The
+	// session is terminated, and the person starts the sign-in again.
+	//
+	// It is not ErrBadCode. A person told the code is wrong tries another one,
+	// and this answer tells them there is nothing left to try on this sign-in.
+	ErrSignInEnded = errors.New("too many wrong codes ended the sign-in")
+
+	// ErrTooManyAttempts reports a person who spent the whole guessing budget of
+	// the trailing window, across every sign-in they opened.
+	ErrTooManyAttempts = errors.New("too many second-factor attempts")
 )
+
+// attemptLimit and attemptWindow cap second-factor guessing per person, across
+// every sign-in that person opens.
+//
+// The per-session cap alone is not enough. Ending a session is free: an attacker
+// who already holds the password answers one identifier step and one password
+// step, and buys five fresh guesses. This cap is the one budget a restart cannot
+// reset, so it is what makes the total bounded.
+//
+// The limit is three sessions' worth of the per-session cap. A person who
+// mistypes their way out of one sign-in still has two more before they wait.
+//
+// ponytail: two constants. Move them into a tenant policy row when a tenant asks
+// for its own numbers.
+const (
+	attemptLimit  = 15
+	attemptWindow = 15 * time.Minute
+)
+
+// attemptKey names the guessing budget of one person. The tenant id is part of
+// the key, so a person of one tenant never spends the budget of another.
+func attemptKey(tenantID, userID string) string {
+	return fmt.Sprintf("mfa_attempts:%s:%s", tenantID, userID)
+}
 
 // Principal is what the login side knows about the session one token
 // credentials: which person it names, and whether a password was proved on it.
@@ -104,6 +139,15 @@ type (
 	// digest of its canonical spelling. It returns ErrCodeSpent when no row
 	// holds the digest, which covers both an unknown code and a spent one.
 	RecoveryCodeRedeemer func(ctx context.Context, tenantID, userID, digest string) error
+
+	// CodeFailer records one wrong code against the Login Session, and reports
+	// whether this code ended it. The cap and the audit row belong to the login
+	// session domain, which this module does not import.
+	CodeFailer func(ctx context.Context, tenantID, token string) (bool, error)
+
+	// RateLimiter records one hit against key and reports whether the trailing
+	// window is still within limit. cache.Client.AllowInWindow satisfies it.
+	RateLimiter func(ctx context.Context, key string, limit int, window time.Duration) (bool, error)
 )
 
 // Deps is the database side of the service.
@@ -118,6 +162,11 @@ type Deps struct {
 	SaveRecoveryCodes  RecoveryCodeWriter
 	SpendStep          StepSpender
 	RedeemRecoveryCode RecoveryCodeRedeemer
+
+	// The two caps on code guessing. FailCode counts against one sign-in, and
+	// Allow counts against one person across every sign-in they open.
+	FailCode CodeFailer
+	Allow    RateLimiter
 
 	// Cipher seals the shared secret at rest. A nil cipher matches the
 	// development bootstrap, which stores it in the clear, the way the login
@@ -336,6 +385,9 @@ func (s *Service) Verify(ctx context.Context, tenantID, token, code string) (str
 	if err != nil {
 		return "", err
 	}
+	if err := s.spendGuess(ctx, tenantID, who); err != nil {
+		return "", err
+	}
 
 	// One place drops the whitespace a person pasted, so the value that is
 	// classified is the value that is verified. A Recovery Code loses its spaces
@@ -372,7 +424,7 @@ func (s *Service) Verify(ctx context.Context, tenantID, token, code string) (str
 				logger.String("tenant_id", tenantID),
 				logger.String("session_id", who.SessionID),
 				logger.String("user_id", who.UserID))
-			return "", fmt.Errorf("%w: user %s", ErrBadCode, who.UserID)
+			return "", s.wrong(ctx, tenantID, token, who)
 		}
 	}
 
@@ -393,7 +445,7 @@ func (s *Service) Verify(ctx context.Context, tenantID, token, code string) (str
 			logger.String("session_id", who.SessionID),
 			logger.String("user_id", who.UserID),
 			logger.Bool("recovery_code", recovery))
-		return "", fmt.Errorf("%w: user %s", ErrBadCode, who.UserID)
+		return "", s.wrong(ctx, tenantID, token, who)
 	}
 	if err != nil {
 		s.log.Error("verify a second factor",
@@ -435,6 +487,62 @@ func (s *Service) spend(
 		IP:         who.IP,
 		UserAgent:  who.UserAgent,
 	})
+}
+
+// spendGuess spends one guess of the person's trailing-window budget, and
+// refuses the submission when nothing is left.
+//
+// It is spent before the code is read, because a cap that counts only wrong
+// codes cannot stop the right guess. A submission that signs the person in is
+// the last one of that sign-in, so the budget counts every wrong code plus at
+// most one right code per sign-in.
+//
+// A cache failure refuses the submission. Redis is only a cache elsewhere in
+// this gateway, and here it is the whole budget: a failure that let the guess
+// through would leave the guessing unbounded for as long as Redis is down. The
+// per-session count cannot stand in for it, because that count is read, raised
+// and written back, so parallel submissions on one token overwrite each other.
+//
+// ponytail: a refused read costs every person with a Second Factor their
+// sign-in while Redis is down. Answer from the database instead when that
+// outage is worth the extra table.
+func (s *Service) spendGuess(ctx context.Context, tenantID string, who Principal) error {
+	allowed, err := s.deps.Allow(ctx, attemptKey(tenantID, who.UserID), attemptLimit, attemptWindow)
+	if err != nil {
+		s.log.Error("read the second-factor guessing budget",
+			logger.String("tenant_id", tenantID),
+			logger.String("user_id", who.UserID), logger.Err(err))
+		return fmt.Errorf("%w: user %s", ErrTooManyAttempts, who.UserID)
+	}
+	if allowed {
+		return nil
+	}
+
+	s.log.Warn("refused a second-factor attempt over the budget",
+		logger.String("tenant_id", tenantID),
+		logger.String("session_id", who.SessionID),
+		logger.String("user_id", who.UserID))
+	return fmt.Errorf("%w: user %s", ErrTooManyAttempts, who.UserID)
+}
+
+// wrong records one wrong code against the Login Session, and answers what the
+// person is told.
+//
+// The code that reaches the cap ends the sign-in, so the person is told to start
+// again instead of to try another code. The login session domain owns the cap,
+// the count and the audit row.
+//
+// A failed count comes back as it was given. That domain logged it, and the
+// mapper already knows every sentinel it answers with.
+func (s *Service) wrong(ctx context.Context, tenantID, token string, who Principal) error {
+	ended, err := s.deps.FailCode(ctx, tenantID, token)
+	if err != nil {
+		return err
+	}
+	if ended {
+		return fmt.Errorf("%w: session %s", ErrSignInEnded, who.SessionID)
+	}
+	return fmt.Errorf("%w: user %s", ErrBadCode, who.UserID)
 }
 
 // principal reads the Login Session one token credentials, and refuses one that

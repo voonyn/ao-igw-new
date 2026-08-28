@@ -22,12 +22,19 @@ const bearerPrefix = "Bearer "
 // A wrong code answers invalid_credentials, which is the slug the sign-in front
 // end renders as a wrong code. Answering the unauthenticated slug would tell the
 // person their email or password was wrong, which it was not.
+//
+// The two caps on guessing answer slugs of their own. too_many_codes says the
+// sign-in ended and the person must start again, and rate_limited says the
+// person must wait. A generic failure would leave the login UI unable to say
+// either, and the person would keep typing into a session that is dead.
 func init() {
 	response.Map(ErrPasswordNotProved, fiber.StatusUnauthorized, "unauthenticated", "Unauthorized")
 	response.Map(ErrBadCode, fiber.StatusUnauthorized, "invalid_credentials", "Unauthorized")
 	response.Map(ErrAlreadyEnrolled, fiber.StatusConflict, "mfa_already_enrolled", "Conflict")
 	response.Map(ErrNoPendingEnrolment, fiber.StatusConflict, "no_pending_enrolment", "Conflict")
 	response.Map(ErrNoActiveFactor, fiber.StatusConflict, "no_active_factor", "Conflict")
+	response.Map(ErrSignInEnded, fiber.StatusUnauthorized, "too_many_codes", "Unauthorized")
+	response.Map(ErrTooManyAttempts, fiber.StatusTooManyRequests, "rate_limited", "Too Many Requests")
 }
 
 // Handler serves the enrolment steps of the sign-in. It binds the request, calls

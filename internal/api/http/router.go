@@ -137,7 +137,7 @@ func Routes(app *fiber.App, cfg *config.Config, bdb *bun.DB, rdb cache.Client, l
 	// tenant lookup. QR Login mounts inside it, so both run once per request.
 	loginGroup := app.Group(loginPrefix, middlewares.LoginPAT(cfg.Auth.LoginPATs(), log), tenantMW)
 	mountLogin(loginGroup, cfg, bdb, cipher, storage, scopes, recorder, sessions, tx.RunInTx, log)
-	mountMFA(loginGroup, bdb, cipher, factors, recorder, sessions, tx.RunInTx, log)
+	mountMFA(loginGroup, bdb, rdb, cipher, factors, recorder, sessions, tx.RunInTx, log)
 	mountAdmin(app, bdb, rdb, cipher, storage, recorder, cfg.Notification, diClient, tenantMW, tx.RunInTx, log)
 	mountAccount(app, bdb, rdb, cipher, storage, recorder, tenantMW, tx.RunInTx, log)
 
@@ -216,8 +216,9 @@ func mountLogin(
 // job, and it is what keeps the login session domain, which already imports the
 // user domain, out of an import cycle.
 func mountMFA(
-	loginGroup fiber.Router, bdb *bun.DB, cipher *crypto.Cipher, factors *totp.Repository,
-	recorder *audit.Recorder, sessions *session.Service, tx db.TxRunner, log logger.Logger,
+	loginGroup fiber.Router, bdb *bun.DB, rdb cache.Client, cipher *crypto.Cipher,
+	factors *totp.Repository, recorder *audit.Recorder, sessions *session.Service,
+	tx db.TxRunner, log logger.Logger,
 ) {
 	users := user.NewRepository(bdb, log)
 
@@ -264,6 +265,12 @@ func mountMFA(
 		SaveRecoveryCodes:  factors.ReplaceRecoveryCodes,
 		SpendStep:          factors.SpendStep,
 		RedeemRecoveryCode: factors.RedeemRecoveryCode,
+
+		// The two caps on code guessing. The per-session count and the audit row
+		// belong to the login session domain, and the per-person budget is the
+		// sliding window Redis keeps.
+		FailCode: sessions.FailSecondFactor,
+		Allow:    rdb.AllowInWindow,
 
 		Cipher: cipher,
 		InTx:   tx,

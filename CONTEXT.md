@@ -139,6 +139,17 @@ finish signing in. It does not decide whether a person is challenged. An active
 Second Factor is always challenged.
 _Avoid_: MFA policy, 2FA setting, MFA enforcement
 
+**Guessing Budget**:
+How many second-factor codes one person may submit inside a trailing window,
+counted across every sign-in that person opens. It is separate from the count one
+Login Session keeps, which ends that sign-in alone.
+_Avoid_: Rate limit, throttle, lockout, attempt counter
+
+Note: two caps, and both are needed. The per-session count ends one sign-in, and
+the Guessing Budget is what makes ending a sign-in worthless. Without it, an
+attacker who already holds the password answers one identifier step and one
+password step, and buys a fresh set of guesses for ever.
+
 **Consent**:
 A record that one person allowed one client to receive a set of scopes. Consent
 outlives the authorization request that created it.

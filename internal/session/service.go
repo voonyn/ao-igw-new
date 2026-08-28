@@ -259,6 +259,77 @@ func (s *Service) refuse(ctx context.Context, live LoginSession, cause error) er
 	return fmt.Errorf("%w: session %s", ErrBadCredentials, live.ID)
 }
 
+// FailSecondFactor records one wrong second-factor code against the login
+// session, and reports whether this code ended the sign-in.
+//
+// The count lives in the sealed session, so it needs no column and any instance
+// reads the same number. The second-factor module owns the decision to call it,
+// and this domain owns the cap and the audit row.
+//
+// The code that reaches the cap terminates the session and records login.failed.
+// The codes before it record nothing: one refused sign-in is one audit row, not
+// five.
+//
+// The token is a credential. Only the session id reaches a log line.
+//
+// ponytail: the count is read, raised and written back, so submissions that run
+// side by side on one token overwrite each other and a sign-in can take a few
+// codes over the cap. The trailing-window budget of the TOTP module is atomic
+// and bounds the person whatever happens here. Move the count into a column and
+// raise it with one UPDATE when the exact number must hold under a flood.
+func (s *Service) FailSecondFactor(ctx context.Context, tenantID, token string) (bool, error) {
+	s.log.Debug("record a wrong second-factor code",
+		logger.String("tenant_id", tenantID), logger.RequestID(ctx))
+
+	digest := aocrypto.Digest(token)
+	live, err := s.deps.Find(ctx, tenantID, digest)
+	if err != nil {
+		if !errors.Is(err, ErrLoginSessionNotFound) {
+			s.log.Error("read login session", logger.String("tenant_id", tenantID), logger.Err(err))
+		}
+		return false, err
+	}
+
+	live.WrongCodes++
+	if live.WrongCodes < maxWrongCodes {
+		// The token did not rotate, so the digest before this write is the digest
+		// after it, and the cached copy is replaced in place.
+		if err := s.deps.Save(ctx, live, digest, digest); err != nil {
+			s.log.Error("count a wrong second-factor code",
+				logger.String("tenant_id", tenantID),
+				logger.String("session_id", live.ID),
+				logger.Err(err))
+			return false, err
+		}
+
+		s.log.Debug("counted a wrong second-factor code",
+			logger.String("tenant_id", tenantID),
+			logger.String("session_id", live.ID), logger.RequestID(ctx))
+		return false, nil
+	}
+
+	err = s.deps.InTx(ctx, func(ctx context.Context) error {
+		if err := s.deps.Terminate(ctx, tenantID, live.ID); err != nil {
+			return err
+		}
+		return s.deps.Audit.Record(ctx, s.entry(live, audit.ActionLoginFailed,
+			map[string]any{"reason": "bad_second_factor"}))
+	})
+	if err != nil {
+		s.log.Error("end the login session after too many wrong codes",
+			logger.String("tenant_id", tenantID),
+			logger.String("session_id", live.ID),
+			logger.Err(err))
+		return false, err
+	}
+
+	s.log.Info("ended a login session after too many wrong second-factor codes",
+		logger.String("tenant_id", tenantID),
+		logger.String("session_id", live.ID),
+		logger.String("user_id", live.UserID))
+	return true, nil
+}
+
 // entry describes one login outcome for the audit trail. The password is never
 // part of it, at any level and in any environment.
 func (s *Service) entry(live LoginSession, action audit.Action, metadata map[string]any) audit.Entry {

@@ -49,13 +49,21 @@ export function messageForError(code: unknown): string {
  * gateway returns the generic `invalid_credentials` for a wrong TOTP or an
  * unknown/used recovery code, which reads wrong as "Incorrect email or password"
  * — so the code path gets its own phrasing.
+ *
+ * `too_many_codes` is the sign-in the gateway ended after too many wrong codes.
+ * The session is dead, so the person is told to start again rather than to try
+ * another code. `unauthenticated` is the same dead session reached one step
+ * later, and it reads the same way here.
  */
 export function mfaMessageForError(code: unknown): string {
   switch (code) {
     case "invalid_credentials":
       return "That code isn’t right. Please try again."
+    case "too_many_codes":
+      return "Too many incorrect codes. Please start again."
     case "rate_limited":
       return "Too many attempts. Please wait a moment and try again."
+    case "unauthenticated":
     case "session_invalid":
       return "Your session expired. Please start again."
     default:
