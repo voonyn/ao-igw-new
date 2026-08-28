@@ -162,6 +162,7 @@ func mountOIDCRoutes(
 	build := apioidc.NewBuilder(apioidc.Services{
 		PathPrefix: cfg.OIDC.PathPrefix,
 		LoginURL:   cfg.App.LoginURL,
+		ACRPrefix:  cfg.OIDC.ACRPrefix,
 		Terminate:  sessions.TerminateByID,
 		Keys:       oidc.NewKeyService(oidc.NewKeyRepository(bdb, log), cipher, log),
 		Clients:    oidc.NewClientService(oidc.NewClientRepository(bdb, log), log),
@@ -193,6 +194,7 @@ func mountLogin(
 	})
 	complete := apioidc.NewCompleter(apioidc.CompleterDeps{
 		PathPrefix: cfg.OIDC.PathPrefix,
+		ACRPrefix:  cfg.OIDC.ACRPrefix,
 		Find:       storage.FindSession,
 		Save:       storage.SaveSession,
 		Decide:     consent.Decide,

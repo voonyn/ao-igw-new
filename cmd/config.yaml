@@ -75,3 +75,9 @@ OIDC:
   # header override. Only set this when a trusted proxy injects it — it bypasses
   # the host trust check.
   tenant_header: ""
+  # URN prefix of the two acr values the ID token publishes: <prefix>:1fa for a
+  # sign-in that proved one factor, <prefix>:2fa for two or more. Both are
+  # advertised in acr_values_supported. Override with AO_OIDC_ACR_PREFIX.
+  # The values are a published contract: set this once per deployment and never
+  # change it after clients arrive.
+  acr_prefix: "urn:alphaomega:acr"

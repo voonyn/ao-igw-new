@@ -182,6 +182,10 @@ func (a AppConfig) IsDevelopment() bool {
 	return strings.EqualFold(a.Environment, "development")
 }
 
+// DefaultACRPrefix is the URN the two assurance levels are built on when the
+// deployment names none. See OIDCConfig.ACRPrefix.
+const DefaultACRPrefix = "urn:alphaomega:acr"
+
 // OIDCConfig holds the process-wide OIDC settings. Per-tenant provider settings
 // (issuer, token lifetimes, PKCE, rotation, signing keys) are NOT here — they
 // live in the database (oidc_provider_configs / oidc_keys) and are selected per
@@ -208,6 +212,16 @@ type OIDCConfig struct {
 	// non-registrable dev domains (e.g. "acme.test" or "localhost") where eTLD+1
 	// yields no domain the portal and auth hosts share. Bound to AO_WEBAUTHN_RP_ID.
 	WebAuthnRPID string `mapstructure:"webauthn_rp_id"`
+
+	// ACRPrefix is the URN the two assurance levels of the ID token acr claim
+	// are built on: one level for a single factor, another for two or more.
+	// Bound to AO_OIDC_ACR_PREFIX, defaulting to urn:alphaomega:acr. Shared by
+	// every tenant.
+	//
+	// The values are a published contract. Set the prefix once per deployment
+	// and never change it after clients arrive, because renaming a level breaks
+	// every relying party that branches on it. See docs/adr/0010.
+	ACRPrefix string `mapstructure:"acr_prefix"`
 }
 
 type ServerConfig struct {
@@ -304,6 +318,8 @@ func InitConfig() (*Config, error) {
 	// Lockout / password / recovery policy is no longer env config — it is resolved
 	// per tenant + org from auth_policy_settings (move-auth-settings-to-db).
 	_ = viper.BindEnv("oidc.tenant_header", "AO_OIDC_TENANT_HEADER")
+	// URN prefix of the two acr values the ID token publishes.
+	_ = viper.BindEnv("oidc.acr_prefix", "AO_OIDC_ACR_PREFIX")
 	// WebAuthn RP-ID override (shared by login + account passkey ceremonies); empty
 	// ⇒ derive the registrable domain of the request host.
 	_ = viper.BindEnv("oidc.webauthn_rp_id", "AO_WEBAUTHN_RP_ID")
@@ -364,6 +380,13 @@ func InitConfig() (*Config, error) {
 			return nil, fmt.Errorf("app.timezone %q: %w", cfg.App.Timezone, err)
 		}
 		time.Local = loc
+	}
+
+	// An unset prefix, and an environment variable set to nothing, both leave the
+	// two acr values without a URN. They are a published contract, so the
+	// documented default stands in rather than a bare ":1fa".
+	if cfg.OIDC.ACRPrefix == "" {
+		cfg.OIDC.ACRPrefix = DefaultACRPrefix
 	}
 
 	return cfg, nil

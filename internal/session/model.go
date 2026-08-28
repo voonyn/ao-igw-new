@@ -8,6 +8,8 @@ package session
 
 import (
 	"errors"
+	"maps"
+	"slices"
 	"time"
 
 	"github.com/uptrace/bun"
@@ -96,7 +98,9 @@ var ErrBadCredentials = errors.New("identifier or password is wrong")
 // blob holds, so every field here survives a restart.
 //
 // UserID is empty until an identifier names a person. Factors maps an AMR name
-// to the moment that factor was verified, so a later step can honour max_age.
+// to the moment that factor was verified. Two readers need it: a later step
+// honours max_age against the moment, and the ID token publishes the names as
+// the amr claim. See docs/adr/0010.
 //
 // WrongCodes counts the wrong second-factor codes this sign-in submitted. It
 // lives in the sealed blob, so it needs no column and every instance reads the
@@ -132,6 +136,15 @@ func (s LoginSession) AuthTime() time.Time {
 		}
 	}
 	return latest
+}
+
+// FactorNames names every factor the person proved, sorted. The ID token
+// carries them as the amr claim, and the sorted order keeps that claim the same
+// on every token minted from one sign-in.
+func (s LoginSession) FactorNames() []string {
+	names := slices.Collect(maps.Keys(s.Factors))
+	slices.Sort(names)
+	return names
 }
 
 // Identity is what the identifier step learns about a person.

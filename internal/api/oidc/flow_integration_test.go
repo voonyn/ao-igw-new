@@ -442,6 +442,10 @@ type discovery struct {
 	IntrospectionEndpoint string `json:"introspection_endpoint"`
 	RevocationEndpoint    string `json:"revocation_endpoint"`
 	EndSessionEndpoint    string `json:"end_session_endpoint"`
+
+	// ACRValuesSupported holds the two assurance levels the tenant measures. A
+	// client reads them to know what the acr claim of an ID token can say.
+	ACRValuesSupported []string `json:"acr_values_supported"`
 }
 
 // tokens is what the token endpoint answers with.
@@ -768,7 +772,9 @@ type authorization struct {
 //
 // The verifier proves at the token endpoint that the client that redeems the
 // code is the client that asked for it.
-func (g *gateway) startAuthorization(t *testing.T, cl clientFixture) authorization {
+// Each pair in extra is a query parameter name and its value, for a test that
+// needs one the flow does not send.
+func (g *gateway) startAuthorization(t *testing.T, cl clientFixture, extra ...string) authorization {
 	t.Helper()
 
 	auth := authorization{verifier: randomString(t), state: randomString(t), nonce: randomString(t)}
@@ -784,6 +790,9 @@ func (g *gateway) startAuthorization(t *testing.T, cl clientFixture) authorizati
 	}
 	if cl.resource != "" {
 		query.Set("resource", cl.resource)
+	}
+	for i := 0; i+1 < len(extra); i += 2 {
+		query.Set(extra[i], extra[i+1])
 	}
 
 	answer := g.oidc(t, fiber.MethodGet, "/authorize?"+query.Encode(), nil)

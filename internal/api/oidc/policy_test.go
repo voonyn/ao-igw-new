@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -78,6 +79,7 @@ func testConsentCompleter(t *testing.T, store *sessions, given *consents) Comple
 	log, _ := logger.NewObserved()
 	return NewCompleter(CompleterDeps{
 		PathPrefix: "/oidc/v1",
+		ACRPrefix:  testACRPrefix,
 		Find:       store.Find,
 		Save:       store.Save,
 		Decide:     given.Decide,
@@ -86,6 +88,10 @@ func testConsentCompleter(t *testing.T, store *sessions, given *consents) Comple
 		Log:        log,
 	})
 }
+
+// testACRPrefix is the URN the two assurance levels are built on in these
+// tests. It repeats the default the configuration ships.
+const testACRPrefix = "urn:alphaomega:acr"
 
 // pending is the authn session the authorization endpoint left behind: a
 // request in flight that names no person yet.
@@ -582,5 +588,89 @@ func TestLoginPolicy_FailsOnTheMarker(t *testing.T) {
 	}
 	if oidcErr.Code != goidc.ErrorCodeLoginRequired {
 		t.Errorf("the error code is %q, want %q", oidcErr.Code, goidc.ErrorCodeLoginRequired)
+	}
+}
+
+// TestCompleteWritesTheSignInClaims covers what the finalize step publishes
+// about the sign-in. One factor gives the lower assurance level and that factor
+// alone. Two factors give the higher level and mfa beside the names.
+//
+// Each value lands on the store as one delimited string, the way scope already
+// encodes a list, because the store round-trips through JSON.
+func TestCompleteWritesTheSignInClaims(t *testing.T) {
+	at := time.Now().Add(-time.Minute).Truncate(time.Second)
+
+	for name, tc := range map[string]struct {
+		factors []string
+		amr     string
+		acr     string
+	}{
+		"one factor": {
+			factors: []string{"pwd"},
+			amr:     "pwd",
+			acr:     testACRPrefix + ":1fa",
+		},
+		"two factors": {
+			factors: []string{"otp", "pwd"},
+			amr:     "otp pwd mfa",
+			acr:     testACRPrefix + ":2fa",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			store := newSessions(pending("session-1"))
+			done := completion("session-1", "user-1")
+			done.Factors = tc.factors
+			done.AuthTime = at
+
+			if _, err := testCompleter(t, store)(context.Background(), done); err != nil {
+				t.Fatalf("complete: %v", err)
+			}
+
+			saved := store.held["session-1"].Store
+			for key, want := range map[string]string{
+				"amr":       tc.amr,
+				"acr":       tc.acr,
+				"auth_time": strconv.FormatInt(at.Unix(), 10),
+			} {
+				if got, _ := saved[key].(string); got != want {
+					t.Errorf("the store holds %s %q, want %q", key, got, want)
+				}
+			}
+		})
+	}
+}
+
+// TestCompleteWritesNoSignInClaimsWithoutAFactor covers a completion that names
+// no factor. Nothing describes such a sign-in, so the store carries no claim
+// that names nothing.
+func TestCompleteWritesNoSignInClaimsWithoutAFactor(t *testing.T) {
+	store := newSessions(pending("session-1"))
+
+	if _, err := testCompleter(t, store)(
+		context.Background(), completion("session-1", "user-1")); err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+
+	for _, key := range []string{"amr", "acr", "auth_time"} {
+		if _, held := store.held["session-1"].Store[key]; held {
+			t.Errorf("the store holds %s, want nothing", key)
+		}
+	}
+}
+
+// TestAMRNamesMultipleFactor covers the mfa value. It joins the factor names
+// when the person proved two or more, and the names of the login session are
+// left as they were.
+func TestAMRNamesMultipleFactor(t *testing.T) {
+	proved := []string{"otp", "pwd"}
+
+	if got := amr(proved); !reflect.DeepEqual(got, []string{"otp", "pwd", "mfa"}) {
+		t.Errorf("two factors read %v, want otp pwd mfa", got)
+	}
+	if !reflect.DeepEqual(proved, []string{"otp", "pwd"}) {
+		t.Errorf("the caller's factors read %v, want otp pwd", proved)
+	}
+	if got := amr([]string{"pwd"}); !reflect.DeepEqual(got, []string{"pwd"}) {
+		t.Errorf("one factor reads %v, want pwd", got)
 	}
 }

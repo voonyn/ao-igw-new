@@ -115,3 +115,76 @@ func TestClaimsAdapterReadFails(t *testing.T) {
 		t.Errorf("the failed read logged %d errors, want 2", entries)
 	}
 }
+
+// TestIDTokenCarriesHowThePersonAuthenticated covers amr, acr and auth_time.
+// The finalize step wrote all three onto the grant store as strings, and the
+// claim builder answers amr as an array and auth_time as a number.
+func TestIDTokenCarriesHowThePersonAuthenticated(t *testing.T) {
+	log, _ := logger.NewObserved()
+	source := &claimsOf{claims: aooidc.Claims{IDToken: map[string]any{"given_name": "Ada"}}}
+
+	got := IDTokenClaims("tenant-1", source.find, log)(
+		context.Background(),
+		&goidc.Grant{
+			Subject: "user-1",
+			Scopes:  "openid profile",
+			Store: map[string]any{
+				"sid":       "session-1",
+				"amr":       "otp pwd mfa",
+				"acr":       testACRPrefix + ":2fa",
+				"auth_time": "1756339200",
+			},
+		})
+
+	want := map[string]any{
+		"given_name": "Ada",
+		"sid":        "session-1",
+		"amr":        []string{"otp", "pwd", "mfa"},
+		"acr":        testACRPrefix + ":2fa",
+		"auth_time":  int64(1756339200),
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("the ID token carries %v, want %v", got, want)
+	}
+}
+
+// TestIDTokenCarriesNoSignInClaimsWithoutAStore covers a grant that describes no
+// sign-in, which is what the client credentials of a machine leave behind. The
+// ID token then carries the standard claims alone.
+func TestIDTokenCarriesNoSignInClaimsWithoutAStore(t *testing.T) {
+	log, _ := logger.NewObserved()
+	source := &claimsOf{claims: aooidc.Claims{IDToken: map[string]any{"given_name": "Ada"}}}
+
+	got := IDTokenClaims("tenant-1", source.find, log)(
+		context.Background(), &goidc.Grant{Subject: "user-1", Scopes: "openid"})
+
+	if want := map[string]any{"given_name": "Ada"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("the ID token carries %v, want %v", got, want)
+	}
+}
+
+// TestIDTokenDropsACorruptedAuthTime covers a store the finalize step could not
+// have written. The claim is dropped rather than published as text, the other
+// claims still reach the token, and the failure is logged once.
+func TestIDTokenDropsACorruptedAuthTime(t *testing.T) {
+	log, logs := logger.NewObserved()
+	source := &claimsOf{}
+
+	got := IDTokenClaims("tenant-1", source.find, log)(
+		context.Background(),
+		&goidc.Grant{
+			ID:      "grant-1",
+			Subject: "user-1",
+			Store:   map[string]any{"acr": testACRPrefix + ":1fa", "auth_time": "yesterday"},
+		})
+
+	if _, held := got["auth_time"]; held {
+		t.Errorf("the ID token carries auth_time %v, want nothing", got["auth_time"])
+	}
+	if want := testACRPrefix + ":1fa"; got["acr"] != want {
+		t.Errorf("acr is %v, want %q", got["acr"], want)
+	}
+	if entries := logs.FilterLevelExact(zapcore.ErrorLevel).Len(); entries != 1 {
+		t.Errorf("the corrupted value logged %d errors, want 1", entries)
+	}
+}

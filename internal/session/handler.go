@@ -186,6 +186,7 @@ func (h *Handler) finalize(c fiber.Ctx, authRequest string, answered *bool) erro
 		AuthRequestID: authRequest,
 		Subject:       live.UserID,
 		SessionID:     live.ID,
+		Factors:       live.FactorNames(),
 		AuthTime:      live.AuthTime(),
 		Consent:       answered,
 		IP:            c.IP(),

@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -705,5 +706,22 @@ func TestFailSecondFactor_DeadToken(t *testing.T) {
 	}
 	if len(st.terminated) != 0 || len(st.actions()) != 0 {
 		t.Errorf("a dead token terminated %v and recorded %v", st.terminated, st.actions())
+	}
+}
+
+// TestFactorNames covers what the amr claim of the ID token is built from. The
+// names are sorted, so every token minted from one sign-in carries the same
+// claim, whatever order the map is read in.
+func TestFactorNames(t *testing.T) {
+	proved := LoginSession{Factors: map[string]time.Time{
+		FactorOTP:      time.Now(),
+		FactorPassword: time.Now(),
+	}}
+
+	if got := proved.FactorNames(); !reflect.DeepEqual(got, []string{FactorOTP, FactorPassword}) {
+		t.Errorf("the factors read %v, want %v", got, []string{FactorOTP, FactorPassword})
+	}
+	if got := (LoginSession{}).FactorNames(); len(got) != 0 {
+		t.Errorf("a session with no factor reads %v, want none", got)
 	}
 }

@@ -170,7 +170,13 @@ func TestCreateMapperWritesAClaim(t *testing.T) {
 // the gateway verified, so it is released by the seeded mapper alone and never
 // by a rule an operator points at any column.
 func TestCreateMapperRefusesAProtectedClaim(t *testing.T) {
-	for _, claim := range []string{"sub", "iss", "aud", "exp", "nonce", "email_verified"} {
+	// amr, acr and auth_time describe the sign-in event. The gateway writes all
+	// three from the login session, so a mapper that named one would be
+	// overwritten. See docs/adr/0010.
+	for _, claim := range []string{
+		"sub", "iss", "aud", "exp", "nonce", "email_verified",
+		"amr", "acr", "auth_time", "sid",
+	} {
 		svc := testMapperAdminService(t, []string{tenant.RoleIAMOwner})
 
 		_, err := svc.CreateMapper(context.Background(), scopeOperator, "s-groups", MapperBody{

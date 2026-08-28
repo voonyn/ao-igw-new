@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -31,6 +33,16 @@ const storeErrorKey = "login_error"
 // with. OpenID Connect Core defines the code, and goidc declares no constant
 // for it.
 const errorCodeConsentRequired = goidc.ErrorCode("consent_required")
+
+// The suffixes of the two assurance levels this gateway measures: one factor,
+// and two or more. Each is appended to the configured URN prefix.
+//
+// A level says how many factors, never which. A relying party that needs the
+// names reads amr. See docs/adr/0010.
+const (
+	acrOneFactor   = "1fa"
+	acrMultiFactor = "2fa"
+)
 
 // loginPath is the page the login UI starts every sign-in on.
 const loginPath = "/identifier"
@@ -100,12 +112,15 @@ func loginRedirect(loginURL, id string) string {
 // SessionID is the login session the person signed in on. It travels to the
 // grant and out as the sid claim of the ID token, so a later logout can name
 // the session to end.
+// Factors names every factor the person proved on that session, in a stable
+// order. It travels the same way and leaves as the amr claim.
 type Completion struct {
 	TenantID      string
 	Issuer        string
 	AuthRequestID string
 	Subject       string
 	SessionID     string
+	Factors       []string
 	AuthTime      time.Time
 	Consent       *bool
 	IP            string
@@ -138,6 +153,11 @@ type ConsentWriter func(ctx context.Context, given aooidc.Consent) error
 // CompleterDeps is what the finalize step reads and writes.
 type CompleterDeps struct {
 	PathPrefix string
+
+	// ACRPrefix is the URN the two assurance levels are built on. The provider
+	// advertises the same two values, so both read one deployment setting.
+	ACRPrefix string
+
 	Find       SessionFinder
 	Save       SessionSaver
 	Decide     Consenter
@@ -192,6 +212,7 @@ func NewCompleter(deps CompleterDeps) Completer {
 			// the sid back off it. It is the only carrier from here to the
 			// token endpoint, where the ID token is minted.
 			remember(as, claimSessionID, done.SessionID)
+			signInClaims(as, done, deps.ACRPrefix)
 			// A marker from an earlier silent pass must not outlive the sign-in
 			// that follows it. The policy reads the marker before the subject,
 			// so a marker left behind fails the request forever.
@@ -233,6 +254,53 @@ func remember(as *goidc.AuthnSession, key, value string) {
 		as.Store = make(map[string]any, 1)
 	}
 	as.Store[key] = value
+}
+
+// signInClaims writes what the ID token publishes about this sign-in onto the
+// store of the authn session: the factors the person proved, the assurance
+// level of the sign-in, and the moment they last proved a factor.
+//
+// goidc copies the store onto the grant, and IDTokenClaims reads the three back
+// when a token is minted. Writing them here freezes them at the sign-in event,
+// which is the point: amr states what happened at one sign-in, so a refreshed ID
+// token reports the original factors even after the person removes one. It is
+// deliberate, and not a stale read. See docs/adr/0010.
+//
+// The store round-trips through JSON, so a []string would come back as a []any.
+// Each value is written as one string, the way scope already encodes a list, and
+// the claim builder splits it back into an array.
+func signInClaims(as *goidc.AuthnSession, done Completion, acrPrefix string) {
+	if len(done.Factors) == 0 {
+		return
+	}
+	remember(as, goidc.ClaimAMR, strings.Join(amr(done.Factors), " "))
+	remember(as, goidc.ClaimACR, acrValue(acrPrefix, acrLevel(len(done.Factors))))
+	remember(as, goidc.ClaimAuthTime, strconv.FormatInt(done.AuthTime.Unix(), 10))
+}
+
+// amr is what the person proved, as the ID token names it: every factor of the
+// login session, and mfa as well when they proved two or more.
+func amr(factors []string) []string {
+	if len(factors) < 2 {
+		return factors
+	}
+	return append(slices.Clone(factors), string(goidc.AMRMultipleFactor))
+}
+
+// acrValue is one assurance level as the acr claim publishes it, under the URN
+// prefix the deployment configured. The provider advertises exactly the values
+// this builds.
+func acrValue(prefix, level string) string {
+	return prefix + ":" + level
+}
+
+// acrLevel is the assurance level a sign-in that proved this many factors
+// reached. It says how many factors, never which.
+func acrLevel(factors int) string {
+	if factors < 2 {
+		return acrOneFactor
+	}
+	return acrMultiFactor
 }
 
 // consent runs the consent gate of one authorization request.

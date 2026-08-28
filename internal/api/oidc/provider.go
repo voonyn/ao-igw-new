@@ -43,6 +43,11 @@ type Deps struct {
 	// login_required.
 	LoginURL string
 
+	// ACRPrefix is the URN the two assurance levels are built on. The tenant
+	// advertises both of them, and the finalize step writes one of them onto
+	// every sign-in, so both read one deployment setting.
+	ACRPrefix string
+
 	JWKS    goidc.JWKSFunc
 	Signer  goidc.SignerFunc
 	Client  ClientFinder
@@ -128,6 +133,19 @@ func Build(ctx context.Context, tenantID string, cfg aooidc.ProviderConfig, deps
 		provider.WithTokenRevocation(
 			func(context.Context, *goidc.Client) bool { return true },
 			provider.WithTokenRevocationRevokeGrantOnAccessToken()),
+		// Both assurance levels are advertised, so a client can ask for either
+		// one. Asking is a voluntary hint: it never raises the bar of the
+		// sign-in, and the acr claim reports what the person actually proved. A
+		// client that needs two factors reads the claim back and decides for
+		// itself. See docs/adr/0010.
+		//
+		// goidc refuses a request that names a level outside this list, which is
+		// what advertising a closed set means. A client that asks for a level
+		// this gateway does not measure is told so, rather than receiving a
+		// token that silently answers something else.
+		provider.WithACRs(
+			goidc.ACR(acrValue(deps.ACRPrefix, acrOneFactor)),
+			goidc.ACR(acrValue(deps.ACRPrefix, acrMultiFactor))),
 	}
 
 	if deps.Audit != nil {
@@ -217,6 +235,7 @@ type Builder func(ctx context.Context, tenantID string, cfg aooidc.ProviderConfi
 type Services struct {
 	PathPrefix string
 	LoginURL   string
+	ACRPrefix  string
 	Keys       *aooidc.KeyService
 	Clients    *aooidc.ClientService
 	Storage    *aooidc.StorageRepository
@@ -248,6 +267,7 @@ func (s Services) deps(tenantID string) Deps {
 	deps := Deps{
 		PathPrefix: s.PathPrefix,
 		LoginURL:   s.LoginURL,
+		ACRPrefix:  s.ACRPrefix,
 		Audit:      s.Audit,
 		Terminate:  s.Terminate,
 		JWKS: func(ctx context.Context) (goidc.JSONWebKeySet, error) {
