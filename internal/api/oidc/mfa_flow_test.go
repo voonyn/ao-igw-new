@@ -52,7 +52,11 @@ func TestForcedEnrolmentFlow(t *testing.T) {
 
 	gw := newGateway(t)
 	fx := seedFixture(t, gw)
-	requireMFA(t, gw, fx.orgID)
+
+	// The override is written and the tenant default is left alone, so this run
+	// also proves that both levels resolve. A read of the tenant row alone would
+	// leave the test signing the person in with no factor.
+	setMFARequired(t, gw, fx.orgID, true)
 
 	// Where the person arrives. The browser is at the sign-in page with this
 	// authorization request named on the query, and the sign-in must finish it.
@@ -67,20 +71,8 @@ func TestForcedEnrolmentFlow(t *testing.T) {
 		t.Fatalf("identifier answered %+v", opened)
 	}
 
-	t.Run("a session that proved no password cannot enrol a factor", func(t *testing.T) {
-		// This is the guard the whole module rests on. The session names the
-		// person from the identifier step onward, so without it anybody who
-		// knows an identifier could enrol a factor on that account.
-		for _, step := range []string{enrolStartPath, enrolActivatePath} {
-			t.Run(step, func(t *testing.T) {
-				refused := gw.refuse(t, step, `{"code":"000000"}`, opened.SessionToken,
-					fiber.StatusUnauthorized)
-				if refused != "unauthenticated" {
-					t.Errorf("slug is %q, want %q", refused, "unauthenticated")
-				}
-			})
-		}
-	})
+	// The guard that refuses a session which proved no password is proved in
+	// mfa_cross_slice_flow_test.go, across every second-factor address at once.
 
 	// The password step. Its answer names the factor the person still owes.
 	var verified struct {
@@ -310,31 +302,32 @@ func code(t *testing.T, secret string) string {
 	return shown
 }
 
-// requireMFA turns the MFA Requirement on for one organization, and restores the
+// setMFARequired writes the MFA Requirement at one policy level, and restores the
 // level as it found it when the test ends.
 //
-// The override is written and the tenant default is left alone, so the run also
-// proves that both levels resolve. A read of the tenant row alone would leave
-// this test signing the person in with no factor.
-func requireMFA(t *testing.T, gw *gateway, orgID string) {
+// orgID names the organization the override belongs to, and "" is the tenant
+// default. A stored 0 is an explicit "not required" that stops the fall through
+// to the level below, so it is not the same as a level that stores nothing.
+func setMFARequired(t *testing.T, gw *gateway, orgID string, required bool) {
 	t.Helper()
 
 	ctx := t.Context()
 
-	var required, deleted sql.NullString
+	var was, deleted sql.NullString
 	err := gw.bdb.QueryRowContext(ctx,
 		"SELECT mfa_required, deleted_at FROM auth_policy_settings WHERE tenant_id = ? AND org_id = ?",
-		gw.tenantID, orgID).Scan(&required, &deleted)
+		gw.tenantID, orgID).Scan(&was, &deleted)
 	held := err == nil
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		t.Fatalf("read the auth policy override: %v", err)
+		t.Fatalf("read the auth policy level: %v", err)
 	}
 
 	_, err = gw.bdb.ExecContext(ctx,
-		`INSERT INTO auth_policy_settings (tenant_id, org_id, mfa_required) VALUES (?, ?, 1)
-		 ON DUPLICATE KEY UPDATE mfa_required = 1, deleted_at = NULL`, gw.tenantID, orgID)
+		`INSERT INTO auth_policy_settings (tenant_id, org_id, mfa_required) VALUES (?, ?, ?)
+		 ON DUPLICATE KEY UPDATE mfa_required = ?, deleted_at = NULL`,
+		gw.tenantID, orgID, required, required)
 	if err != nil {
-		t.Fatalf("write the auth policy override: %v", err)
+		t.Fatalf("write the auth policy level: %v", err)
 	}
 
 	t.Cleanup(func() {
@@ -348,10 +341,10 @@ func requireMFA(t *testing.T, gw *gateway, orgID string) {
 		if held {
 			query = `UPDATE auth_policy_settings SET mfa_required = ?, deleted_at = ?
 			         WHERE tenant_id = ? AND org_id = ?`
-			args = []any{required, deleted, gw.tenantID, orgID}
+			args = []any{was, deleted, gw.tenantID, orgID}
 		}
 		if _, err := gw.bdb.ExecContext(ctx, query, args...); err != nil {
-			t.Errorf("restore the auth policy override: %v", err)
+			t.Errorf("restore the auth policy level: %v", err)
 		}
 	})
 }
