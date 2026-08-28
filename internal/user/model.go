@@ -96,31 +96,16 @@ type AccountToken struct {
 	CreatedAt time.Time `bun:"created_at,nullzero"`
 }
 
-// The three tables a second-factor reset clears. Only the keys are modelled,
-// because the reset writes no other column of them.
-type (
-	totp struct {
-		bun.BaseModel `bun:"table:user_totp"`
+// passkey is the one second-factor table this domain owns. Only the keys are
+// modelled, because a reset writes no other column of it.
+//
+// The TOTP tables moved to internal/totp. The router composes a full reset from
+// that module and this one.
+type passkey struct {
+	bun.BaseModel `bun:"table:user_webauthn_credentials"`
 
-		TenantID  string    `bun:"tenant_id,pk"`
-		UserID    string    `bun:"user_id,pk"`
-		DeletedAt time.Time `bun:",soft_delete,nullzero"`
-	}
-
-	totpRecoveryCode struct {
-		bun.BaseModel `bun:"table:user_totp_recovery_codes"`
-
-		TenantID string `bun:"tenant_id,pk"`
-		UserID   string `bun:"user_id,pk"`
-		CodeHash string `bun:"code_hash,pk"`
-	}
-
-	passkey struct {
-		bun.BaseModel `bun:"table:user_webauthn_credentials"`
-
-		TenantID     string    `bun:"tenant_id,pk"`
-		CredentialID []byte    `bun:"credential_id,pk"`
-		UserID       string    `bun:"user_id"`
-		DeletedAt    time.Time `bun:",soft_delete,nullzero"`
-	}
-)
+	TenantID     string    `bun:"tenant_id,pk"`
+	CredentialID []byte    `bun:"credential_id,pk"`
+	UserID       string    `bun:"user_id"`
+	DeletedAt    time.Time `bun:",soft_delete,nullzero"`
+}

@@ -28,6 +28,7 @@ import (
 	"alphaomega/identitygateway/internal/qrlogin"
 	"alphaomega/identitygateway/internal/session"
 	"alphaomega/identitygateway/internal/tenant"
+	"alphaomega/identitygateway/internal/totp"
 	"alphaomega/identitygateway/internal/user"
 )
 
@@ -310,7 +311,7 @@ func mountAdmin(
 		Unlock:       users.Unlock,
 		SoftDelete:   users.SoftDelete,
 		InsertToken:  users.InsertToken,
-		ClearMFA:     users.ClearMFA,
+		ClearMFA:     clearSecondFactors(totp.NewRepository(bdb, log).Clear, users.ClearPasskeys),
 		TenantMember: tenants.FindMember,
 
 		CountTenantOwners: tenants.CountOwners,
@@ -679,6 +680,25 @@ func newSessionService(
 		Audit:     recorder,
 		Log:       log,
 	})
+}
+
+// clearSecondFactors composes a full second-factor reset from the two modules
+// that own the tables: the TOTP module destroys the secret and the recovery
+// codes, and the user module removes the passkeys.
+//
+// The composition sits here, and not in either module, because neither may
+// import the other. The login session domain already imports the user domain,
+// so a TOTP module that imported it would close a cycle.
+//
+// Both halves run on the caller's transaction, so a reset lands whole or not at
+// all. A failing first half stops the second, and the caller rolls both back.
+func clearSecondFactors(factors, passkeys user.MFAClearer) user.MFAClearer {
+	return func(ctx context.Context, tenantID, userID string) error {
+		if err := factors(ctx, tenantID, userID); err != nil {
+			return err
+		}
+		return passkeys(ctx, tenantID, userID)
+	}
 }
 
 // identityFinder adapts the user repository to the session service, which knows

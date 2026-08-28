@@ -235,3 +235,79 @@ func TestNewEvent_UnknownAction(t *testing.T) {
 		t.Fatalf("error is %v, want ErrUnknownAction", err)
 	}
 }
+
+// TestRecord_SecondFactorActions covers the four second-factor actions the
+// portal activity feed renders. Each must record, and each must record as a
+// success.
+//
+// The second half is the one that bites. An action is declared by its constant
+// and registered by actionResults, and the two are separate edits. A constant
+// added without its map entry maps to no result, so the record fails and the
+// caller rolls the change back with it: a person would lose their factor and
+// the write would be refused.
+func TestRecord_SecondFactorActions(t *testing.T) {
+	log, _ := logger.NewObserved()
+
+	var written []Event
+	recorder := NewRecorder(func(_ context.Context, event Event) error {
+		written = append(written, event)
+		return nil
+	}, log)
+
+	actions := []Action{
+		ActionMFAEnrolled,
+		ActionMFARemoved,
+		ActionMFARecoveryCodeUsed,
+		ActionMFARecoveryCodesRegenerated,
+	}
+
+	for _, action := range actions {
+		entry := seedEntry()
+		entry.Action = action
+		entry.EntityType = "user"
+
+		if err := recorder.Record(context.Background(), entry); err != nil {
+			t.Fatalf("record %q: %v", action, err)
+		}
+	}
+
+	if len(written) != len(actions) {
+		t.Fatalf("the writer received %d rows, want %d", len(written), len(actions))
+	}
+	for i, event := range written {
+		if event.Action != string(actions[i]) {
+			t.Errorf("row %d is %q, want %q", i, event.Action, actions[i])
+		}
+		if event.Result != ResultSuccess {
+			t.Errorf("result of %q is %q, want %q", event.Action, event.Result, ResultSuccess)
+		}
+	}
+
+	// The name must match the portal feed. A drifted name reads as an unknown
+	// event there, and the feed shows nothing.
+	names := []string{
+		"mfa.enrolled",
+		"mfa.removed",
+		"mfa.recovery_code_used",
+		"mfa.recovery_codes_regenerated",
+	}
+	for i, want := range names {
+		if string(actions[i]) != want {
+			t.Errorf("action %d is %q, want %q, which is the name the portal renders",
+				i, actions[i], want)
+		}
+	}
+
+	// An action nobody registered fails the record, and the writer never runs.
+	// The caller rolls its write back with that error.
+	refused := NewRecorder(func(context.Context, Event) error {
+		t.Error("the writer received an unregistered action")
+		return nil
+	}, log)
+
+	entry := seedEntry()
+	entry.Action = "mfa.unregistered"
+	if err := refused.Record(context.Background(), entry); !errors.Is(err, ErrUnknownAction) {
+		t.Fatalf("error is %v, want ErrUnknownAction", err)
+	}
+}

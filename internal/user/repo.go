@@ -96,9 +96,12 @@ const humanColumns = `h.first_name AS first_name, h.last_name AS last_name,
 // mfaColumn reports whether the account holds a second factor: an activated TOTP
 // secret, or one registered passkey. The console renders one flag for both, so
 // the read answers one flag.
+//
+// The TOTP row is hard deleted, so a live row is the only row. The passkey is
+// soft deleted, so that half filters on deleted_at.
 const mfaColumn = `(EXISTS (SELECT 1 FROM user_totp AS t
 		WHERE t.tenant_id = u.tenant_id AND t.user_id = u.id
-		  AND t.activated_at IS NOT NULL AND t.deleted_at IS NULL)
+		  AND t.activated_at IS NOT NULL)
 	OR EXISTS (SELECT 1 FROM user_webauthn_credentials AS w
 		WHERE w.tenant_id = u.tenant_id AND w.user_id = u.id
 		  AND w.deleted_at IS NULL)) AS mfa_enabled`
@@ -516,46 +519,29 @@ func (r *Repository) InsertToken(ctx context.Context, row AccountToken) error {
 	return nil
 }
 
-// ClearMFA removes every second factor of one person: the TOTP secret, the
-// recovery codes that go with it, and every registered passkey. It runs on the
+// ClearPasskeys removes every registered passkey of one person. It runs on the
 // caller's transaction.
 //
-// A person with no second factor left is the normal outcome, so no row is not an
-// error. The recovery codes are hard deleted, because a code is consumed once
-// and the client cannot recover it. The TOTP row and the passkeys carry
-// deleted_at, so bun marks them.
-func (r *Repository) ClearMFA(ctx context.Context, tenantID, userID string) error {
-	r.log.Debug("clear second factors",
+// It is one half of a second-factor reset. The TOTP secret and the recovery
+// codes are the other half, and internal/totp owns them. The router composes
+// the two, because this domain must not import that module and that module must
+// not import this one.
+//
+// A person with no passkey is the normal outcome, so no row is not an error. A
+// passkey carries deleted_at, so bun marks it.
+func (r *Repository) ClearPasskeys(ctx context.Context, tenantID, userID string) error {
+	r.log.Debug("clear passkeys",
 		logger.String("tenant_id", tenantID), logger.String("user_id", userID),
 		logger.RequestID(ctx))
 
-	conn := db.Conn(ctx, r.db)
-
-	if _, err := conn.NewDelete().
-		Model((*totp)(nil)).
-		Where("tenant_id = ?", tenantID).
-		Where("user_id = ?", userID).
-		Exec(ctx); err != nil {
-		return fmt.Errorf("clear the TOTP factor of user %s of tenant %s: %w", userID, tenantID, err)
-	}
-
-	if _, err := conn.NewDelete().
-		Model((*totpRecoveryCode)(nil)).
-		Where("tenant_id = ?", tenantID).
-		Where("user_id = ?", userID).
-		ForceDelete().
-		Exec(ctx); err != nil {
-		return fmt.Errorf("clear the recovery codes of user %s of tenant %s: %w", userID, tenantID, err)
-	}
-
-	if _, err := conn.NewDelete().
+	if _, err := db.Conn(ctx, r.db).NewDelete().
 		Model((*passkey)(nil)).
 		Where("tenant_id = ?", tenantID).
 		Where("user_id = ?", userID).
 		Exec(ctx); err != nil {
 		return fmt.Errorf("clear the passkeys of user %s of tenant %s: %w", userID, tenantID, err)
 	}
-	r.log.Debug("cleared second factors",
+	r.log.Debug("cleared passkeys",
 		logger.String("tenant_id", tenantID), logger.String("user_id", userID),
 		logger.RequestID(ctx))
 	return nil

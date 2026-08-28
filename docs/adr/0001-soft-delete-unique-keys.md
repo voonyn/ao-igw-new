@@ -29,11 +29,14 @@ the key part type stable. This requires MySQL 8.0.13 or newer.
 
 A primary key cannot hold a functional key part. Tables whose identity is the primary
 key — `tenant_members`, `organization_members`, `tenant_domains`,
-`organization_domains`, `user_totp` — keep that primary key. Re-adding the same row
-revives the deleted one with `ON DUPLICATE KEY UPDATE deleted_at = NULL`. No surrogate
-id column is added.
+`organization_domains` — keep that primary key. Re-adding the same row revives the
+deleted one with `ON DUPLICATE KEY UPDATE deleted_at = NULL`. No surrogate id column
+is added.
 
 Tables that expire or are append-only keep hard delete. See CLAUDE.md for the list.
+
+`user_totp` left this list. It holds a credential, not an entity, so it is hard
+deleted and it carries no `deleted_at`. See ADR 0009.
 
 ## Alternatives
 

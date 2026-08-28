@@ -366,36 +366,40 @@ func TestUnlockKeepsADeactivatedAccountOff(t *testing.T) {
 	}
 }
 
-// TestClearMFARemovesEverySecondFactor covers the reset: the TOTP secret, the
-// recovery codes behind it, and every registered passkey.
-func TestClearMFARemovesEverySecondFactor(t *testing.T) {
+// TestClearPasskeysRemovesEveryPasskey covers this domain's half of a
+// second-factor reset. The TOTP half belongs to internal/totp and is proved
+// there.
+func TestClearPasskeysRemovesEveryPasskey(t *testing.T) {
 	repo, ctx := testRepo(t)
 
-	if err := repo.ClearMFA(ctx, testTenantID, testUserID); err != nil {
-		t.Fatalf("clear the second factors: %v", err)
+	if err := repo.ClearPasskeys(ctx, testTenantID, testUserID); err != nil {
+		t.Fatalf("clear the passkeys: %v", err)
 	}
 
+	var passkeys int
+	if err := repo.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM user_webauthn_credentials
+		 WHERE tenant_id = ? AND user_id = ? AND deleted_at IS NULL`,
+		testTenantID, testUserID).Scan(&passkeys); err != nil {
+		t.Fatalf("count the passkeys: %v", err)
+	}
+	if passkeys != 0 {
+		t.Errorf("the account holds %d live passkeys, want them marked", passkeys)
+	}
+
+	// The TOTP factor is untouched, so the account still reads as protected.
+	// Only the composed reset in the router clears both halves.
 	row, err := repo.Read(ctx, testTenantID, testUserID)
 	if err != nil {
 		t.Fatalf("read the account: %v", err)
 	}
-	if row.MFAEnabled {
-		t.Error("the account still holds a second factor, want every one cleared")
+	if !row.MFAEnabled {
+		t.Error("the account reads as unprotected, want the TOTP factor left alone")
 	}
 
-	var codes int
-	if err := repo.db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM user_totp_recovery_codes WHERE tenant_id = ? AND user_id = ?`,
-		testTenantID, testUserID).Scan(&codes); err != nil {
-		t.Fatalf("count the recovery codes: %v", err)
-	}
-	if codes != 0 {
-		t.Errorf("the account holds %d recovery codes, want them hard deleted", codes)
-	}
-
-	// A person with no second factor left is the normal outcome, so a second
-	// reset is not an error.
-	if err := repo.ClearMFA(ctx, testTenantID, testUserID); err != nil {
+	// A person with no passkey left is the normal outcome, so a second reset is
+	// not an error.
+	if err := repo.ClearPasskeys(ctx, testTenantID, testUserID); err != nil {
 		t.Errorf("a second reset gives %v, want no error", err)
 	}
 }

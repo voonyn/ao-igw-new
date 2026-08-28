@@ -54,6 +54,21 @@ const (
 	// and the person here chose the new secret themselves.
 	ActionPasswordChanged Action = "password.changed"
 
+	// The four second-factor actions a person takes on their own account. The
+	// administrative reset is ActionUserMFAReset: an operator clears somebody
+	// else's factor, and the person here changed their own.
+	//
+	// The names are the ones the portal activity feed already renders. See
+	// web/portal-ui/src/lib/activity.ts. A name that drifts from that map reads
+	// as an unknown event in the feed.
+	//
+	// A successful challenge records none of these. ActionLoginSucceeded already
+	// carries the factor it was proved with.
+	ActionMFAEnrolled                 Action = "mfa.enrolled"
+	ActionMFARemoved                  Action = "mfa.removed"
+	ActionMFARecoveryCodeUsed         Action = "mfa.recovery_code_used"
+	ActionMFARecoveryCodesRegenerated Action = "mfa.recovery_codes_regenerated"
+
 	ActionMemberAdded   Action = "member.added"
 	ActionMemberUpdated Action = "member.updated"
 	ActionMemberRemoved Action = "member.removed"
@@ -210,6 +225,13 @@ var actionResults = map[Action]string{
 	ActionNotificationTestSent:        ResultSuccess,
 	ActionNotificationTemplateUpdated: ResultSuccess,
 	ActionNotificationTemplateReset:   ResultSuccess,
+
+	// A recovery code redeemed is a success: the person signed in with a factor
+	// they hold. The failure it is often read beside is ActionLoginFailed.
+	ActionMFAEnrolled:                 ResultSuccess,
+	ActionMFARemoved:                  ResultSuccess,
+	ActionMFARecoveryCodeUsed:         ResultSuccess,
+	ActionMFARecoveryCodesRegenerated: ResultSuccess,
 }
 
 // allowedMetadata names every key the metadata bag can hold. It is an
