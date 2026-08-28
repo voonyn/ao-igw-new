@@ -30,8 +30,19 @@ func TestUpdateProfile(t *testing.T) {
 		read.DisplayName != "Ada King" || read.Lang != "th" {
 		t.Errorf("the account reads %+v, want the four updated identity fields", read)
 	}
-	if read.Email != "admin@acme.com" || read.PasswordHash != "a-bcrypt-hash" {
-		t.Errorf("the account reads %+v, want the stored email and hash left alone", read)
+	if read.Email != "admin@acme.com" {
+		t.Errorf("the account reads %+v, want the stored email left alone", read)
+	}
+
+	// The hash comes from FindCredential, which is the one read that projects it.
+	// An administrative read never carries a credential, so Read leaves the field
+	// empty whatever the row holds.
+	cred, err := repo.FindCredential(ctx, testTenantID, testUserID)
+	if err != nil {
+		t.Fatalf("read the credential: %v", err)
+	}
+	if cred.PasswordHash != "a-bcrypt-hash" {
+		t.Errorf("the account holds the hash %q, want the stored one left alone", cred.PasswordHash)
 	}
 
 	// A soft-deleted account. The bearer guard reads no store, so a token of one
@@ -105,8 +116,13 @@ func TestSetPassword(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read the account: %v", err)
 	}
-	if read.PasswordHash != "a-new-bcrypt-hash" {
-		t.Errorf("the account holds the hash %q, want the new one", read.PasswordHash)
+	// The hash comes from FindCredential. Read projects no credential.
+	cred, err := repo.FindCredential(ctx, testTenantID, testUserID)
+	if err != nil {
+		t.Fatalf("read the credential: %v", err)
+	}
+	if cred.PasswordHash != "a-new-bcrypt-hash" {
+		t.Errorf("the account holds the hash %q, want the new one", cred.PasswordHash)
 	}
 	if read.PasswordChangedAt.IsZero() {
 		t.Error("the account carries no password_changed_at, want the moment of the change")
