@@ -62,8 +62,10 @@ const (
 	// web/portal-ui/src/lib/activity.ts. A name that drifts from that map reads
 	// as an unknown event in the feed.
 	//
-	// A successful challenge records none of these. ActionLoginSucceeded already
-	// carries the factor it was proved with.
+	// A successful challenge records none of these when the person answered with
+	// their Authenticator. ActionLoginSucceeded already carries the factor it was
+	// proved with. A redeemed Recovery Code records the same factor, so
+	// ActionMFARecoveryCodeUsed is what tells the two apart.
 	ActionMFAEnrolled                 Action = "mfa.enrolled"
 	ActionMFARemoved                  Action = "mfa.removed"
 	ActionMFARecoveryCodeUsed         Action = "mfa.recovery_code_used"

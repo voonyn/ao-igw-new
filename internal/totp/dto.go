@@ -30,3 +30,25 @@ type ActivateResponse struct {
 	SessionToken  string   `json:"sessionToken"`
 	RecoveryCodes []string `json:"recoveryCodes"`
 }
+
+// VerifyRequest is the body of POST /mfa/verify.
+//
+// One field carries both kinds of value. Six digits is a code from the
+// Authenticator, and anything else is a Recovery Code. A length rule of six
+// would refuse every Recovery Code, so the cap is the only rule here and the
+// service decides what the value is.
+type VerifyRequest struct {
+	Code string `json:"code" validate:"required,max=64"`
+}
+
+// VerifyResponse is the answer to POST /mfa/verify.
+//
+// SessionToken is the rotated token, disclosed exactly once, here. The token the
+// caller presented is dead from this moment.
+//
+// Nothing else is answered. How many Recovery Codes remain is a question the
+// portal asks under an access token, and a sign-in that names it would tell an
+// observer how close the account is to its last code.
+type VerifyResponse struct {
+	SessionToken string `json:"sessionToken"`
+}

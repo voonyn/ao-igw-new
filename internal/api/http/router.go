@@ -204,7 +204,8 @@ func mountLogin(
 	session.Routes(group, session.NewHandler(svc, complete, scopes.Describe, log))
 }
 
-// mountMFA builds the enrolment steps of the sign-in.
+// mountMFA builds the second-factor steps of the sign-in: the two enrolment
+// steps, and the challenge a person who holds a factor answers.
 //
 // They mount inside the login group, so its credential and its tenant lookup run
 // once each. A group of their own would match the same prefix and run both a
@@ -257,10 +258,12 @@ func mountMFA(
 			return row.Username, nil
 		},
 
-		Find:              factors.Find,
-		SavePending:       factors.SavePending,
-		Activate:          factors.Activate,
-		SaveRecoveryCodes: factors.ReplaceRecoveryCodes,
+		Find:               factors.Find,
+		SavePending:        factors.SavePending,
+		Activate:           factors.Activate,
+		SaveRecoveryCodes:  factors.ReplaceRecoveryCodes,
+		SpendStep:          factors.SpendStep,
+		RedeemRecoveryCode: factors.RedeemRecoveryCode,
 
 		Cipher: cipher,
 		InTx:   tx,
@@ -760,7 +763,10 @@ func newSessionService(
 	})
 }
 
-// factorSteps names the factors a person still owes after the password step.
+// factorSteps names the steps a person still owes after the password step.
+//
+// A person who holds an active factor is sent to the challenge, and a person the
+// requirement governs who holds none is sent to enrolment.
 //
 // It reads through three domains, so it is composed here: the person names the
 // organization, the organization resolves the MFA Requirement over the tenant
@@ -796,15 +802,15 @@ func factorSteps(
 		}
 
 		// An active factor is always challenged, whatever the policy says, so the
-		// read comes first. Naming that challenge is the next slice: this one
-		// names forced enrolment only, and a person who holds a factor is never
-		// sent to enrol a second one.
+		// read comes first and the requirement is never consulted. A person who
+		// chose to protect their account keeps that protection on the day an
+		// administrator clears the flag.
 		held, err := factors.HasActiveFactor(ctx, tenantID, userID)
 		if err != nil {
 			return nil, err
 		}
 		if held {
-			return nil, nil
+			return []string{session.FactorOTP}, nil
 		}
 
 		row, err := users.FindByID(ctx, tenantID, userID)

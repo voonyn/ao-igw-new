@@ -69,6 +69,25 @@ func verify(secret, code string, now time.Time) (int64, bool) {
 	return 0, false
 }
 
+// digits is the alphabet a code from the Authenticator is written in, and six
+// of them is the whole code. RFC 6238 permits other lengths, and no
+// Authenticator this gateway provisions uses one.
+const digits = "0123456789"
+
+// authenticatorCode reports whether one submission is a code from the
+// Authenticator. Six digits is one, and every other value is a Recovery Code.
+//
+// This is what keeps a submission from being tried against both kinds. A
+// Recovery Code is ten characters of an alphabet that carries letters, so no
+// code of one kind can be read as the other.
+//
+// The caller trims the value first. A code with a space around it must reach the
+// verification as the six digits it is, so one place drops the whitespace and
+// this reads what that place produced.
+func authenticatorCode(code string) bool {
+	return len(code) == 6 && strings.TrimLeft(code, digits) == ""
+}
+
 // issuerHost is the host of one issuer, which is how a provisioning URI names
 // the tenant. The issuer is on every request, so no extra read is needed.
 //

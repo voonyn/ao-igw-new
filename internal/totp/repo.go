@@ -277,3 +277,94 @@ func (r *Repository) ReplaceRecoveryCodes(
 		logger.Int("codes", len(rows)), logger.RequestID(ctx))
 	return nil
 }
+
+// ErrCodeSpent reports a code the account cannot spend again: a time step at or
+// below the newest spent step, and a Recovery Code no row still holds.
+//
+// It is one sentinel for both kinds, because the caller answers both the same
+// way. A person who resubmits a code is told the code is wrong, and the answer
+// never says which kind of value they sent.
+var ErrCodeSpent = errors.New("the code is already spent")
+
+// SpendStep claims one TOTP time step for the account. It runs on the caller's
+// transaction.
+//
+// The update reads last_step < ?, so every step at or below the newest spent one
+// is refused. A "not equal" guard would still let an observed code be replayed
+// one step later, because verify accepts the previous step as well.
+//
+// No row updated gives ErrCodeSpent. The code was correct and the account has
+// already spent it, which is the replay this column exists to stop.
+func (r *Repository) SpendStep(ctx context.Context, tenantID, userID string, step int64) error {
+	r.log.Debug("spend the totp time step",
+		logger.String("tenant_id", tenantID), logger.String("user_id", userID),
+		logger.RequestID(ctx))
+
+	res, err := db.Conn(ctx, r.db).NewUpdate().
+		Model((*Enrolment)(nil)).
+		Set("last_step = ?", step).
+		Where("tenant_id = ?", tenantID).
+		Where("user_id = ?", userID).
+		Where("last_step < ?", step).
+		Exec(ctx)
+	if err != nil {
+		return fmt.Errorf("spend the totp time step of user %s of tenant %s: %w",
+			userID, tenantID, err)
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("spend the totp time step of user %s of tenant %s: %w",
+			userID, tenantID, err)
+	}
+	if rows == 0 {
+		return ErrCodeSpent
+	}
+
+	r.log.Debug("spent the totp time step",
+		logger.String("tenant_id", tenantID), logger.String("user_id", userID),
+		logger.RequestID(ctx))
+	return nil
+}
+
+// RedeemRecoveryCode spends one Recovery Code of the account. It runs on the
+// caller's transaction.
+//
+// digest is the SHA-256 digest of the canonical code, never the code. The delete
+// is the whole guard: the row is the code, and the first delete to reach it is
+// the one that redeems it. Two challenges that submit the same code at the same
+// moment cannot both affect a row.
+//
+// No row deleted gives ErrCodeSpent. An unknown code and a spent code give the
+// same answer, so the response never says which of them happened.
+//
+// The delete is hard. A code is consumed once, so no row may stay readable.
+func (r *Repository) RedeemRecoveryCode(ctx context.Context, tenantID, userID, digest string) error {
+	r.log.Debug("redeem a recovery code",
+		logger.String("tenant_id", tenantID), logger.String("user_id", userID),
+		logger.RequestID(ctx))
+
+	res, err := db.Conn(ctx, r.db).NewDelete().
+		Model((*RecoveryCode)(nil)).
+		Where("tenant_id = ?", tenantID).
+		Where("user_id = ?", userID).
+		Where("code_hash = ?", digest).
+		ForceDelete().
+		Exec(ctx)
+	if err != nil {
+		return fmt.Errorf("redeem a recovery code of user %s of tenant %s: %w",
+			userID, tenantID, err)
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("redeem a recovery code of user %s of tenant %s: %w",
+			userID, tenantID, err)
+	}
+	if rows == 0 {
+		return ErrCodeSpent
+	}
+
+	r.log.Debug("redeemed a recovery code",
+		logger.String("tenant_id", tenantID), logger.String("user_id", userID),
+		logger.RequestID(ctx))
+	return nil
+}

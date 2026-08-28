@@ -3,6 +3,7 @@ package totp
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/uptrace/bun"
@@ -197,5 +198,98 @@ func TestActivateRefusesAStaleSecret(t *testing.T) {
 	}
 	if !row.Active() || row.LastStep != 58000001 {
 		t.Errorf("the enrolment is %+v, want an active factor that spent step 58000001", row)
+	}
+}
+
+// TestSpendStepRefusesAReplay covers the replay guard. A code an observer read
+// off the screen is accepted once, and never again.
+//
+// The comparison is "less than", never "not equal". verify accepts the previous
+// time step as well, so a "not equal" guard would let the same code be replayed
+// one step later.
+func TestSpendStepRefusesAReplay(t *testing.T) {
+	repo, _, ctx := testRepository(t)
+
+	// The seed spent step 58000000. The step after it is claimed once.
+	if err := repo.SpendStep(ctx, repoTenantID, repoUserID, 58000001); err != nil {
+		t.Fatalf("spend the next step: %v", err)
+	}
+
+	// The same step, and every step below it, is refused.
+	for _, step := range []int64{58000001, 58000000, 57999999, 1} {
+		if err := repo.SpendStep(ctx, repoTenantID, repoUserID, step); !errors.Is(err, ErrCodeSpent) {
+			t.Errorf("spend step %d again gives %v, want %v", step, err, ErrCodeSpent)
+		}
+	}
+
+	row, err := repo.Find(ctx, repoTenantID, repoUserID)
+	if err != nil {
+		t.Fatalf("read the enrolment: %v", err)
+	}
+	if row.LastStep != 58000001 {
+		t.Errorf("last_step is %d, want the newest spent step 58000001", row.LastStep)
+	}
+
+	// The spend reaches one account. The second person keeps their own step.
+	other, err := repo.Find(ctx, repoTenantID, repoOtherID)
+	if err != nil {
+		t.Fatalf("read the second enrolment: %v", err)
+	}
+	if other.LastStep != 58000000 {
+		t.Errorf("the second account spent step %d, want 58000000", other.LastStep)
+	}
+}
+
+// TestRedeemRecoveryCodeSpendsOneCodeOnce covers the single-use rule. The row is
+// the code, so the first delete to reach it is the one that redeems it.
+func TestRedeemRecoveryCodeSpendsOneCodeOnce(t *testing.T) {
+	repo, bdb, ctx := testRepository(t)
+
+	held := strings.Repeat("a", 64)
+	if err := repo.RedeemRecoveryCode(ctx, repoTenantID, repoUserID, held); err != nil {
+		t.Fatalf("redeem a recovery code: %v", err)
+	}
+
+	// The row is gone, not marked. A code is consumed once, so no row may stay
+	// readable.
+	if rows := rowsHeld(ctx, t, bdb, "user_totp_recovery_codes", repoUserID); rows != 1 {
+		t.Errorf("the account holds %d recovery codes, want 1 left", rows)
+	}
+	if err := repo.RedeemRecoveryCode(ctx, repoTenantID, repoUserID, held); !errors.Is(err, ErrCodeSpent) {
+		t.Fatalf("redeem the same code again gives %v, want %v", err, ErrCodeSpent)
+	}
+
+	// A code the account never held answers the same way, so the response never
+	// says whether the code existed.
+	unknown := strings.Repeat("c", 64)
+	if err := repo.RedeemRecoveryCode(ctx, repoTenantID, repoUserID, unknown); !errors.Is(err, ErrCodeSpent) {
+		t.Errorf("redeem an unknown code gives %v, want %v", err, ErrCodeSpent)
+	}
+
+	// A redemption reaches one account. The second person keeps both codes.
+	if rows := rowsHeld(ctx, t, bdb, "user_totp_recovery_codes", repoOtherID); rows != 2 {
+		t.Errorf("the second account holds %d recovery codes, want 2", rows)
+	}
+}
+
+// TestAuthenticatorCodeTellsTheTwoKindsApart covers the branch that decides what
+// one submission is. A submission is never tried against both kinds, so this
+// classification is the whole of that rule.
+func TestAuthenticatorCodeTellsTheTwoKindsApart(t *testing.T) {
+	cases := map[string]bool{
+		"123456":      true,  // what an Authenticator shows, as the caller trims it
+		"000000":      true,  // a leading zero is a digit like any other
+		"12345":       false, // too short to be a code
+		"1234567":     false, // too long to be a code
+		"12345A":      false, // a letter, so it is a Recovery Code
+		"":            false,
+		"ABCDE-FGHJK": false, // a Recovery Code as it is printed
+		"A1B2C3D4E5":  false, // a Recovery Code as it is stored
+	}
+
+	for code, want := range cases {
+		if got := authenticatorCode(code); got != want {
+			t.Errorf("authenticatorCode(%q) is %v, want %v", code, got, want)
+		}
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"alphaomega/identitygateway/internal/audit"
@@ -32,7 +33,17 @@ var (
 	// active, both give it.
 	ErrNoPendingEnrolment = errors.New("no pending totp enrolment")
 
+	// ErrNoActiveFactor reports a challenge against an account that holds no
+	// active Second Factor. Only the password answer sends a person to the
+	// challenge, so a request that reaches it without a factor is a client that
+	// went its own way.
+	ErrNoActiveFactor = errors.New("no active second factor")
+
 	// ErrBadCode reports a code the secret does not prove.
+	//
+	// A wrong code from the Authenticator, a code the account already spent, and
+	// a Recovery Code no row still holds all give it. The answer never says
+	// which of them happened, and it never says which kind of value was sent.
 	ErrBadCode = errors.New("the code is wrong")
 )
 
@@ -84,6 +95,15 @@ type (
 	// RecoveryCodeWriter voids every Recovery Code of one person and stores the
 	// new set of digests.
 	RecoveryCodeWriter func(ctx context.Context, tenantID, userID string, digests []string) error
+
+	// StepSpender claims one TOTP time step for one person. It returns
+	// ErrCodeSpent for a step at or below the newest spent one.
+	StepSpender func(ctx context.Context, tenantID, userID string, step int64) error
+
+	// RecoveryCodeRedeemer spends one Recovery Code of one person, named by the
+	// digest of its canonical spelling. It returns ErrCodeSpent when no row
+	// holds the digest, which covers both an unknown code and a spent one.
+	RecoveryCodeRedeemer func(ctx context.Context, tenantID, userID, digest string) error
 )
 
 // Deps is the database side of the service.
@@ -92,10 +112,12 @@ type Deps struct {
 	CompleteSession SessionCompleter
 	Account         Account
 
-	Find              EnrolmentFinder
-	SavePending       PendingSaver
-	Activate          Activator
-	SaveRecoveryCodes RecoveryCodeWriter
+	Find               EnrolmentFinder
+	SavePending        PendingSaver
+	Activate           Activator
+	SaveRecoveryCodes  RecoveryCodeWriter
+	SpendStep          StepSpender
+	RedeemRecoveryCode RecoveryCodeRedeemer
 
 	// Cipher seals the shared secret at rest. A nil cipher matches the
 	// development bootstrap, which stores it in the clear, the way the login
@@ -288,6 +310,131 @@ func (s *Service) Activate(ctx context.Context, tenantID, token, code string) (A
 		logger.String("session_id", who.SessionID),
 		logger.String("user_id", who.UserID))
 	return Activated{SessionToken: rotated, RecoveryCodes: shown}, nil
+}
+
+// Verify answers the second-factor challenge of one sign-in, and signs the
+// person in.
+//
+// One field carries both kinds of value. Six digits is a code from the
+// Authenticator, and anything else is a Recovery Code. A submission is tried
+// against one kind only, so a wrong six-digit value never spends a Recovery
+// Code, and a Recovery Code is never read as a time step.
+//
+// Both kinds record the same Factor on the Login Session, and both rotate its
+// token. A redemption also records mfa.recovery_code_used, which is what tells
+// the two apart in the audit trail.
+//
+// The spend and the sign-in land on one transaction, so a code the database
+// records as spent is a code the person got a session for.
+//
+// Neither kind of code reaches a log line.
+func (s *Service) Verify(ctx context.Context, tenantID, token, code string) (string, error) {
+	s.log.Debug("verify a second factor",
+		logger.String("tenant_id", tenantID), logger.RequestID(ctx))
+
+	who, err := s.principal(ctx, tenantID, token)
+	if err != nil {
+		return "", err
+	}
+
+	// One place drops the whitespace a person pasted, so the value that is
+	// classified is the value that is verified. A Recovery Code loses its spaces
+	// again in the canonical spelling, and this changes nothing for it.
+	code = strings.TrimSpace(code)
+
+	row, err := s.deps.Find(ctx, tenantID, who.UserID)
+	if errors.Is(err, ErrNoEnrolment) || (err == nil && !row.Active()) {
+		return "", fmt.Errorf("%w: user %s", ErrNoActiveFactor, who.UserID)
+	}
+	if err != nil {
+		s.log.Error("read the totp enrolment",
+			logger.String("tenant_id", tenantID),
+			logger.String("user_id", who.UserID), logger.Err(err))
+		return "", err
+	}
+
+	// The step the code proves, read before the transaction opens. A Recovery
+	// Code proves no step, and the redemption below is its whole proof.
+	recovery := !authenticatorCode(code)
+	var step int64
+	if !recovery {
+		var secret string
+		if err := aocrypto.OpenJSON(s.deps.Cipher, row.SecretEncrypted, &secret); err != nil {
+			s.log.Error("open the totp secret",
+				logger.String("tenant_id", tenantID),
+				logger.String("user_id", who.UserID), logger.Err(err))
+			return "", fmt.Errorf("open the totp secret of user %s: %w", who.UserID, err)
+		}
+
+		var proved bool
+		if step, proved = verify(secret, code, time.Now().UTC()); !proved {
+			s.log.Warn("refused a totp code",
+				logger.String("tenant_id", tenantID),
+				logger.String("session_id", who.SessionID),
+				logger.String("user_id", who.UserID))
+			return "", fmt.Errorf("%w: user %s", ErrBadCode, who.UserID)
+		}
+	}
+
+	var rotated string
+	err = s.deps.InTx(ctx, func(ctx context.Context) error {
+		if err := s.spend(ctx, tenantID, who, code, step, recovery); err != nil {
+			return err
+		}
+		upgraded, err := s.deps.CompleteSession(ctx, tenantID, token, who.UserID)
+		rotated = upgraded
+		return err
+	})
+	if errors.Is(err, ErrCodeSpent) {
+		// The code was correct and the account has already spent it. The person
+		// is told the code is wrong, which is what a replayed code is.
+		s.log.Warn("refused a spent code",
+			logger.String("tenant_id", tenantID),
+			logger.String("session_id", who.SessionID),
+			logger.String("user_id", who.UserID),
+			logger.Bool("recovery_code", recovery))
+		return "", fmt.Errorf("%w: user %s", ErrBadCode, who.UserID)
+	}
+	if err != nil {
+		s.log.Error("verify a second factor",
+			logger.String("tenant_id", tenantID),
+			logger.String("session_id", who.SessionID),
+			logger.String("user_id", who.UserID), logger.Err(err))
+		return "", err
+	}
+
+	s.log.Info("verified a second factor",
+		logger.String("tenant_id", tenantID),
+		logger.String("session_id", who.SessionID),
+		logger.String("user_id", who.UserID),
+		logger.Bool("recovery_code", recovery))
+	return rotated, nil
+}
+
+// spend consumes the value the person submitted, on the caller's transaction.
+//
+// A Recovery Code is deleted and audited. A code from the Authenticator claims
+// its time step, and the successful sign-in the caller records is the only event
+// it needs. Either way ErrCodeSpent means the value cannot be spent again.
+func (s *Service) spend(
+	ctx context.Context, tenantID string, who Principal, code string, step int64, recovery bool,
+) error {
+	if !recovery {
+		return s.deps.SpendStep(ctx, tenantID, who.UserID, step)
+	}
+
+	if err := s.deps.RedeemRecoveryCode(ctx, tenantID, who.UserID, digestCode(code)); err != nil {
+		return err
+	}
+	return s.deps.Audit.Record(ctx, audit.Entry{
+		TenantID:   tenantID,
+		ActorID:    who.UserID,
+		Action:     audit.ActionMFARecoveryCodeUsed,
+		EntityType: audit.EntityUser,
+		EntityID:   who.UserID,
+		IP:         who.IP,
+		UserAgent:  who.UserAgent,
+	})
 }
 
 // principal reads the Login Session one token credentials, and refuses one that

@@ -27,6 +27,7 @@ func init() {
 	response.Map(ErrBadCode, fiber.StatusUnauthorized, "invalid_credentials", "Unauthorized")
 	response.Map(ErrAlreadyEnrolled, fiber.StatusConflict, "mfa_already_enrolled", "Conflict")
 	response.Map(ErrNoPendingEnrolment, fiber.StatusConflict, "no_pending_enrolment", "Conflict")
+	response.Map(ErrNoActiveFactor, fiber.StatusConflict, "no_active_factor", "Conflict")
 }
 
 // Handler serves the enrolment steps of the sign-in. It binds the request, calls
@@ -46,6 +47,7 @@ func LoginRoutes(router fiber.Router, h *Handler) {
 	router.Use(requireTenant)
 	router.Post("/totp/enroll/start", h.start)
 	router.Post("/totp/enroll/activate", h.activate)
+	router.Post("/verify", h.verify)
 }
 
 // requireTenant answers a request that reached an enrolment route with no
@@ -99,6 +101,31 @@ func (h *Handler) activate(c fiber.Ctx) error {
 		SessionToken:  activated.SessionToken,
 		RecoveryCodes: activated.RecoveryCodes,
 	})
+}
+
+// verify answers the challenge and hands back the rotated token.
+//
+// The address names no kind of code, because one field carries both. A person
+// who reaches for a Recovery Code sends it here.
+func (h *Handler) verify(c fiber.Ctx) error {
+	tc, _ := middlewares.TenantFrom(c)
+
+	var req VerifyRequest
+	if err := c.Bind().Body(&req); err != nil {
+		return response.Validation(c, err)
+	}
+
+	token := bearerToken(c)
+	if token == "" {
+		return response.Error(c, fiber.StatusUnauthorized, "Unauthorized", nil)
+	}
+
+	rotated, err := h.svc.Verify(c.Context(), tc.TenantID, token, req.Code)
+	if err != nil {
+		return response.Fail(c, err)
+	}
+
+	return response.OK(c, VerifyResponse{SessionToken: rotated})
 }
 
 // bearerToken reads the Login Session token off the Authorization header. The
