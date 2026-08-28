@@ -220,6 +220,11 @@ func NewCompleter(deps CompleterDeps) Completer {
 			// Consent is all-or-nothing, so a granted request receives what it
 			// asked for and never the wider set the person approved before.
 			as.GrantedScopes = as.Scopes
+			// The same for the resource the client named (RFC 8707). The engine
+			// validates the value against the tenant list and stores it, and it
+			// grants nothing by itself: the token endpoint reads the granted set,
+			// so a resource left ungranted here is refused as an invalid target.
+			as.GrantedResources = as.Resources
 		}
 
 		if err := save(ctx, done.TenantID, as); err != nil {
