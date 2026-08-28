@@ -19,8 +19,9 @@ is not an entity a person expects to find again.
 ## Decision
 
 The `user_totp` row is hard deleted. Migration 00043 drops `deleted_at` from the
-table, and `ClearMFA` calls `ForceDelete()` on the row as it already does on the
-codes.
+table. The delete moved to `totp.Repository.Clear`, which calls `ForceDelete()`
+on the row as it already does on the codes. The router composes the full reset
+from that call and `user.Repository.ClearPasskeys`.
 
 `user_totp` leaves the list in ADR 0001.
 
