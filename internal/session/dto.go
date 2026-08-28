@@ -26,9 +26,14 @@ type PasswordRequest struct {
 // token, disclosed exactly once, here. The token the caller presented is dead
 // from this moment.
 //
-// Methods names the factors the person must still verify. It is empty while
-// multi-factor authentication is out of scope, and the login UI then goes
-// straight to the finalize step.
+// Methods names the factors the person must still verify. It is empty when the
+// sign-in owes nothing, and the login UI then goes straight to the finalize
+// step.
+//
+// It carries otp_enroll when the MFA Requirement applies and the person holds no
+// active TOTP Enrolment. It never carries a passkey value, because no passkey
+// backend exists and a person routed to one would reach a screen that never
+// moves.
 type PasswordResponse struct {
 	SessionToken string   `json:"sessionToken"`
 	Methods      []string `json:"methods"`

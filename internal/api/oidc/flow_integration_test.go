@@ -279,6 +279,10 @@ type fixture struct {
 	username string
 	email    string
 	password string
+
+	// orgID is the organization the person belongs to. The auth policy resolves
+	// against it, so a test of an organization override needs the value.
+	orgID string
 }
 
 func seedFixture(t *testing.T, gw *gateway) fixture {
@@ -315,6 +319,7 @@ func seedFixture(t *testing.T, gw *gateway) fixture {
 		Where("tenant_id = ?", gw.tenantID).Limit(1).Scan(ctx, &projectID); err != nil {
 		t.Fatalf("read project: %v (run bootstrap first)", err)
 	}
+	fx.orgID = orgID
 
 	exec := func(label, query string, args ...any) {
 		if _, err := gw.bdb.ExecContext(ctx, query, args...); err != nil {
@@ -401,6 +406,8 @@ func deleteFixture(t *testing.T, gw *gateway, fx fixture) {
 		{"oidc_grants", "client_id IN (?)", bun.In(clients)},
 		{"oidc_sessions", "client_id IN (?)", bun.In(clients)},
 		{"oidc_user_consents", "user_id = ?", fx.userID},
+		{"user_totp_recovery_codes", "user_id = ?", fx.userID},
+		{"user_totp", "user_id = ?", fx.userID},
 		{"login_sessions", "user_id = ?", fx.userID},
 		{"user_humans", "user_id = ?", fx.userID},
 		{"users", "id = ?", fx.userID},

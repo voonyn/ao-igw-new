@@ -103,8 +103,41 @@ proved it. The ID token carries the names in `amr`.
 _Avoid_: Method, credential, step, AMR
 
 Note: a factor name is a value of the AMR registry of RFC 8176 where one fits. A
-password is `pwd`. Where the registry lists no value, this deployment names the
-factor itself, and the registry permits that. A scan is `vc`.
+password is `pwd`, and an Authenticator code is `otp`. Where the registry lists no
+value, this deployment names the factor itself, and the registry permits that. A
+scan is `vc`.
+
+**Second Factor**:
+A Factor a person proves after the password. This deployment serves one, TOTP.
+_Avoid_: 2FA, MFA, two-step, second step
+
+**Authenticator**:
+The application on the person's phone that generates TOTP codes. It is not a
+Wallet. A Wallet answers a scan, and an Authenticator answers a challenge.
+_Avoid_: TOTP app, authenticator app, token generator
+
+**TOTP Enrolment**:
+The shared secret one person holds, and its state. A pending enrolment holds a
+secret the person has not proved. An active enrolment is a Second Factor.
+_Avoid_: Registration, setup, provisioning, binding
+
+Note: this is a third meaning of "enrolment". A Membership puts a person in an
+organization, and a DI Enrolment is the account the Scan Verifier keeps. Always
+qualify the word.
+
+**Recovery Code**:
+A single-use value that stands in for an Authenticator code. Redeeming one records
+the same Factor, `otp`.
+_Avoid_: Backup code, one-time code, reset code
+
+Note: a Recovery Code is not an Authorization Code, and it is not the token that
+resets a forgotten password. It recovers a Second Factor and nothing else.
+
+**MFA Requirement**:
+The policy that forces a person holding no Second Factor to enrol before they
+finish signing in. It does not decide whether a person is challenged. An active
+Second Factor is always challenged.
+_Avoid_: MFA policy, 2FA setting, MFA enforcement
 
 **Consent**:
 A record that one person allowed one client to receive a set of scopes. Consent
@@ -151,6 +184,11 @@ _Avoid_: Permission, role, privilege
 A rule that fills one claim from one source, for one scope. It decides the claim
 name and which tokens carry it.
 _Avoid_: Mapper, claim rule, attribute mapping
+
+**Assurance Level**:
+How many Factors one sign-in proved, published in the `acr` claim. The gateway
+declares two levels: one factor, and two or more. It says how many, never which.
+_Avoid_: ACR, LOA, trust level, security level
 
 **Signing Key**:
 A key pair a tenant uses to sign tokens. Only the public half is ever published.

@@ -41,11 +41,20 @@ type Terminator func(ctx context.Context, tenantID, sessionID string) error
 // user.ErrNotFound when no live account of the tenant carries the id.
 type CredentialFinder func(ctx context.Context, tenantID, userID string) (string, error)
 
+// FactorSteps names the factors one person must still verify after the password
+// step. It answers an empty list when the sign-in owes nothing.
+//
+// The router composes it, because it reads the organization of the person, the
+// MFA Requirement of that level, and the second factors the person holds, and
+// those live in three domains this one must not import.
+type FactorSteps func(ctx context.Context, tenantID, userID string) ([]string, error)
+
 // Deps is the database side of the service. Every field is a function value or
 // a recorder, so the logic is testable without a database.
 type Deps struct {
 	Identity   IdentityFinder
 	Credential CredentialFinder
+	Steps      FactorSteps
 	Save       Saver
 	Find       Finder
 	Terminate  Terminator
@@ -138,7 +147,14 @@ func (s *Service) open(
 // A wrong password, a session that names nobody, and a broken stored hash all
 // give ErrBadCredentials. Each of them also pays for one bcrypt comparison, so
 // neither the answer nor its timing says which of them happened.
-func (s *Service) VerifyPassword(ctx context.Context, tenantID, token, password string) (Opened, error) {
+//
+// The second return names the factors the person still owes. It is read after
+// the password is verified, so a caller who guessed wrong learns nothing about
+// the account, and it is read before the session is upgraded, so a policy nobody
+// could read refuses the step instead of signing the person in without a factor.
+func (s *Service) VerifyPassword(
+	ctx context.Context, tenantID, token, password string,
+) (Opened, []string, error) {
 	s.log.Debug("verify password", logger.String("tenant_id", tenantID), logger.RequestID(ctx))
 
 	live, err := s.deps.Find(ctx, tenantID, aocrypto.Digest(token))
@@ -146,15 +162,20 @@ func (s *Service) VerifyPassword(ctx context.Context, tenantID, token, password 
 		if !errors.Is(err, ErrLoginSessionNotFound) {
 			s.log.Error("read login session", logger.String("tenant_id", tenantID), logger.Err(err))
 		}
-		return Opened{}, err
+		return Opened{}, nil, err
 	}
 
 	hash, err := s.passwordHash(ctx, live)
 	if err != nil {
-		return Opened{}, err
+		return Opened{}, nil, err
 	}
 	if err := aocrypto.VerifyPassword(hash, password); err != nil {
-		return Opened{}, s.refuse(ctx, live, err)
+		return Opened{}, nil, s.refuse(ctx, live, err)
+	}
+
+	steps, err := s.deps.Steps(ctx, tenantID, live.UserID)
+	if err != nil {
+		return Opened{}, nil, err
 	}
 
 	now := time.Now().UTC()
@@ -170,7 +191,7 @@ func (s *Service) VerifyPassword(ctx context.Context, tenantID, token, password 
 			logger.String("tenant_id", tenantID),
 			logger.String("session_id", live.ID),
 			logger.Err(err))
-		return Opened{}, err
+		return Opened{}, nil, err
 	}
 
 	err = s.deps.InTx(ctx, func(ctx context.Context) error {
@@ -184,14 +205,14 @@ func (s *Service) VerifyPassword(ctx context.Context, tenantID, token, password 
 			logger.String("tenant_id", tenantID),
 			logger.String("session_id", live.ID),
 			logger.Err(err))
-		return Opened{}, err
+		return Opened{}, nil, err
 	}
 
 	s.log.Debug("verified password",
 		logger.String("tenant_id", tenantID),
 		logger.String("session_id", live.ID),
 		logger.String("user_id", live.UserID), logger.RequestID(ctx))
-	return Opened{ID: live.ID, Token: rotated}, nil
+	return Opened{ID: live.ID, Token: rotated}, steps, nil
 }
 
 // passwordHash reads the stored hash of the person the session names. A session

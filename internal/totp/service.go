@@ -1,0 +1,329 @@
+package totp
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"time"
+
+	"alphaomega/identitygateway/internal/audit"
+	aocrypto "alphaomega/identitygateway/internal/platform/crypto"
+	"alphaomega/identitygateway/internal/platform/db"
+	"alphaomega/identitygateway/internal/platform/logger"
+)
+
+// The sentinels this domain answers with.
+var (
+	// ErrPasswordNotProved reports a Login Session that has not proved a
+	// password. Every second-factor address refuses one.
+	//
+	// This is the most important guard in the module. A session exists from the
+	// identifier step onward and already names a person, so without it anybody
+	// who knows an identifier could enrol a factor on that account and then sign
+	// in with it.
+	ErrPasswordNotProved = errors.New("login session has not proved a password")
+
+	// ErrAlreadyEnrolled reports a start against an active Second Factor. The
+	// person removes the factor they hold before they enrol another.
+	ErrAlreadyEnrolled = errors.New("an active second factor is already enrolled")
+
+	// ErrNoPendingEnrolment reports an activation with no pending secret to
+	// prove. A start that was never made, and an enrolment that is already
+	// active, both give it.
+	ErrNoPendingEnrolment = errors.New("no pending totp enrolment")
+
+	// ErrBadCode reports a code the secret does not prove.
+	ErrBadCode = errors.New("the code is wrong")
+)
+
+// Principal is what the login side knows about the session one token
+// credentials: which person it names, and whether a password was proved on it.
+//
+// It is not the login session type. This module imports neither the login
+// session domain nor the user domain, so the router projects the session onto
+// this shape.
+type Principal struct {
+	SessionID      string
+	UserID         string
+	PasswordProved bool
+	IP             string
+	UserAgent      string
+}
+
+// The reads and writes the service composes its answers from. Each one is a
+// function value, so the logic is testable without a database.
+type (
+	// SessionFinder reads the Login Session one token credentials. The token is
+	// a credential, so only the session id it answers reaches a log line.
+	SessionFinder func(ctx context.Context, tenantID, token string) (Principal, error)
+
+	// SessionCompleter records the OTP factor on the Login Session and rotates
+	// its token. It answers the rotated token, disclosed exactly once.
+	//
+	// The factor name lives with the login session domain, which owns every AMR
+	// name. The router closes over it, so it is spelled in one place.
+	SessionCompleter func(ctx context.Context, tenantID, token, userID string) (string, error)
+
+	// Account names one person on the provisioning URI: the email address, and
+	// the username when the account holds no email.
+	Account func(ctx context.Context, tenantID, userID string) (string, error)
+
+	// EnrolmentFinder reads the TOTP row of one person. It returns
+	// ErrNoEnrolment on a miss.
+	EnrolmentFinder func(ctx context.Context, tenantID, userID string) (Enrolment, error)
+
+	// PendingSaver writes a fresh pending enrolment over whatever pending row
+	// the person held.
+	PendingSaver func(ctx context.Context, tenantID, userID string, secret []byte) error
+
+	// Activator turns a pending enrolment into an active factor and spends the
+	// time step the code proved. It names the secret that was verified, so only
+	// the secret a code proved is ever activated.
+	Activator func(ctx context.Context, tenantID, userID string, secret []byte, step int64) error
+
+	// RecoveryCodeWriter voids every Recovery Code of one person and stores the
+	// new set of digests.
+	RecoveryCodeWriter func(ctx context.Context, tenantID, userID string, digests []string) error
+)
+
+// Deps is the database side of the service.
+type Deps struct {
+	FindSession     SessionFinder
+	CompleteSession SessionCompleter
+	Account         Account
+
+	Find              EnrolmentFinder
+	SavePending       PendingSaver
+	Activate          Activator
+	SaveRecoveryCodes RecoveryCodeWriter
+
+	// Cipher seals the shared secret at rest. A nil cipher matches the
+	// development bootstrap, which stores it in the clear, the way the login
+	// session and the OIDC storage already do.
+	Cipher *aocrypto.Cipher
+
+	InTx  db.TxRunner
+	Audit *audit.Recorder
+	Log   logger.Logger
+}
+
+// Service runs the two enrolment steps of the sign-in.
+type Service struct {
+	deps Deps
+	log  logger.Logger
+}
+
+func NewService(deps Deps) *Service {
+	return &Service{deps: deps, log: deps.Log}
+}
+
+// Started is what a start answers: the shared secret in text, and the same
+// secret inside a provisioning URI.
+//
+// Both are disclosed on every start, because an enrolment that was abandoned is
+// started again. Neither reaches a log line.
+type Started struct {
+	Secret     string
+	OtpauthURI string
+}
+
+// Activated is what an activation answers: the rotated Login Session token, and
+// the Recovery Codes.
+//
+// The codes are disclosed exactly once, here. Neither field reaches a log line.
+type Activated struct {
+	SessionToken  string
+	RecoveryCodes []string
+}
+
+// Start mints a pending TOTP Enrolment for the person the Login Session names.
+//
+// It records no factor and it does not rotate the session token. Nothing about
+// the account changes until a code proves the secret.
+//
+// A start against an active factor is refused. A start against a pending
+// enrolment mints a fresh secret and replaces it, so a person who abandoned a
+// setup can begin again. A pending row has no expiry: it is scratch state, and
+// the next start overwrites it.
+func (s *Service) Start(ctx context.Context, tenantID, issuer, token string) (Started, error) {
+	s.log.Debug("start a totp enrolment",
+		logger.String("tenant_id", tenantID), logger.RequestID(ctx))
+
+	who, err := s.principal(ctx, tenantID, token)
+	if err != nil {
+		return Started{}, err
+	}
+
+	row, err := s.deps.Find(ctx, tenantID, who.UserID)
+	switch {
+	case err == nil && row.Active():
+		return Started{}, fmt.Errorf("%w: user %s", ErrAlreadyEnrolled, who.UserID)
+	case err != nil && !errors.Is(err, ErrNoEnrolment):
+		s.log.Error("read the totp enrolment",
+			logger.String("tenant_id", tenantID),
+			logger.String("user_id", who.UserID), logger.Err(err))
+		return Started{}, err
+	}
+
+	secret, uri, err := mint(issuerHost(issuer), s.label(ctx, tenantID, who.UserID))
+	if err != nil {
+		s.log.Error("mint a totp secret",
+			logger.String("tenant_id", tenantID),
+			logger.String("user_id", who.UserID), logger.Err(err))
+		return Started{}, err
+	}
+
+	sealed, err := aocrypto.SealJSON(s.deps.Cipher, secret)
+	if err != nil {
+		s.log.Error("seal the totp secret",
+			logger.String("tenant_id", tenantID),
+			logger.String("user_id", who.UserID), logger.Err(err))
+		return Started{}, fmt.Errorf("seal the totp secret of user %s: %w", who.UserID, err)
+	}
+	if err := s.deps.SavePending(ctx, tenantID, who.UserID, sealed); err != nil {
+		s.log.Error("write the pending totp enrolment",
+			logger.String("tenant_id", tenantID),
+			logger.String("user_id", who.UserID), logger.Err(err))
+		return Started{}, err
+	}
+
+	s.log.Debug("started a totp enrolment",
+		logger.String("tenant_id", tenantID),
+		logger.String("session_id", who.SessionID),
+		logger.String("user_id", who.UserID), logger.RequestID(ctx))
+	return Started{Secret: secret, OtpauthURI: uri}, nil
+}
+
+// Activate proves the pending secret with a code and records the Second Factor.
+//
+// The row is activated, a set of Recovery Codes is issued, the Login Session
+// takes the OTP factor, and its token rotates. All four land on one transaction,
+// so a sign-in that reports a factor is a sign-in the database records.
+//
+// The code and the Recovery Codes never reach a log line.
+func (s *Service) Activate(ctx context.Context, tenantID, token, code string) (Activated, error) {
+	s.log.Debug("activate a totp enrolment",
+		logger.String("tenant_id", tenantID), logger.RequestID(ctx))
+
+	who, err := s.principal(ctx, tenantID, token)
+	if err != nil {
+		return Activated{}, err
+	}
+
+	row, err := s.deps.Find(ctx, tenantID, who.UserID)
+	if errors.Is(err, ErrNoEnrolment) || (err == nil && row.Active()) {
+		return Activated{}, fmt.Errorf("%w: user %s", ErrNoPendingEnrolment, who.UserID)
+	}
+	if err != nil {
+		s.log.Error("read the totp enrolment",
+			logger.String("tenant_id", tenantID),
+			logger.String("user_id", who.UserID), logger.Err(err))
+		return Activated{}, err
+	}
+
+	var secret string
+	if err := aocrypto.OpenJSON(s.deps.Cipher, row.SecretEncrypted, &secret); err != nil {
+		s.log.Error("open the totp secret",
+			logger.String("tenant_id", tenantID),
+			logger.String("user_id", who.UserID), logger.Err(err))
+		return Activated{}, fmt.Errorf("open the totp secret of user %s: %w", who.UserID, err)
+	}
+
+	step, ok := verify(secret, code, time.Now().UTC())
+	if !ok {
+		s.log.Warn("refused a totp code",
+			logger.String("tenant_id", tenantID),
+			logger.String("session_id", who.SessionID),
+			logger.String("user_id", who.UserID))
+		return Activated{}, fmt.Errorf("%w: user %s", ErrBadCode, who.UserID)
+	}
+
+	shown, digests, err := newRecoveryCodes()
+	if err != nil {
+		s.log.Error("mint the recovery codes",
+			logger.String("tenant_id", tenantID),
+			logger.String("user_id", who.UserID), logger.Err(err))
+		return Activated{}, err
+	}
+
+	var rotated string
+	err = s.deps.InTx(ctx, func(ctx context.Context) error {
+		if err := s.deps.Activate(ctx, tenantID, who.UserID, row.SecretEncrypted, step); err != nil {
+			return err
+		}
+		if err := s.deps.SaveRecoveryCodes(ctx, tenantID, who.UserID, digests); err != nil {
+			return err
+		}
+		if err := s.deps.Audit.Record(ctx, audit.Entry{
+			TenantID:   tenantID,
+			ActorID:    who.UserID,
+			Action:     audit.ActionMFAEnrolled,
+			EntityType: audit.EntityUser,
+			EntityID:   who.UserID,
+			IP:         who.IP,
+			UserAgent:  who.UserAgent,
+		}); err != nil {
+			return err
+		}
+
+		rotated, err = s.deps.CompleteSession(ctx, tenantID, token, who.UserID)
+		return err
+	})
+	if err != nil {
+		// The pending row was replaced or activated while this request ran, so
+		// the guarded update matched nothing. The person starts again, which is
+		// what a refused activation asks them to do.
+		if errors.Is(err, ErrNoEnrolment) {
+			return Activated{}, fmt.Errorf("%w: user %s", ErrNoPendingEnrolment, who.UserID)
+		}
+		s.log.Error("activate the totp enrolment",
+			logger.String("tenant_id", tenantID),
+			logger.String("session_id", who.SessionID),
+			logger.String("user_id", who.UserID), logger.Err(err))
+		return Activated{}, err
+	}
+
+	s.log.Info("activated a totp enrolment",
+		logger.String("tenant_id", tenantID),
+		logger.String("session_id", who.SessionID),
+		logger.String("user_id", who.UserID))
+	return Activated{SessionToken: rotated, RecoveryCodes: shown}, nil
+}
+
+// principal reads the Login Session one token credentials, and refuses one that
+// has not proved a password.
+//
+// A session that names nobody is refused too. It cannot have proved a password,
+// because the password step is what binds the person.
+func (s *Service) principal(ctx context.Context, tenantID, token string) (Principal, error) {
+	who, err := s.deps.FindSession(ctx, tenantID, token)
+	if err != nil {
+		return Principal{}, err
+	}
+	if !who.PasswordProved || who.UserID == "" {
+		s.log.Warn("refused a second-factor step on a session that proved no password",
+			logger.String("tenant_id", tenantID),
+			logger.String("session_id", who.SessionID))
+		return Principal{}, fmt.Errorf("%w: session %s", ErrPasswordNotProved, who.SessionID)
+	}
+	return who, nil
+}
+
+// label names the person on the provisioning URI.
+//
+// A failed read is not a failure of the enrolment. The label is what an
+// Authenticator prints beside the code, so the user id stands in and the sign-in
+// continues. A blank label is what must never happen: it would print an
+// unreadable entry that the person cannot tell from another account.
+func (s *Service) label(ctx context.Context, tenantID, userID string) string {
+	name, err := s.deps.Account(ctx, tenantID, userID)
+	if err != nil {
+		s.log.Error("read the account name for the provisioning uri",
+			logger.String("tenant_id", tenantID),
+			logger.String("user_id", userID), logger.Err(err))
+	}
+	if name == "" {
+		return userID
+	}
+	return name
+}

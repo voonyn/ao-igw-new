@@ -12,21 +12,41 @@
 // person, and it is not the invitation that enrols a new account.
 package totp
 
-import "github.com/uptrace/bun"
+import (
+	"time"
+
+	"github.com/uptrace/bun"
+)
 
 // Enrolment is one row of user_totp: the TOTP Second Factor of one person.
 //
 // The row is hard deleted. It holds a credential the client cannot recover, so
 // it carries no deleted_at. See docs/adr/0009-hard-delete-the-totp-factor.md.
 //
-// Only the keys are modelled, because clearing the factor writes no other
-// column. A slice that reads the secret adds the columns it reads.
+// SecretEncrypted holds the base32 shared secret sealed at rest. A nil cipher
+// matches the development bootstrap, which stores it in the clear, the way the
+// login session and the OIDC storage already do.
+//
+// ActivatedAt is the state of the row. The zero time is a pending enrolment: the
+// secret is minted and nobody has proved a code with it yet. A set time is an
+// active Second Factor.
+//
+// LastStep is the newest time step this account has spent. It stops a code an
+// observer read off the screen from being replayed.
 type Enrolment struct {
 	bun.BaseModel `bun:"table:user_totp,alias:t"`
 
 	TenantID string `bun:"tenant_id,pk"`
 	UserID   string `bun:"user_id,pk"`
+
+	SecretEncrypted []byte    `bun:"secret_encrypted"`
+	ActivatedAt     time.Time `bun:"activated_at,nullzero"`
+	LastStep        int64     `bun:"last_step"`
 }
+
+// Active reports whether the row is an active Second Factor. A pending enrolment
+// answers false: the secret exists, and nobody has proved a code with it.
+func (e Enrolment) Active() bool { return !e.ActivatedAt.IsZero() }
 
 // RecoveryCode is one row of user_totp_recovery_codes: one single-use code.
 //
@@ -38,4 +58,6 @@ type RecoveryCode struct {
 	TenantID string `bun:"tenant_id,pk"`
 	UserID   string `bun:"user_id,pk"`
 	CodeHash string `bun:"code_hash,pk"`
+
+	UsedAt time.Time `bun:"used_at,nullzero"`
 }

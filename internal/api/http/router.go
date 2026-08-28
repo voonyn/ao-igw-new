@@ -45,6 +45,11 @@ const accountPrefix = "/api/v1/account"
 // is open, and it carries no tenant and no person.
 const capabilitiesPath = "/api/v1/capabilities"
 
+// mfaSuffix is where the sign-in front end reaches the second-factor steps,
+// inside the login group. It carries the same credential as the other login
+// steps.
+const mfaSuffix = "/mfa"
+
 // qrLoginSuffix is where the sign-in front end reaches the two browser steps of
 // QR Login, inside the login group. It carries the same credential as the other
 // login steps.
@@ -117,10 +122,14 @@ func Routes(app *fiber.App, cfg *config.Config, bdb *bun.DB, rdb cache.Client, l
 	// service dependency, and the token endpoint takes it as a middleware.
 	tx := db.NewTxManager(bdb)
 
+	// The TOTP factor of every person. It is read at the password step, to name
+	// the factor a person still owes, and written by the enrolment steps below.
+	factors := totp.NewRepository(bdb, log)
+
 	// The login session service serves both stacks. The login UI drives it, and
 	// an RP-initiated logout ends a session through it, so it is built once here
 	// and handed to each stack.
-	sessions := newSessionService(bdb, rdb, cipher, recorder, tx.RunInTx, log)
+	sessions := newSessionService(bdb, rdb, cipher, recorder, factors, tx.RunInTx, log)
 
 	mountOIDCRoutes(app, cfg, bdb, storage, scopes, claims, recorder, cipher, sessions, tenantMW, tx.RunInTx, log)
 
@@ -128,6 +137,7 @@ func Routes(app *fiber.App, cfg *config.Config, bdb *bun.DB, rdb cache.Client, l
 	// tenant lookup. QR Login mounts inside it, so both run once per request.
 	loginGroup := app.Group(loginPrefix, middlewares.LoginPAT(cfg.Auth.LoginPATs(), log), tenantMW)
 	mountLogin(loginGroup, cfg, bdb, cipher, storage, scopes, recorder, sessions, tx.RunInTx, log)
+	mountMFA(loginGroup, bdb, cipher, factors, recorder, sessions, tx.RunInTx, log)
 	mountAdmin(app, bdb, rdb, cipher, storage, recorder, cfg.Notification, diClient, tenantMW, tx.RunInTx, log)
 	mountAccount(app, bdb, rdb, cipher, storage, recorder, tenantMW, tx.RunInTx, log)
 
@@ -192,6 +202,73 @@ func mountLogin(
 	})
 
 	session.Routes(group, session.NewHandler(svc, complete, scopes.Describe, log))
+}
+
+// mountMFA builds the enrolment steps of the sign-in.
+//
+// They mount inside the login group, so its credential and its tenant lookup run
+// once each. A group of their own would match the same prefix and run both a
+// second time.
+//
+// The TOTP module imports neither the user domain nor the login session domain,
+// so every crossing between them is composed here. That is the router's stated
+// job, and it is what keeps the login session domain, which already imports the
+// user domain, out of an import cycle.
+func mountMFA(
+	loginGroup fiber.Router, bdb *bun.DB, cipher *crypto.Cipher, factors *totp.Repository,
+	recorder *audit.Recorder, sessions *session.Service, tx db.TxRunner, log logger.Logger,
+) {
+	users := user.NewRepository(bdb, log)
+
+	svc := totp.NewService(totp.Deps{
+		FindSession: func(ctx context.Context, tenantID, token string) (totp.Principal, error) {
+			// Find, and not Resolve: the module decides what an unfinished
+			// session may do, and it refuses one that proved no password.
+			live, err := sessions.Find(ctx, tenantID, token)
+			if err != nil {
+				return totp.Principal{}, err
+			}
+			_, proved := live.Factors[session.FactorPassword]
+			return totp.Principal{
+				SessionID:      live.ID,
+				UserID:         live.UserID,
+				PasswordProved: proved,
+				IP:             live.IP,
+				UserAgent:      live.UserAgent,
+			}, nil
+		},
+		// The factor name is the login session domain's to spell, so it is named
+		// here and nowhere inside the TOTP module.
+		CompleteSession: func(ctx context.Context, tenantID, token, userID string) (string, error) {
+			upgraded, err := sessions.Complete(ctx, tenantID, token, userID, session.FactorOTP)
+			return upgraded.Token, err
+		},
+		// What an Authenticator prints beside the code. The email address is what
+		// a person recognises, and the username stands in for an account that
+		// holds no email.
+		Account: func(ctx context.Context, tenantID, userID string) (string, error) {
+			row, err := users.FindByID(ctx, tenantID, userID)
+			if err != nil {
+				return "", err
+			}
+			if row.Email != "" {
+				return row.Email, nil
+			}
+			return row.Username, nil
+		},
+
+		Find:              factors.Find,
+		SavePending:       factors.SavePending,
+		Activate:          factors.Activate,
+		SaveRecoveryCodes: factors.ReplaceRecoveryCodes,
+
+		Cipher: cipher,
+		InTx:   tx,
+		Audit:  recorder,
+		Log:    log,
+	})
+
+	totp.LoginRoutes(loginGroup.Group(mfaSuffix), totp.NewHandler(svc))
 }
 
 // mountQRLogin builds the three routes that turn a scan into a sign-in.
@@ -660,13 +737,14 @@ func accountActor(c fiber.Ctx) oidc.AccountActor { return oidc.AccountActor(midd
 // See docs/adr/0002-session-storage.md.
 func newSessionService(
 	bdb *bun.DB, rdb cache.Client, cipher *crypto.Cipher, recorder *audit.Recorder,
-	tx db.TxRunner, log logger.Logger,
+	factors *totp.Repository, tx db.TxRunner, log logger.Logger,
 ) *session.Service {
 	users := user.NewRepository(bdb, log)
 	sessions := session.NewRepository(bdb, cipher, log)
 
 	return session.NewService(session.Deps{
 		Identity: identityFinder(users),
+		Steps:    factorSteps(users, factors, bdb, log),
 		// The one credential read of the user domain answers the organization
 		// beside the hash. The sign-in needs the hash only.
 		Credential: func(ctx context.Context, tenantID, userID string) (string, error) {
@@ -680,6 +758,68 @@ func newSessionService(
 		Audit:     recorder,
 		Log:       log,
 	})
+}
+
+// factorSteps names the factors a person still owes after the password step.
+//
+// It reads through three domains, so it is composed here: the person names the
+// organization, the organization resolves the MFA Requirement over the tenant
+// default, and the TOTP module answers whether the person holds a factor.
+//
+// The requirement resolves through both policy levels, the way the password
+// policy already does. A read of the tenant row alone would make every
+// organization override silently do nothing while the console reports it as set.
+//
+// The predicate counts TOTP and nothing else. The derived second-factor column
+// on the user list also counts passkeys, and no passkey backend exists, so a
+// person routed on that column would reach a screen that never moves.
+//
+// One function answers the step signal, so the signal and the gate that enforces
+// it can never disagree. Two copies of an authentication predicate drift, and a
+// drifted predicate is a security defect.
+func factorSteps(
+	users *user.Repository, factors *totp.Repository, bdb *bun.DB, log logger.Logger,
+) session.FactorSteps {
+	// Only the stored row of each level is read here, so the policy service is
+	// built with the one dependency it needs. The console writes the policy, and
+	// that is mounted on the admin API.
+	policies := authpolicy.NewService(authpolicy.Deps{
+		Find: authpolicy.NewRepository(bdb, log).Find,
+		Log:  log,
+	})
+
+	return func(ctx context.Context, tenantID, userID string) ([]string, error) {
+		// A session that names nobody owes nothing. The password step refuses it
+		// on the decoy hash, so this is never reached with a match.
+		if userID == "" {
+			return nil, nil
+		}
+
+		// An active factor is always challenged, whatever the policy says, so the
+		// read comes first. Naming that challenge is the next slice: this one
+		// names forced enrolment only, and a person who holds a factor is never
+		// sent to enrol a second one.
+		held, err := factors.HasActiveFactor(ctx, tenantID, userID)
+		if err != nil {
+			return nil, err
+		}
+		if held {
+			return nil, nil
+		}
+
+		row, err := users.FindByID(ctx, tenantID, userID)
+		if err != nil {
+			return nil, err
+		}
+		required, err := policies.MFARequired(ctx, tenantID, row.OrgID)
+		if err != nil {
+			return nil, err
+		}
+		if !required {
+			return nil, nil
+		}
+		return []string{session.StepEnrolOTP}, nil
+	}
 }
 
 // clearSecondFactors composes a full second-factor reset from the two modules

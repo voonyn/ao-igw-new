@@ -30,6 +30,22 @@ const FactorPassword = "pwd"
 // permits values outside its own list.
 const FactorScan = "vc"
 
+// FactorOTP names the factor a person proves with a code from an Authenticator.
+// It is the RFC 8176 registry value, so the ID token carries it unchanged.
+//
+// A redeemed Recovery Code records the same name. It is the break-glass of that
+// factor, and the audit metadata tells the two apart.
+const FactorOTP = "otp"
+
+// StepEnrolOTP is what the password answer names when the MFA Requirement
+// applies and the person holds no active TOTP Enrolment. The sign-in front end
+// reads it and walks the person through enrolment.
+//
+// It is a step signal and not an AMR name, so it never reaches a token. No
+// passkey value is ever named here, because no passkey backend exists and a
+// person routed to one would reach a screen that never moves.
+const StepEnrolOTP = "otp_enroll"
+
 // partialLifetime bounds the identifier step. The person has proved nothing
 // yet, so the session lives only long enough to type a password.
 //

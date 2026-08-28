@@ -110,14 +110,17 @@ func (h *Handler) password(c fiber.Ctx) error {
 		return response.Error(c, fiber.StatusUnauthorized, "Unauthorized", nil)
 	}
 
-	upgraded, err := h.sessions.VerifyPassword(c.Context(), tc.TenantID, token, req.Password)
+	upgraded, steps, err := h.sessions.VerifyPassword(c.Context(), tc.TenantID, token, req.Password)
 	if err != nil {
 		return response.Fail(c, err)
+	}
+	if steps == nil {
+		steps = []string{}
 	}
 
 	return response.OK(c, PasswordResponse{
 		SessionToken: upgraded.Token,
-		Methods:      []string{},
+		Methods:      steps,
 	})
 }
 

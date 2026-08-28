@@ -82,6 +82,12 @@ func noCredential(context.Context, string, string) (string, error) {
 	return "", user.ErrNotFound
 }
 
+// noSteps is the step seam of a test about the password itself. The person owes
+// no factor, so the password step finishes the sign-in.
+func noSteps(context.Context, string, string) ([]string, error) {
+	return nil, nil
+}
+
 // runNow stands in for the transaction manager. The test has no database, so
 // the work runs on the caller's context.
 func runNow(ctx context.Context, fn func(context.Context) error) error {
@@ -101,6 +107,7 @@ func testServiceWith(t *testing.T, identity IdentityFinder, credential Credentia
 	svc := NewService(Deps{
 		Identity:   identity,
 		Credential: credential,
+		Steps:      noSteps,
 		Save:       st.Save,
 		Find:       st.Find,
 		Terminate:  st.Terminate,
@@ -283,7 +290,7 @@ func TestVerifyPassword(t *testing.T) {
 	opened := signedIn(t, svc, "person@example.com")
 	partialExpiry := st.saved.ExpiresAt
 
-	upgraded, err := svc.VerifyPassword(context.Background(), "tenant-1", opened.Token, "a-correct-password")
+	upgraded, _, err := svc.VerifyPassword(context.Background(), "tenant-1", opened.Token, "a-correct-password")
 	if err != nil {
 		t.Fatalf("verify password: %v", err)
 	}
@@ -319,7 +326,7 @@ func TestVerifyPassword_RotatedTokenResolves(t *testing.T) {
 	svc, _ := passwordService(t, "a-correct-password")
 	opened := signedIn(t, svc, "person@example.com")
 
-	upgraded, err := svc.VerifyPassword(context.Background(), "tenant-1", opened.Token, "a-correct-password")
+	upgraded, _, err := svc.VerifyPassword(context.Background(), "tenant-1", opened.Token, "a-correct-password")
 	if err != nil {
 		t.Fatalf("verify password: %v", err)
 	}
@@ -338,7 +345,7 @@ func TestVerifyPassword_RecordsTheOutcome(t *testing.T) {
 	svc, st := passwordService(t, "a-correct-password")
 	opened := signedIn(t, svc, "person@example.com")
 
-	if _, err := svc.VerifyPassword(context.Background(), "tenant-1", opened.Token, "a-correct-password"); err != nil {
+	if _, _, err := svc.VerifyPassword(context.Background(), "tenant-1", opened.Token, "a-correct-password"); err != nil {
 		t.Fatalf("verify password: %v", err)
 	}
 
@@ -361,7 +368,7 @@ func TestVerifyPassword_WrongPassword(t *testing.T) {
 	svc, st := passwordService(t, "a-correct-password")
 	opened := signedIn(t, svc, "person@example.com")
 
-	_, err := svc.VerifyPassword(context.Background(), "tenant-1", opened.Token, "the-wrong-password")
+	_, _, err := svc.VerifyPassword(context.Background(), "tenant-1", opened.Token, "the-wrong-password")
 	if !errors.Is(err, ErrBadCredentials) {
 		t.Fatalf("verify password gave %v, want %v", err, ErrBadCredentials)
 	}
@@ -380,7 +387,7 @@ func TestVerifyPassword_UnknownPerson(t *testing.T) {
 	svc, st := passwordService(t, "a-correct-password")
 	opened := signedIn(t, svc, "nobody@example.com")
 
-	_, err := svc.VerifyPassword(context.Background(), "tenant-1", opened.Token, "a-correct-password")
+	_, _, err := svc.VerifyPassword(context.Background(), "tenant-1", opened.Token, "a-correct-password")
 	if !errors.Is(err, ErrBadCredentials) {
 		t.Fatalf("verify password gave %v, want %v", err, ErrBadCredentials)
 	}
@@ -393,7 +400,7 @@ func TestVerifyPassword_UnknownPerson(t *testing.T) {
 func TestVerifyPassword_DeadToken(t *testing.T) {
 	svc, _ := passwordService(t, "a-correct-password")
 
-	_, err := svc.VerifyPassword(context.Background(), "tenant-1", "not-a-token", "a-correct-password")
+	_, _, err := svc.VerifyPassword(context.Background(), "tenant-1", "not-a-token", "a-correct-password")
 	if !errors.Is(err, ErrLoginSessionNotFound) {
 		t.Errorf("verify password gave %v, want %v", err, ErrLoginSessionNotFound)
 	}
@@ -406,7 +413,7 @@ func TestVerifyPassword_AuditFails(t *testing.T) {
 	opened := signedIn(t, svc, "person@example.com")
 	st.auditErr = errors.New("the trail is unwritable")
 
-	if _, err := svc.VerifyPassword(context.Background(), "tenant-1", opened.Token, "a-correct-password"); err == nil {
+	if _, _, err := svc.VerifyPassword(context.Background(), "tenant-1", opened.Token, "a-correct-password"); err == nil {
 		t.Fatal("verify password succeeded with an unwritable audit trail")
 	}
 }
@@ -483,5 +490,43 @@ func TestResolve_OtherTenant(t *testing.T) {
 
 	if _, err := svc.Resolve(context.Background(), "tenant-2", opened.Token); !errors.Is(err, ErrLoginSessionNotFound) {
 		t.Errorf("resolve gave %v, want %v", err, ErrLoginSessionNotFound)
+	}
+}
+
+// TestVerifyPassword_NamesTheFactorStillOwed covers the step signal. The answer
+// carries what the seam named, so the sign-in front end knows which step is next.
+func TestVerifyPassword_NamesTheFactorStillOwed(t *testing.T) {
+	svc, _ := passwordService(t, "a-correct-password")
+	svc.deps.Steps = func(context.Context, string, string) ([]string, error) {
+		return []string{StepEnrolOTP}, nil
+	}
+	opened := signedIn(t, svc, "person@example.com")
+
+	_, steps, err := svc.VerifyPassword(
+		context.Background(), "tenant-1", opened.Token, "a-correct-password")
+	if err != nil {
+		t.Fatalf("verify password: %v", err)
+	}
+	if len(steps) != 1 || steps[0] != StepEnrolOTP {
+		t.Errorf("the steps are %v, want %v", steps, []string{StepEnrolOTP})
+	}
+}
+
+// TestVerifyPassword_StepsUnreadable covers the fail-closed rule. A requirement
+// nobody could read must never read as "no factor is owed", so the step fails and
+// the session is not upgraded.
+func TestVerifyPassword_StepsUnreadable(t *testing.T) {
+	svc, st := passwordService(t, "a-correct-password")
+	svc.deps.Steps = func(context.Context, string, string) ([]string, error) {
+		return nil, errors.New("the policy could not be read")
+	}
+	opened := signedIn(t, svc, "person@example.com")
+
+	if _, _, err := svc.VerifyPassword(
+		context.Background(), "tenant-1", opened.Token, "a-correct-password"); err == nil {
+		t.Fatal("the password step succeeded with an unreadable requirement")
+	}
+	if st.saved.Authenticated() {
+		t.Error("the session was upgraded although the requirement could not be read")
 	}
 }
