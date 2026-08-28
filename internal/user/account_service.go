@@ -140,22 +140,10 @@ func (s *AccountService) ChangePassword(
 
 	row, err := s.deps.Credential(ctx, a.TenantID, a.UserID)
 	if err != nil {
-		if errors.Is(err, ErrNotFound) {
-			return s.refuse(a, "the token names no account that can sign in")
-		}
-		return s.fail(a.TenantID, a.UserID, "read the credential", err)
+		return s.readCredential(a, err)
 	}
-
-	if err := crypto.VerifyPassword(row.PasswordHash, body.CurrentPassword); err != nil {
-		// A stored hash that cannot be parsed is a defect of the credential, not
-		// a wrong password. The caller reads the same refusal either way, and
-		// the log is where the two are told apart.
-		if errors.Is(err, crypto.ErrMalformedHash) {
-			s.log.Error("the stored password hash of the account cannot be read",
-				logger.String("tenant_id", a.TenantID),
-				logger.String("user_id", a.UserID), logger.Err(err))
-		}
-		return s.refuse(a, "the current password is wrong")
+	if err := s.checkPassword(a, row.PasswordHash, body.CurrentPassword); err != nil {
+		return err
 	}
 
 	// A failed policy read is logged in the policy domain, which is the last
@@ -191,12 +179,67 @@ func (s *AccountService) ChangePassword(
 	return nil
 }
 
-// refuse answers one refused password change. The reason names the log line and
+// VerifyPassword proves that plain is the password the person holds now.
+//
+// The second-factor module takes this as a function value. Its two destructive
+// portal addresses demand the same proof this domain's password change demands,
+// and a second copy of the read and the check is how the two would come to
+// answer a person differently.
+//
+// The password never reaches a log line.
+func (s *AccountService) VerifyPassword(ctx context.Context, a Actor, plain string) error {
+	s.log.Debug("verify the current password",
+		logger.String("tenant_id", a.TenantID), logger.String("user_id", a.UserID),
+		logger.RequestID(ctx))
+
+	row, err := s.deps.Credential(ctx, a.TenantID, a.UserID)
+	if err != nil {
+		return s.readCredential(a, err)
+	}
+	return s.checkPassword(a, row.PasswordHash, plain)
+}
+
+// readCredential answers a failed credential read.
+//
+// An account the read cannot reach is refused the way a wrong password is, so
+// the answer never says which accounts a tenant holds. Any other failure travels
+// back as it was given, and it answers a server error.
+func (s *AccountService) readCredential(a Actor, err error) error {
+	if errors.Is(err, ErrNotFound) {
+		return s.refuse(a, "the token names no account that can sign in")
+	}
+	return s.fail(a.TenantID, a.UserID, "read the credential", err)
+}
+
+// checkPassword proves plain against the hash the account holds now.
+//
+// A stored hash that cannot be parsed is a defect of the credential, not a wrong
+// password. The caller reads the same refusal either way, and the log is where
+// the two are told apart.
+//
+// The password never reaches a log line.
+func (s *AccountService) checkPassword(a Actor, hash, plain string) error {
+	if err := crypto.VerifyPassword(hash, plain); err != nil {
+		if errors.Is(err, crypto.ErrMalformedHash) {
+			s.log.Error("the stored password hash of the account cannot be read",
+				logger.String("tenant_id", a.TenantID),
+				logger.String("user_id", a.UserID), logger.Err(err))
+		}
+		return s.refuse(a, "the current password is wrong")
+	}
+	return nil
+}
+
+// refuse answers one refused password proof. The reason names the log line and
 // never the answer, so a caller reads one refusal for every cause.
 //
-// Neither password reaches this line. why is a fixed string of this file.
+// The line says "proof" and not "change", because two callers reach it: the
+// password change, and the second-factor module, which proves the same password
+// before it strips an account of its factor.
+//
+// No password reaches this line. why is a fixed string of this file.
 func (s *AccountService) refuse(a Actor, why string) error {
-	s.log.Warn("refused a password change",
+	s.log.Warn("refused a password proof",
 		logger.String("tenant_id", a.TenantID),
 		logger.String("user_id", a.UserID), logger.String("reason", why))
 	return fmt.Errorf("%w: tenant %s, user %s", ErrBadPassword, a.TenantID, a.UserID)

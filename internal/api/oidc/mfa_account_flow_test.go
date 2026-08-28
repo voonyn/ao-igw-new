@@ -30,6 +30,11 @@ const (
 	accountMFAPath         = "/mfa"
 	accountEnrolStartPath  = "/mfa/totp/enroll/start"
 	accountEnrolActivePath = "/mfa/totp/enroll/activate"
+
+	// The two destructive addresses. Each takes the current password in the
+	// body, so each is a POST: a body on a DELETE is what proxies drop.
+	accountFactorRemovePath  = "/mfa/totp/remove"
+	accountRecoveryCodesPath = "/mfa/totp/recovery-codes"
 )
 
 // mfaStatus is the answer the portal reads to decide what the security page
@@ -75,9 +80,11 @@ func TestAccountMFAFlow(t *testing.T) {
 		}
 	})
 
-	// The sign-in path's answer for the same person, read from a second sign-in
-	// of their own. It is the value the portal's answer is measured against.
-	signIn := gw.enrolStart(t, gw.signIn(t, fx, fx.password).token)
+	// A second device of the same person. Neither destructive change below may
+	// end it, and the sign-in path's own enrolment answer is read from it: that
+	// answer is the value the portal's answer is measured against.
+	other := gw.signIn(t, fx, fx.password)
+	signIn := gw.enrolStart(t, other.token)
 
 	started := gw.accountEnrolStart(t, held.AccessToken)
 
@@ -181,6 +188,129 @@ func TestAccountMFAFlow(t *testing.T) {
 			}
 		}
 		t.Errorf("no %s event in the activity feed", audit.ActionMFAEnrolled)
+	})
+
+	t.Run("a wrong password removes nothing", func(t *testing.T) {
+		// The whole reason the two addresses below take a body. The access token
+		// names no login session and the guard reads no store, so this password
+		// is the only proof the request can carry.
+		var refused struct {
+			Error string `json:"error"`
+		}
+		answer := gw.account(t, fiber.MethodPost, accountFactorRemovePath,
+			strings.NewReader(`{"password":"not-the-password"}`), held.AccessToken,
+			fiber.HeaderContentType, fiber.MIMEApplicationJSON)
+		decode(t, answer, fiber.StatusUnauthorized, &refused)
+
+		// The slug the password change already answers. The portal branches on
+		// one slug wherever it asks a person for their password.
+		if refused.Error != "invalid_credentials" {
+			t.Errorf("slug is %q, want %q", refused.Error, "invalid_credentials")
+		}
+		if !gw.mfaStatus(t, held.AccessToken).Active {
+			t.Error("a refused password still removed the factor")
+		}
+	})
+
+	t.Run("the recovery codes are replaced", func(t *testing.T) {
+		var replaced struct {
+			RecoveryCodes []string `json:"recoveryCodes"`
+		}
+		answer := gw.account(t, fiber.MethodPost, accountRecoveryCodesPath,
+			strings.NewReader(fmt.Sprintf(`{"password":%q}`, fx.password)), held.AccessToken,
+			fiber.HeaderContentType, fiber.MIMEApplicationJSON)
+		decode(t, answer, fiber.StatusOK, &envelope{Data: &replaced})
+
+		if len(replaced.RecoveryCodes) != recoveryCodesIssued {
+			t.Fatalf("the replacement answered %d codes, want %d",
+				len(replaced.RecoveryCodes), recoveryCodesIssued)
+		}
+
+		// Every old code is void. A set that overlapped the old one would leave
+		// a printed page that still signs the person in.
+		was := make(map[string]bool, len(codes))
+		for _, code := range codes {
+			was[code] = true
+		}
+		for _, code := range replaced.RecoveryCodes {
+			if was[code] {
+				t.Error("the replacement answered a code the old set already held")
+			}
+		}
+
+		state := gw.mfaStatus(t, held.AccessToken)
+		if !state.Active {
+			t.Error("the replacement removed the factor")
+		}
+		if state.RecoveryCodesRemaining != recoveryCodesIssued {
+			t.Errorf("recovery codes remaining is %d, want %d",
+				state.RecoveryCodesRemaining, recoveryCodesIssued)
+		}
+		codes = replaced.RecoveryCodes
+	})
+
+	// Every login session of the person, read before the removal. Neither
+	// operation ends one of them.
+	live := gw.sessions(t, held.AccessToken)
+	if !live[other.id] {
+		t.Fatalf("the second device %s is not among the live sessions", other.id)
+	}
+
+	t.Run("the factor is removed", func(t *testing.T) {
+		answer := gw.account(t, fiber.MethodPost, accountFactorRemovePath,
+			strings.NewReader(fmt.Sprintf(`{"password":%q}`, fx.password)), held.AccessToken,
+			fiber.HeaderContentType, fiber.MIMEApplicationJSON)
+		decode(t, answer, fiber.StatusOK, &envelope{})
+
+		state := gw.mfaStatus(t, held.AccessToken)
+		if state.Active {
+			t.Error("the factor was removed and the status says it is on")
+		}
+		if state.RecoveryCodesRemaining != 0 {
+			t.Errorf("recovery codes remaining is %d, want 0", state.RecoveryCodesRemaining)
+		}
+	})
+
+	t.Run("no other login session ended", func(t *testing.T) {
+		// Each of those sessions proved the Factor when it was created, and the
+		// portal already offers a sign-out-everywhere control for the
+		// compromise case. The second device is what makes this more than the
+		// caller's own session, which must survive for the read below to work.
+		after := gw.sessions(t, held.AccessToken)
+		if !after[other.id] {
+			t.Errorf("the second device %s was signed out", other.id)
+		}
+		for id := range live {
+			if !after[id] {
+				t.Errorf("the login session %s ended", id)
+			}
+		}
+	})
+
+	t.Run("a later enrolment starts clean", func(t *testing.T) {
+		// The removal hard deleted the row, so the start that was refused with
+		// mfa_already_enrolled above now answers a fresh secret.
+		if gw.accountEnrolStart(t, held.AccessToken).OtpauthURI == "" {
+			t.Error("the start after a removal answered no provisioning uri")
+		}
+	})
+
+	t.Run("both changes reach the activity feed", func(t *testing.T) {
+		var events []audit.ActivityView
+		decode(t, gw.account(t, fiber.MethodGet, "/activity", nil, held.AccessToken),
+			fiber.StatusOK, &envelope{Data: &events})
+
+		seen := make(map[string]bool, len(events))
+		for _, event := range events {
+			seen[event.Action] = true
+		}
+		for _, want := range []audit.Action{
+			audit.ActionMFARecoveryCodesRegenerated, audit.ActionMFARemoved,
+		} {
+			if !seen[string(want)] {
+				t.Errorf("no %s event in the activity feed", want)
+			}
+		}
 	})
 
 	t.Run("an unauthenticated caller reads nothing", func(t *testing.T) {

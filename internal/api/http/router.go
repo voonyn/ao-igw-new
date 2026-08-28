@@ -231,6 +231,14 @@ func mountMFA(
 ) *totp.Service {
 	users := user.NewRepository(bdb, log)
 
+	// The password check the two destructive portal addresses demand. It reads
+	// the stored credential of one person and nothing else, so it is built with
+	// that one dependency.
+	passwords := user.NewAccountService(user.AccountDeps{
+		Credential: users.FindCredential,
+		Log:        log,
+	})
+
 	svc := totp.NewService(totp.Deps{
 		FindSession: func(ctx context.Context, tenantID, token string) (totp.Principal, error) {
 			// Find, and not Resolve: the module decides what an unfinished
@@ -275,6 +283,20 @@ func mountMFA(
 		CountRecoveryCodes: factors.CountRecoveryCodes,
 		SpendStep:          factors.SpendStep,
 		RedeemRecoveryCode: factors.RedeemRecoveryCode,
+		ClearFactor:        factors.Clear,
+
+		// The proof the two destructive portal addresses demand. It is the one
+		// the password change runs, so a person reads one refusal wherever the
+		// portal asks for a password, and this module imports neither the user
+		// domain nor the password hashing.
+		//
+		// The service below is built with the one dependency that check needs.
+		// The account stack builds its own with the writes it needs too, and a
+		// second copy of the check is what this avoids.
+		VerifyPassword: func(ctx context.Context, tenantID, userID, plain string) error {
+			return passwords.VerifyPassword(ctx,
+				user.Actor{TenantID: tenantID, UserID: userID}, plain)
+		},
 
 		// The two caps on code guessing. The per-session count and the audit row
 		// belong to the login session domain, and the per-person budget is the

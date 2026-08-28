@@ -6,6 +6,7 @@ import { Icon } from "../icons";
 import { useUser } from "../flow-context";
 import { PageHead, SecurityRing, Modal, NotWiredBanner } from "../primitives";
 import { MfaEnrollModal } from "./mfa-enroll-modal";
+import { MfaManageModal, type ManageMode } from "./mfa-manage-modal";
 import { accountErrorFrom, deviceIcon, deviceLabel, relTime, type AccountErr } from "@/lib/format";
 import { deriveHealth } from "@/lib/health";
 import { AOP } from "@/lib/portal-data";
@@ -80,6 +81,8 @@ export function SecurityView({ A }: { A: Actions }) {
   const [mfa, setMfa] = useState<MfaState | null>(null);
   const [mfaErr, setMfaErr] = useState<AccountErr>('');
   const [mfaModal, setMfaModal] = useState(false);
+  // Which change the password prompt is running, or null while it is closed.
+  const [mfaManage, setMfaManage] = useState<ManageMode | null>(null);
   const [pwModal, setPwModal] = useState(false);
   // Change-password form — wired to the self-service account API via the BFF
   // route (/api/account/password → gateway /api/v1/account/password).
@@ -360,6 +363,14 @@ export function SecurityView({ A }: { A: Actions }) {
             {mfa && !mfa.active && (
               <button type="button" className="btn sm" onClick={function () { setMfaModal(true); }}>Turn on</button>
             )}
+            {mfa?.active && (
+              <>
+                {/* Both changes ask for the current password. The access token
+                    alone cannot guard them, so the prompt is not a formality. */}
+                <button type="button" className="btn sm ghost" onClick={function () { setMfaManage('replace'); }}>New recovery codes</button>
+                <button type="button" className="btn sm danger-ghost" onClick={function () { setMfaManage('remove'); }}>Remove</button>
+              </>
+            )}
           </span>
         </div>
         {mfaErr && (
@@ -420,6 +431,21 @@ export function SecurityView({ A }: { A: Actions }) {
           onEnrolled={function () {
             setMfaModal(false);
             A.toast('Two-step verification is on', 'shield');
+            void loadMfa();
+          }}
+        />
+      )}
+
+      {/* Remove the factor, or replace the recovery codes — each behind the
+          current password */}
+      {mfaManage && (
+        <MfaManageModal
+          mode={mfaManage}
+          onClose={function () { setMfaManage(null); }}
+          onDone={function () {
+            const done = mfaManage;
+            setMfaManage(null);
+            A.toast(done === 'remove' ? 'Two-step verification is off' : 'Recovery codes replaced', 'shield');
             void loadMfa();
           }}
         />

@@ -1,0 +1,245 @@
+package totp
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strings"
+	"testing"
+	"time"
+
+	"alphaomega/identitygateway/internal/audit"
+	"alphaomega/identitygateway/internal/platform/logger"
+)
+
+// The two destructive portal addresses, proved with no database.
+//
+// The password is the whole guard here. The access token carries no session
+// identifier and the bearer guard reads no store, so a body field is the only
+// place a proof can go, and the order these tests measure is what makes it a
+// guard: nothing is read and nothing is written until the password is proved.
+
+// errWrongPassword stands in for the sentinel the user domain answers. The
+// router closes over the real credential read, so this module never names it.
+var errWrongPassword = errors.New("current password is wrong")
+
+// manageCalls records what one request touched, in the order it touched it.
+type manageCalls struct {
+	proved  bool
+	found   bool
+	cleared bool
+	saved   []string
+	actions []audit.Action
+}
+
+// manageService builds a service whose reads answer what the test names.
+//
+// row is the enrolment the person holds, and verify is what the password check
+// answers. Every write records itself on the calls, so a test can prove both
+// what ran and what did not.
+func manageService(row Enrolment, find, verify error) (*Service, *manageCalls) {
+	calls := &manageCalls{}
+	log := logger.New()
+
+	return NewService(Deps{
+		VerifyPassword: func(context.Context, string, string, string) error {
+			calls.proved = true
+			return verify
+		},
+		Find: func(context.Context, string, string) (Enrolment, error) {
+			calls.found = true
+			return row, find
+		},
+		ClearFactor: func(context.Context, string, string) error {
+			calls.cleared = true
+			return nil
+		},
+		SaveRecoveryCodes: func(_ context.Context, _, _ string, digests []string) error {
+			calls.saved = digests
+			return nil
+		},
+		InTx: func(ctx context.Context, fn func(context.Context) error) error {
+			return fn(ctx)
+		},
+		Audit: audit.NewRecorder(func(_ context.Context, event audit.Event) error {
+			calls.actions = append(calls.actions, audit.Action(event.Action))
+			return nil
+		}, log),
+		Log: log,
+	}), calls
+}
+
+// active is one person holding a live Second Factor.
+func active() Enrolment {
+	return Enrolment{
+		TenantID:    statusTenantID,
+		UserID:      statusUserID,
+		ActivatedAt: time.Date(2026, 8, 1, 9, 30, 0, 0, time.UTC),
+	}
+}
+
+func manager() Principal { return Principal{UserID: statusUserID} }
+
+// TestAccountRemoveClearsTheFactorAndRecordsIt proves the whole removal: the
+// hard delete of the secret and every Recovery Code, and the one audit event the
+// activity feed renders.
+func TestAccountRemoveClearsTheFactorAndRecordsIt(t *testing.T) {
+	svc, calls := manageService(active(), nil, nil)
+
+	if err := svc.AccountRemove(t.Context(), statusTenantID, manager(), "the-password"); err != nil {
+		t.Fatalf("AccountRemove: %v", err)
+	}
+	if !calls.cleared {
+		t.Error("the factor was not cleared")
+	}
+	if len(calls.actions) != 1 || calls.actions[0] != audit.ActionMFARemoved {
+		t.Errorf("audit actions are %v, want [%s]", calls.actions, audit.ActionMFARemoved)
+	}
+}
+
+// TestAccountReplaceRecoveryCodesIssuesAFreshSet proves that a replacement mints
+// ten codes, shows them once, and stores a digest of each.
+func TestAccountReplaceRecoveryCodesIssuesAFreshSet(t *testing.T) {
+	svc, calls := manageService(active(), nil, nil)
+
+	shown, err := svc.AccountReplaceRecoveryCodes(t.Context(), statusTenantID, manager(), "the-password")
+	if err != nil {
+		t.Fatalf("AccountReplaceRecoveryCodes: %v", err)
+	}
+	if len(shown) != recoveryCodeCount {
+		t.Fatalf("%d codes were shown, want %d", len(shown), recoveryCodeCount)
+	}
+	if len(calls.saved) != recoveryCodeCount {
+		t.Fatalf("%d digests were stored, want %d", len(calls.saved), recoveryCodeCount)
+	}
+	// The store holds digests and never a code. A stored plaintext would let a
+	// database read sign the person in.
+	for _, code := range shown {
+		for _, digest := range calls.saved {
+			if digest == code {
+				t.Fatal("a recovery code was stored in the clear")
+			}
+		}
+	}
+	if calls.cleared {
+		t.Error("a replacement removed the factor")
+	}
+	if len(calls.actions) != 1 || calls.actions[0] != audit.ActionMFARecoveryCodesRegenerated {
+		t.Errorf("audit actions are %v, want [%s]", calls.actions,
+			audit.ActionMFARecoveryCodesRegenerated)
+	}
+}
+
+// TestTheWrongPasswordStopsEveryChange proves the guard that this whole slice
+// exists for. A leaked access token alone must strip nothing.
+//
+// The refusal is carried back as it was given, so the mapper answers the slug
+// the password change already answers.
+func TestTheWrongPasswordStopsEveryChange(t *testing.T) {
+	t.Run("removal", func(t *testing.T) {
+		svc, calls := manageService(active(), nil, errWrongPassword)
+
+		err := svc.AccountRemove(t.Context(), statusTenantID, manager(), "not-the-password")
+		if !errors.Is(err, errWrongPassword) {
+			t.Fatalf("error is %v, want %v", err, errWrongPassword)
+		}
+		assertNothingRan(t, calls)
+	})
+
+	t.Run("replacement", func(t *testing.T) {
+		svc, calls := manageService(active(), nil, errWrongPassword)
+
+		_, err := svc.AccountReplaceRecoveryCodes(t.Context(), statusTenantID, manager(), "not-the-password")
+		if !errors.Is(err, errWrongPassword) {
+			t.Fatalf("error is %v, want %v", err, errWrongPassword)
+		}
+		assertNothingRan(t, calls)
+	})
+}
+
+// assertNothingRan proves that the password was checked before any other work,
+// and that no other work followed a refusal.
+func assertNothingRan(t *testing.T, calls *manageCalls) {
+	t.Helper()
+
+	if !calls.proved {
+		t.Error("the password was not checked")
+	}
+	if calls.found {
+		t.Error("the enrolment was read after a refused password")
+	}
+	if calls.cleared || calls.saved != nil || calls.actions != nil {
+		t.Errorf("a refused password still wrote: %+v", calls)
+	}
+}
+
+// TestAnAccountWithNoFactorHasNothingToChange proves that neither address acts
+// on an account that holds none, so the activity feed never records a removal
+// that removed nothing.
+//
+// A pending enrolment counts as no factor, the way it does everywhere else.
+func TestAnAccountWithNoFactorHasNothingToChange(t *testing.T) {
+	pending := Enrolment{TenantID: statusTenantID, UserID: statusUserID}
+
+	tests := []struct {
+		name string
+		row  Enrolment
+		find error
+	}{
+		{name: "no row at all", find: ErrNoEnrolment},
+		{name: "a pending enrolment", row: pending},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			svc, calls := manageService(tc.row, tc.find, nil)
+
+			if err := svc.AccountRemove(t.Context(), statusTenantID, manager(), "the-password"); !errors.Is(err, ErrNoActiveFactor) {
+				t.Errorf("removal answered %v, want %v", err, ErrNoActiveFactor)
+			}
+			if _, err := svc.AccountReplaceRecoveryCodes(t.Context(), statusTenantID, manager(), "the-password"); !errors.Is(err, ErrNoActiveFactor) {
+				t.Errorf("replacement answered %v, want %v", err, ErrNoActiveFactor)
+			}
+			if calls.cleared || calls.saved != nil || calls.actions != nil {
+				t.Errorf("an account with no factor was still written to: %+v", calls)
+			}
+		})
+	}
+}
+
+// TestNeitherChangeLogsThePasswordOrACode reads every line the two methods
+// write, at every level, on the path that succeeds and on the path that refuses.
+//
+// Two credentials must be absent. The password is one, and a Recovery Code is
+// the other: a code on a log line signs the person in.
+func TestNeitherChangeLogsThePasswordOrACode(t *testing.T) {
+	const password = "correct-horse-battery-staple"
+
+	log, logs := logger.NewObserved()
+
+	svc, _ := manageService(active(), nil, nil)
+	svc.log = log
+	svc.deps.Log = log
+	shown, err := svc.AccountReplaceRecoveryCodes(t.Context(), statusTenantID, manager(), password)
+	if err != nil {
+		t.Fatalf("AccountReplaceRecoveryCodes: %v", err)
+	}
+	if err := svc.AccountRemove(t.Context(), statusTenantID, manager(), password); err != nil {
+		t.Fatalf("AccountRemove: %v", err)
+	}
+
+	refused, _ := manageService(active(), nil, errWrongPassword)
+	refused.log = log
+	refused.deps.Log = log
+	_ = refused.AccountRemove(t.Context(), statusTenantID, manager(), password)
+
+	secrets := append([]string{password}, shown...)
+	for _, entry := range logs.All() {
+		line := entry.Message + fmt.Sprint(entry.ContextMap())
+		for _, secret := range secrets {
+			if strings.Contains(line, secret) {
+				t.Errorf("the log line %q carries a credential", line)
+			}
+		}
+	}
+}

@@ -68,11 +68,26 @@ type StatusResponse struct {
 	RecoveryCodesRemaining int        `json:"recoveryCodesRemaining"`
 }
 
-// AccountActivateResponse is the answer to the portal's activation. The whole
-// set of Recovery Codes is disclosed exactly once, here.
+// RecoveryCodesResponse is the answer to the two portal addresses that mint a
+// set of Recovery Codes: the activation, and the replacement.
+//
+// The whole set is disclosed exactly once, here. The database holds digests, so
+// no later read can name the codes again.
 //
 // No session token is answered. The portal already holds an access token, and no
-// login session waits on this enrolment.
-type AccountActivateResponse struct {
+// login session waits on either address.
+type RecoveryCodesResponse struct {
 	RecoveryCodes []string `json:"recoveryCodes"`
+}
+
+// PasswordProofRequest is the body of the two destructive portal addresses:
+// POST /mfa/totp/remove and POST /mfa/totp/recovery-codes.
+//
+// The access token carries no session identifier and the bearer guard reads no
+// store, so this field is the only place a proof can go. Without it, a leaked
+// access token strips the account of its Second Factor in one request.
+//
+// The cap is the one bcrypt reads, the same cap the password change carries.
+type PasswordProofRequest struct {
+	Password string `json:"password" validate:"required,max=72"`
 }

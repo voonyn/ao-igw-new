@@ -5,6 +5,7 @@ import (
 	"errors"
 	"time"
 
+	"alphaomega/identitygateway/internal/audit"
 	"alphaomega/identitygateway/internal/platform/logger"
 )
 
@@ -93,4 +94,120 @@ func (s *Service) AccountActivate(
 		logger.String("user_id", who.UserID), logger.RequestID(ctx))
 
 	return s.activate(ctx, tenantID, who, code, nil)
+}
+
+// AccountRemove destroys the Second Factor of the person the access token names,
+// once they prove the password stored now.
+//
+// The password is checked before anything is read or written. The access token
+// carries no session identifier and the bearer guard reads no store, so this
+// body field is the only proof the request can hold. Without it, a leaked access
+// token strips the account of its Second Factor in one request.
+//
+// The delete is hard, and it takes the shared secret and every Recovery Code
+// with it. A later enrolment then starts clean, which is the point: a person who
+// changed phones adds a new Authenticator here.
+//
+// No other Login Session ends. Each of them proved the Factor when it was
+// created, and the portal already offers a sign-out-everywhere control for the
+// compromise case.
+//
+// The password never reaches a log line.
+func (s *Service) AccountRemove(
+	ctx context.Context, tenantID string, who Principal, password string,
+) error {
+	s.log.Debug("remove a second factor from the portal",
+		logger.String("tenant_id", tenantID),
+		logger.String("user_id", who.UserID), logger.RequestID(ctx))
+
+	if err := s.deps.VerifyPassword(ctx, tenantID, who.UserID, password); err != nil {
+		return err
+	}
+	if _, err := s.activeFactor(ctx, tenantID, who); err != nil {
+		return err
+	}
+
+	err := s.deps.InTx(ctx, func(ctx context.Context) error {
+		if err := s.deps.ClearFactor(ctx, tenantID, who.UserID); err != nil {
+			return err
+		}
+		return s.deps.Audit.Record(ctx, audit.Entry{
+			TenantID:   tenantID,
+			ActorID:    who.UserID,
+			Action:     audit.ActionMFARemoved,
+			EntityType: audit.EntityUser,
+			EntityID:   who.UserID,
+			IP:         who.IP,
+			UserAgent:  who.UserAgent,
+		})
+	})
+	if err != nil {
+		s.log.Error("remove the second factor",
+			logger.String("tenant_id", tenantID),
+			logger.String("user_id", who.UserID), logger.Err(err))
+		return err
+	}
+
+	s.log.Info("removed a second factor",
+		logger.String("tenant_id", tenantID),
+		logger.String("user_id", who.UserID))
+	return nil
+}
+
+// AccountReplaceRecoveryCodes issues a new set of Recovery Codes to the person
+// the access token names, once they prove the password stored now.
+//
+// Every old code is voided by the same write. A person who spent codes, or who
+// believes the printed set leaked, replaces the whole set here.
+//
+// The codes are disclosed exactly once, in the answer. The database holds
+// digests, so no later read can name them again. Neither the password nor a code
+// reaches a log line.
+func (s *Service) AccountReplaceRecoveryCodes(
+	ctx context.Context, tenantID string, who Principal, password string,
+) ([]string, error) {
+	s.log.Debug("replace the recovery codes from the portal",
+		logger.String("tenant_id", tenantID),
+		logger.String("user_id", who.UserID), logger.RequestID(ctx))
+
+	if err := s.deps.VerifyPassword(ctx, tenantID, who.UserID, password); err != nil {
+		return nil, err
+	}
+	if _, err := s.activeFactor(ctx, tenantID, who); err != nil {
+		return nil, err
+	}
+
+	shown, digests, err := newRecoveryCodes()
+	if err != nil {
+		s.log.Error("mint the recovery codes",
+			logger.String("tenant_id", tenantID),
+			logger.String("user_id", who.UserID), logger.Err(err))
+		return nil, err
+	}
+
+	err = s.deps.InTx(ctx, func(ctx context.Context) error {
+		if err := s.deps.SaveRecoveryCodes(ctx, tenantID, who.UserID, digests); err != nil {
+			return err
+		}
+		return s.deps.Audit.Record(ctx, audit.Entry{
+			TenantID:   tenantID,
+			ActorID:    who.UserID,
+			Action:     audit.ActionMFARecoveryCodesRegenerated,
+			EntityType: audit.EntityUser,
+			EntityID:   who.UserID,
+			IP:         who.IP,
+			UserAgent:  who.UserAgent,
+		})
+	})
+	if err != nil {
+		s.log.Error("replace the recovery codes",
+			logger.String("tenant_id", tenantID),
+			logger.String("user_id", who.UserID), logger.Err(err))
+		return nil, err
+	}
+
+	s.log.Info("replaced the recovery codes",
+		logger.String("tenant_id", tenantID),
+		logger.String("user_id", who.UserID))
+	return shown, nil
 }

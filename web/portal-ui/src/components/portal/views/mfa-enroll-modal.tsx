@@ -5,6 +5,7 @@ import { QRCodeSVG } from "qrcode.react";
 
 import { Icon } from "../icons";
 import { Modal } from "../primitives";
+import { RecoveryCodesModal } from "./recovery-codes";
 
 // The three screens of one enrolment: the QR code, the code the Authenticator
 // shows, and the Recovery Codes the gateway discloses exactly once.
@@ -80,26 +81,12 @@ export function MfaEnrollModal({ onClose, onEnrolled }: { onClose: () => void; o
   // tells the page behind to re-read the account.
   if (stage.name === "codes") {
     return (
-      <Modal onClose={onEnrolled}>
-        <div className="drawer-head">
-          <Icon name="key" size={18} sw={2} style={{ color: 'var(--accent)' }} />
-          <span className="card-title">Save your recovery codes</span>
-        </div>
-        <div className="drawer-body">
-          <p style={{ fontSize: 13, color: 'var(--muted)', marginBottom: 12, textWrap: 'pretty' }}>
-            Store these somewhere safe. Each code signs you in <strong>once</strong> if you lose your
-            authenticator, and they are not shown again.
-          </p>
-          <ul style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, listStyle: 'none', padding: 14, margin: 0, border: '1px solid var(--border)', borderRadius: 10, background: 'var(--field)', fontFamily: 'var(--font-mono)', fontSize: 14 }}>
-            {stage.codes.map(function (c) {
-              return <li key={c} style={{ textAlign: 'center', letterSpacing: '0.06em', userSelect: 'all' }}>{c}</li>;
-            })}
-          </ul>
-        </div>
-        <div className="drawer-foot">
-          <button type="button" className="btn primary" style={{ flex: 1 }} onClick={onEnrolled}>I’ve saved my codes</button>
-        </div>
-      </Modal>
+      <RecoveryCodesModal
+        title="Save your recovery codes"
+        lede="Store these somewhere safe. Each code signs you in once if you lose your authenticator, and they are not shown again."
+        codes={stage.codes}
+        onSaved={onEnrolled}
+      />
     );
   }
 

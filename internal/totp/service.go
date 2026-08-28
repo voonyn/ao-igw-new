@@ -135,6 +135,28 @@ type (
 	// reads no digest, because the number is the whole answer.
 	RecoveryCodeCounter func(ctx context.Context, tenantID, userID string) (int, error)
 
+	// FactorClearer destroys the Second Factor of one person: the shared secret
+	// and every Recovery Code behind it. Both deletes are hard, so a later
+	// enrolment starts clean.
+	FactorClearer func(ctx context.Context, tenantID, userID string) error
+
+	// PasswordVerifier proves the current password of one person. It answers nil
+	// when the password is the one stored now, and the wrong-password sentinel
+	// of the user domain otherwise.
+	//
+	// The portal owns the two destructive addresses of this module, and an
+	// access token alone cannot guard them: the token carries no session
+	// identifier and the bearer guard reads no store, so the body is the only
+	// place a proof can go.
+	//
+	// The router points it at the same check the password change runs, so this
+	// module imports neither the user domain nor the password hashing, and that
+	// one check is the layer that logs a wrong password and a failed read at the
+	// level each deserves. Nothing is logged on this side.
+	//
+	// The password never reaches a log line.
+	PasswordVerifier func(ctx context.Context, tenantID, userID, plain string) error
+
 	// StepSpender claims one TOTP time step for one person. It returns
 	// ErrCodeSpent for a step at or below the newest spent one.
 	StepSpender func(ctx context.Context, tenantID, userID string, step int64) error
@@ -167,6 +189,11 @@ type Deps struct {
 	CountRecoveryCodes RecoveryCodeCounter
 	SpendStep          StepSpender
 	RedeemRecoveryCode RecoveryCodeRedeemer
+	ClearFactor        FactorClearer
+
+	// VerifyPassword guards the two destructive portal addresses. Nothing on the
+	// sign-in path reads it.
+	VerifyPassword PasswordVerifier
 
 	// The two caps on code guessing. FailCode counts against one sign-in, and
 	// Allow counts against one person across every sign-in they open.
@@ -433,14 +460,8 @@ func (s *Service) Verify(ctx context.Context, tenantID, token, code string) (str
 	// again in the canonical spelling, and this changes nothing for it.
 	code = strings.TrimSpace(code)
 
-	row, err := s.deps.Find(ctx, tenantID, who.UserID)
-	if errors.Is(err, ErrNoEnrolment) || (err == nil && !row.Active()) {
-		return "", fmt.Errorf("%w: user %s", ErrNoActiveFactor, who.UserID)
-	}
+	row, err := s.activeFactor(ctx, tenantID, who)
 	if err != nil {
-		s.log.Error("read the totp enrolment",
-			logger.String("tenant_id", tenantID),
-			logger.String("user_id", who.UserID), logger.Err(err))
 		return "", err
 	}
 
@@ -582,6 +603,29 @@ func (s *Service) wrong(ctx context.Context, tenantID, token string, who Princip
 		return fmt.Errorf("%w: session %s", ErrSignInEnded, who.SessionID)
 	}
 	return fmt.Errorf("%w: user %s", ErrBadCode, who.UserID)
+}
+
+// activeFactor reads the active Second Factor of one person, and refuses an
+// account that holds none.
+//
+// Three paths need it: the challenge, which verifies a code against the secret,
+// and the two destructive portal addresses, which have nothing to remove and
+// nothing to replace without it. A pending enrolment reads as no factor, the way
+// it does everywhere else: the next start overwrites it.
+func (s *Service) activeFactor(
+	ctx context.Context, tenantID string, who Principal,
+) (Enrolment, error) {
+	row, err := s.deps.Find(ctx, tenantID, who.UserID)
+	if errors.Is(err, ErrNoEnrolment) || (err == nil && !row.Active()) {
+		return Enrolment{}, fmt.Errorf("%w: user %s", ErrNoActiveFactor, who.UserID)
+	}
+	if err != nil {
+		s.log.Error("read the totp enrolment",
+			logger.String("tenant_id", tenantID),
+			logger.String("user_id", who.UserID), logger.Err(err))
+		return Enrolment{}, err
+	}
+	return row, nil
 }
 
 // principal reads the Login Session one token credentials, and refuses one that
