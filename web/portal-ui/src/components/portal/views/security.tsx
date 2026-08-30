@@ -7,6 +7,7 @@ import { useUser } from "../flow-context";
 import { PageHead, SecurityRing, Modal, NotWiredBanner } from "../primitives";
 import { MfaEnrollModal } from "./mfa-enroll-modal";
 import { MfaManageModal, type ManageMode } from "./mfa-manage-modal";
+import { PasskeyCard } from "./passkey-card";
 import { accountErrorFrom, deviceIcon, deviceLabel, relTime, type AccountErr } from "@/lib/format";
 import { deriveHealth } from "@/lib/health";
 import { AOP } from "@/lib/portal-data";
@@ -381,6 +382,10 @@ export function SecurityView({ A }: { A: Actions }) {
           </div>
         )}
       </div>
+
+      {/* Passkeys — LIVE via /api/account/mfa/passkeys. It sits beside the
+          two-step block so every Second Factor a person holds is on one screen. */}
+      <PasskeyCard A={A} />
 
       {/* Active sessions — LIVE via /api/account/sessions */}
       <div className="card" style={{ marginTop: 16 }}>
