@@ -614,11 +614,34 @@ func mountAdmin(
 		Log:         log,
 	})
 
+	// The Passkeys of one person, as an operator reads and revokes them. The
+	// module imports neither the user domain nor the login session domain, so the
+	// role check is composed here, the way the account mount composes the
+	// password proof of the self-service removal.
+	//
+	// Two calls and no more: nothing here registers a Passkey for another person.
+	// A Factor belongs to whoever holds the device, so the ceremony runs on the
+	// portal alone and no ceremony dependency is wired.
+	passkeys := passkey.NewRepository(bdb, log)
+	passkeyAdminSvc := passkey.NewAdminService(passkey.AdminDeps{
+		Authorize: func(ctx context.Context, tenantID, actorID, userID string) error {
+			return svc.AuthorizeWrite(ctx,
+				user.Actor{TenantID: tenantID, UserID: actorID}, userID,
+				"manage the passkeys of a user")
+		},
+		List:   passkeys.List,
+		Delete: passkeys.Delete,
+		InTx:   tx,
+		Audit:  recorder,
+		Log:    log,
+	})
+
 	group := app.Group(adminPrefix, tenantMW, bearer)
 	tenant.AdminRoutes(group, tenant.NewAdminHandler(tenantSvc, tenantActor))
 	oidc.AdminRoutes(group, oidc.NewAdminHandler(providerSvc, providerActor))
 	oidc.ScopeAdminRoutes(group, oidc.NewScopeAdminHandler(scopeSvc, providerActor))
 	user.AdminRoutes(group, user.NewHandler(svc))
+	passkey.AdminRoutes(group, passkey.NewAdminHandler(passkeyAdminSvc))
 	organization.AdminRoutes(group, organization.NewHandler(orgSvc))
 	organization.MemberRoutes(group, organization.NewMemberHandler(memberSvc))
 	project.AdminRoutes(group, project.NewHandler(projectSvc))

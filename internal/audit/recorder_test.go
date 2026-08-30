@@ -236,9 +236,10 @@ func TestNewEvent_UnknownAction(t *testing.T) {
 	}
 }
 
-// TestRecord_SecondFactorActions covers the four second-factor actions the
-// portal activity feed renders. Each must record, and each must record as a
-// success.
+// TestRecord_SecondFactorActions covers every second-factor action either front
+// end renders: the four a person takes on their own account, the two Passkey
+// ones beside them, and the two an operator takes on somebody else. Each must
+// record, and each must record as a success.
 //
 // The second half is the one that bites. An action is declared by its constant
 // and registered by actionResults, and the two are separate edits. A constant
@@ -261,6 +262,8 @@ func TestRecord_SecondFactorActions(t *testing.T) {
 		ActionMFARecoveryCodesRegenerated,
 		ActionMFAPasskeyRegistered,
 		ActionMFAPasskeyRemoved,
+		ActionUserMFAReset,
+		ActionUserPasskeyRevoked,
 	}
 
 	for _, action := range actions {

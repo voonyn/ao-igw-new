@@ -12,9 +12,9 @@ import { sessionColumns, terminateBulk } from "@/components/views/sessions";
 import { EntityHeader, FullPage, ReadField, SectionCard, TabPanel, Tabs } from "@/components/console/overlays";
 import { useConsole, usePagedList, usePending, type Actions } from "@/components/console/store";
 import { PageHead } from "@/components/console/page-head";
-import { authPolicyApi, canManageTenant, canWriteAnyOrg, canWriteOrg, pages, sessionsApi, userMemberships, usersApi, type AuthPolicy, type Me, type UserMemberships } from "@/lib/console-api";
+import { authPolicyApi, canManageTenant, canWriteAnyOrg, canWriteOrg, pages, passkeysApi, sessionsApi, userMemberships, usersApi, type AuthPolicy, type Me, type Passkey, type UserMemberships } from "@/lib/console-api";
 import { LABELS } from "@/lib/data";
-import { orgName, orNever, userDisplay } from "@/lib/helpers";
+import { fmtTs, orgName, orNever, userDisplay } from "@/lib/helpers";
 import { passwordViolation, policyRules } from "@/lib/password-policy";
 import type { User } from "@/lib/types";
 
@@ -332,6 +332,12 @@ export function UserDetailPage({
               </Btn>
             )}
           </SectionCard>
+          {/* Gated on `canWrite` because the gateway gates BOTH calls on the
+              same write role: a viewer who was shown the list would only
+              receive a 403. Revoking one device is the narrow answer to "I lost
+              my laptop" — every other factor that person holds survives it,
+              which is what tells it apart from the reset above. */}
+          {canWrite && <UserPasskeysCard user={user} onChanged={onChanged} />}
           {accessCard}
         </div>
       )}
@@ -362,6 +368,106 @@ export function UserDetailPage({
         </SectionCard>
       )}
     </FullPage>
+  );
+}
+
+/**
+ * The passkeys this person holds, and the revoke for one of them.
+ *
+ * The console never registers a passkey: a factor belongs to whoever holds the
+ * device, so the ceremony runs in the portal under that person's own token. This
+ * card reads and revokes, and the gateway mounts no third route.
+ *
+ * The list is bounded — ten per person — so it answers whole and carries no
+ * pager, the way the memberships read does.
+ */
+function UserPasskeysCard({ user, onChanged }: { user: User; onChanged?: () => Promise<void> }) {
+  const { A, dataVersion } = useConsole();
+  const [state, setState] = useState<{ phase: "loading" } | { phase: "ready"; rows: Passkey[] } | { phase: "error"; why: string }>({
+    phase: "loading",
+  });
+  const [busy, runGuarded] = usePending();
+  // Bumped by a revoke, so the list re-reads without waiting for the console-wide
+  // refresh the parent also triggers.
+  const [version, setVersion] = useState(0);
+
+  useEffect(() => {
+    let cancelled = false;
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setState({ phase: "loading" });
+    passkeysApi
+      .list(user.id)
+      .then((out) => {
+        if (cancelled) return;
+        setState(
+          out.ok
+            ? { phase: "ready", rows: out.data }
+            : { phase: "error", why: out.reason === "forbidden" ? "Reading this user's passkeys requires a role you don't hold." : "This user is outside your access." }
+        );
+      })
+      .catch((e: unknown) => {
+        if (!cancelled) setState({ phase: "error", why: e instanceof Error ? e.message : "Request failed" });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [user.id, dataVersion, version]);
+
+  async function revoke(row: Passkey) {
+    const ok = await confirmAction({
+      // The device is named in the title. Two passkeys may share a name, so the
+      // body carries when it was added — that is what tells them apart.
+      title: `Revoke “${row.name}” for ${userDisplay(user)}?`,
+      body: `This passkey stops signing them in immediately. It was added ${fmtTs(row.createdAt)}. Every other second factor they hold — their authenticator and any other passkey — is untouched. They cannot undo this; the device must be registered again from their account.`,
+      confirmLabel: "Revoke passkey",
+      destructive: true,
+    });
+    if (!ok) return;
+    await runGuarded(() => passkeysApi.revoke(user.id, row.id), {
+      ok: `Revoked “${row.name}”`,
+      icon: "key",
+      after: async () => {
+        setVersion((v) => v + 1);
+        await A.reload();
+        // The two-factor badge above turns on the passkeys and the authenticator
+        // together, so revoking the last factor changes the record this page
+        // renders.
+        if (onChanged) await onChanged();
+      },
+    });
+  }
+
+  return (
+    <SectionCard title="Passkeys" desc="Devices this person signs in with instead of a code. Revoking one takes that device out of service and leaves every other second factor in place — use it when a device is lost. Passkeys are registered by the user, never from here.">
+      {state.phase === "loading" && <div style={{ fontSize: 13, color: "var(--muted)" }}>Loading passkeys…</div>}
+      {state.phase === "error" && <div style={{ fontSize: 13, color: "var(--muted)" }}>{state.why}</div>}
+      {state.phase === "ready" && state.rows.length === 0 && (
+        <div style={{ fontSize: 13, color: "var(--muted)" }}>This account has no passkeys.</div>
+      )}
+      {state.phase === "ready" &&
+        state.rows.map((row) => (
+          <KV
+            key={row.id}
+            k={
+              <span style={{ display: "inline-flex", alignItems: "center", gap: 7 }}>
+                <Icon name="fingerprint" size={14} />
+                {row.name}
+              </span>
+            }
+            v={
+              <span style={{ display: "inline-flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+                <span style={{ fontSize: 12, color: "var(--muted)" }}>
+                  Added <Ts value={row.createdAt} /> · Last used <Ts value={row.lastUsedAt} empty="Never" />
+                </span>
+                <Btn className="btn sm danger-ghost" pending={busy} onClick={() => void revoke(row)}>
+                  <Icon name="ban" size={13} />
+                  Revoke
+                </Btn>
+              </span>
+            }
+          />
+        ))}
+    </SectionCard>
   );
 }
 

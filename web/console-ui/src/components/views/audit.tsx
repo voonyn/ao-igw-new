@@ -27,8 +27,17 @@ const ACTION_LABEL: Record<string, string> = {
   "email.verified": "Email verified",
   "account.locked": "Account locked",
   "account.unlocked": "Account unlocked",
+  // Every second-factor action, so the feed never renders one as a raw slug.
+  // The four a person takes on their own account are the ones the portal
+  // activity feed names; the two below them are what an operator does here.
+  "mfa.enrolled": "Two-factor enrolled",
+  "mfa.removed": "Two-factor removed",
   "mfa.recovery_code_used": "Recovery code used",
   "mfa.recovery_codes_regenerated": "Recovery codes replaced",
+  "mfa.passkey_registered": "Passkey added",
+  "mfa.passkey_removed": "Passkey removed",
+  "user.mfa_reset": "Two-factor reset",
+  "user.passkey_revoked": "Passkey revoked",
   "user.created": "User created",
   "user.updated": "User updated",
   "user.deactivated": "User deactivated",

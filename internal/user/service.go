@@ -919,6 +919,20 @@ func displayName(row User) string {
 	return row.Username
 }
 
+// AuthorizeWrite refuses an operator who may not manage this person. It is
+// `writable` with the row dropped, for a caller that wanted the gate alone.
+//
+// The console Passkey routes run it. They live in the passkey module, which
+// imports neither this domain nor the login session domain, so the router hands
+// it this check the way it hands that module every other crossing.
+//
+// A member without the role is refused on the read as firmly as on the revoke,
+// so they never learn whether the person holds a Passkey at all.
+func (s *Service) AuthorizeWrite(ctx context.Context, a Actor, userID, what string) error {
+	_, err := s.writable(ctx, a, userID, what)
+	return err
+}
+
 // writable reads the account one write names, once the person is allowed to
 // write it.
 //

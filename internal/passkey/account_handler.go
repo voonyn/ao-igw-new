@@ -60,7 +60,7 @@ func AccountRoutes(router fiber.Router, h *AccountHandler) {
 func (h *AccountHandler) list(c fiber.Ctx) error {
 	tc, _ := middlewares.TenantFrom(c)
 
-	rows, err := h.svc.AccountList(c.Context(), tc.TenantID, accountPrincipal(c))
+	rows, err := h.svc.AccountList(c.Context(), tc.TenantID, principal(c))
 	if err != nil {
 		return response.Fail(c, err)
 	}
@@ -77,7 +77,7 @@ func (h *AccountHandler) start(c fiber.Ctx) error {
 	tc, _ := middlewares.TenantFrom(c)
 
 	creation, err := h.svc.AccountRegisterStart(
-		c.Context(), tc.TenantID, tc.Host, origin(c), accountPrincipal(c))
+		c.Context(), tc.TenantID, tc.Host, origin(c), principal(c))
 	if err != nil {
 		return response.Fail(c, err)
 	}
@@ -96,7 +96,7 @@ func (h *AccountHandler) finish(c fiber.Ctx) error {
 
 	row, err := h.svc.AccountRegisterFinish(
 		c.Context(), tc.TenantID, tc.Host, origin(c), req.Name,
-		accountPrincipal(c), req.Credential)
+		principal(c), req.Credential)
 	if err != nil {
 		return response.Fail(c, err)
 	}
@@ -117,7 +117,7 @@ func (h *AccountHandler) rename(c fiber.Ctx) error {
 	tc, _ := middlewares.TenantFrom(c)
 
 	if err := h.svc.AccountRename(
-		c.Context(), tc.TenantID, accountPrincipal(c), c.Params("id"), req.Name,
+		c.Context(), tc.TenantID, principal(c), c.Params("id"), req.Name,
 	); err != nil {
 		return response.Fail(c, err)
 	}
@@ -140,7 +140,7 @@ func (h *AccountHandler) remove(c fiber.Ctx) error {
 	tc, _ := middlewares.TenantFrom(c)
 
 	if err := h.svc.AccountRemove(
-		c.Context(), tc.TenantID, accountPrincipal(c), c.Params("id"), req.Password,
+		c.Context(), tc.TenantID, principal(c), c.Params("id"), req.Password,
 	); err != nil {
 		return response.Fail(c, err)
 	}
@@ -155,11 +155,12 @@ func (h *AccountHandler) remove(c fiber.Ctx) error {
 // value, because the rule is a rule of the ceremony and not of the transport.
 func origin(c fiber.Ctx) string { return c.Get(fiber.HeaderOrigin) }
 
-// accountPrincipal reads the person behind one portal request.
+// principal reads the person behind one bearer request: the account holder on
+// the portal, and the operator on the console.
 //
-// It names no login session, because the portal holds an access token and no
+// It names no login session, because both front ends hold an access token and no
 // sign-in is in flight. The bearer guard has already decided this request.
-func accountPrincipal(c fiber.Ctx) Principal {
+func principal(c fiber.Ctx) Principal {
 	who := middlewares.ActorFrom(c)
 	return Principal{UserID: who.UserID, IP: who.IP, UserAgent: who.UserAgent}
 }

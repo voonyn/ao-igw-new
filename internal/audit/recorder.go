@@ -49,6 +49,15 @@ const (
 	ActionUserMFAReset      Action = "user.mfa_reset"
 	ActionUserInvited       Action = "user.invited"
 
+	// ActionUserPasskeyRevoked records an operator revoking one Passkey of
+	// somebody else, from the console. ActionMFAPasskeyRemoved is the same act by
+	// the person who holds the device.
+	//
+	// The two never share a name. A support call about a lost laptop ends here,
+	// and a trail that could not say who pressed the button is not the record of
+	// it. ActionUserMFAReset is the wider act: it clears every Factor at once.
+	ActionUserPasskeyRevoked Action = "user.passkey_revoked"
+
 	// ActionPasswordChanged records a person changing their own password. The
 	// administrative reset is ActionUserPasswordReset: an operator mints a token,
 	// and the person here chose the new secret themselves.
@@ -212,6 +221,7 @@ var actionResults = map[Action]string{
 	ActionUserPasswordReset:  ResultSuccess,
 	ActionUserMFAReset:       ResultSuccess,
 	ActionUserInvited:        ResultSuccess,
+	ActionUserPasskeyRevoked: ResultSuccess,
 	ActionPasswordChanged:    ResultSuccess,
 	ActionMemberAdded:        ResultSuccess,
 	ActionMemberUpdated:      ResultSuccess,

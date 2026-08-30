@@ -634,6 +634,32 @@ export const usersApi = {
   remove: (id: string) => mutate(`/api/admin/users/${id}`, "DELETE"),
 };
 
+/** One passkey of one user, as the gateway's `passkey.View` answers it. `id` is
+ * the credential id in the base64url spelling the browser uses — a public handle
+ * every assertion sends in the clear, never a credential. No public key reaches
+ * this shape. `lastUsedAt` is absent until the passkey signs the person in once. */
+export interface Passkey {
+  id: string;
+  name: string;
+  createdAt: string;
+  lastUsedAt?: string;
+}
+
+/** A person's passkeys, read and revoked by an administrator.
+ *
+ * There is no `register`. A passkey belongs to whoever holds the device, so the
+ * ceremony runs in the portal under that person's own token — no privilege here
+ * enrolls a factor for somebody else.
+ *
+ * `list` is optional, not throwing: both calls sit behind the same role gate, so
+ * a refusal is a routine outcome the view names rather than an Error it sniffs.
+ * The list is bounded (ten per person) and answers whole, so it carries no pager. */
+export const passkeysApi = {
+  list: (userId: string) => getOptional<Passkey[]>(`/api/admin/users/${encodeURIComponent(userId)}/passkeys`),
+  revoke: (userId: string, id: string) =>
+    mutate<void>(`/api/admin/users/${encodeURIComponent(userId)}/passkeys/${encodeURIComponent(id)}`, "DELETE"),
+};
+
 /** Administrative force-logout (add-admin-force-logout). Stronger than a user's
  * own sign-out: the grants go too, offline_access included, so no refresh token
  * survives. Already-issued access tokens live out their TTL at the relying party. */
@@ -771,6 +797,11 @@ const MUTATION_MESSAGES: Record<string, string> = {
   // and fail on the other. The add is refused instead.
   registrable_domain:
     "That host doesn't share the registrable domain (eTLD+1) of this tenant's existing domains. Passkeys would stop working, so the domain wasn't added.",
+  // A revoke against a list the operator has been looking at for a while. The
+  // person can remove their own passkey from the portal, and a second operator
+  // can revoke it here, so the row on screen is simply stale — the device is
+  // already out of service either way.
+  passkey_not_found: "That passkey is already gone. Refresh to see what this account holds now.",
   invalid_input: "Some fields are invalid — check the form and try again.",
   internal_server_error: "The server hit an error. Please try again.",
   protected_claim: "That claim name is reserved (a protocol or trust claim) and can't be used.",
