@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/uptrace/bun"
 
@@ -49,6 +50,36 @@ func (r *Repository) List(ctx context.Context, tenantID, userID string) ([]Crede
 		logger.String("tenant_id", tenantID), logger.String("user_id", userID),
 		logger.Int("count", len(rows)), logger.RequestID(ctx))
 	return rows, nil
+}
+
+// HasAny reports whether one person holds at least one live Passkey.
+//
+// The password step reads it to name the Pending Steps, so it counts and reads
+// no blob. List answers the same question, and it would carry every stored
+// public key across the wire on every sign-in to do it.
+//
+// The row carries deleted_at, so bun narrows the read to the live rows on its
+// own. A revoked Passkey therefore stops routing a person to the challenge at
+// once.
+func (r *Repository) HasAny(ctx context.Context, tenantID, userID string) (bool, error) {
+	r.log.Debug("count the passkeys",
+		logger.String("tenant_id", tenantID), logger.String("user_id", userID),
+		logger.RequestID(ctx))
+
+	held, err := db.Conn(ctx, r.db).NewSelect().
+		Model((*Credential)(nil)).
+		Where("tenant_id = ?", tenantID).
+		Where("user_id = ?", userID).
+		Exists(ctx)
+	if err != nil {
+		return false, fmt.Errorf("count the passkeys of user %s of tenant %s: %w",
+			userID, tenantID, err)
+	}
+
+	r.log.Debug("counted the passkeys",
+		logger.String("tenant_id", tenantID), logger.String("user_id", userID),
+		logger.Bool("held", held), logger.RequestID(ctx))
+	return held, nil
 }
 
 // Insert writes one registered Passkey. It runs on the caller's transaction, so
@@ -143,6 +174,42 @@ func (r *Repository) Revive(ctx context.Context, row Credential) error {
 
 	r.log.Debug("revived a passkey",
 		logger.String("tenant_id", row.TenantID), logger.String("user_id", row.UserID),
+		logger.RequestID(ctx))
+	return nil
+}
+
+// Touch writes back what one successful assertion changed: the stored blob,
+// which carries the new sign counter and the new backup state, and the moment
+// the Passkey was last used. It runs on the caller's transaction, so the
+// write-back and the session completion land together.
+//
+// The write is narrowed to the tenant, to the person, and to the live rows. A
+// Passkey somebody removed while the ceremony ran signs nobody in, so a write
+// that touches no row answers ErrNotFound and the sign-in is refused.
+func (r *Repository) Touch(
+	ctx context.Context, tenantID, userID string, credID []byte, record string,
+) error {
+	r.log.Debug("touch a passkey",
+		logger.String("tenant_id", tenantID), logger.String("user_id", userID),
+		logger.String("credential_id", credentialID(credID)), logger.RequestID(ctx))
+
+	res, err := db.Conn(ctx, r.db).NewUpdate().
+		Model((*Credential)(nil)).
+		Set("credential = ?", record).
+		Set("last_used_at = ?", time.Now().UTC()).
+		Where("tenant_id = ?", tenantID).
+		Where("user_id = ?", userID).
+		Where("credential_id = ?", credID).
+		Exec(ctx)
+	if err != nil {
+		return fmt.Errorf("touch the passkey of user %s of tenant %s: %w", userID, tenantID, err)
+	}
+	if touched, err := res.RowsAffected(); err == nil && touched == 0 {
+		return ErrNotFound
+	}
+
+	r.log.Debug("touched a passkey",
+		logger.String("tenant_id", tenantID), logger.String("user_id", userID),
 		logger.RequestID(ctx))
 	return nil
 }

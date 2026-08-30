@@ -80,3 +80,22 @@ type RenameRequest struct {
 type PasswordProofRequest struct {
 	Password string `json:"password" validate:"required,max=72"`
 }
+
+// ChallengeFinishRequest is the body of POST /mfa/passkey/challenge/finish.
+//
+// Credential is the object navigator.credentials.get() produced, passed through
+// whole. Every field of it is covered by what the device signed, so nothing
+// between the browser and the library picks a field out of it. The gateway is
+// the first thing that reads inside it.
+type ChallengeFinishRequest struct {
+	Credential json.RawMessage `json:"credential" validate:"required"`
+}
+
+// ChallengeResponse is the answer to POST /mfa/passkey/challenge/finish.
+//
+// SessionToken is the rotated token, disclosed exactly once, here. The token the
+// caller presented is dead from this moment. It is the same field the TOTP
+// challenge answers, so the sign-in front end reads one shape at both steps.
+type ChallengeResponse struct {
+	SessionToken string `json:"sessionToken"`
+}

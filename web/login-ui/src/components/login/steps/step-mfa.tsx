@@ -23,11 +23,15 @@ import { AlertCircleIcon, LockIcon, MfaIcon } from "../icons"
 export function StepMfa({
   onBack,
   onVerify,
+  onPasskey,
 }: {
   onBack: () => void
   /** Verifies a TOTP or recovery code. Resolves to an error message to display,
    *  or null on success (the parent navigates forward, unmounting this step). */
   onVerify: (code: string) => Promise<string | null>
+  /** Routes back to the passkey challenge, or undefined when the sign-in owes
+   *  none. A person who holds both Second Factors reaches either one from here. */
+  onPasskey?: () => void
 }) {
   const [mode, setMode] = React.useState<"totp" | "recovery">("totp")
   const [code, setCode] = React.useState("")
@@ -144,6 +148,12 @@ export function StepMfa({
           {mode === "totp" ? "Use a recovery code instead" : "Use your authenticator app"}
         </LinkButton>
       </p>
+
+      {onPasskey && (
+        <p className="mt-2 text-center">
+          <LinkButton onClick={onPasskey}>Use your passkey instead</LinkButton>
+        </p>
+      )}
 
       <p className="mt-3 text-center text-[12.5px] text-pretty text-ao-muted">
         Lost your authenticator app and used every recovery code? An administrator can

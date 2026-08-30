@@ -6,8 +6,8 @@ package oidc_test
 // Three cases live here. Every sign-in second-factor address refuses a Login
 // Session that proved no password. An organization override of the MFA
 // Requirement decides the sign-in while the tenant default says the opposite. A
-// person who holds a passkey and no TOTP Enrolment is never sent to a TOTP
-// challenge.
+// person who holds a passkey and no TOTP Enrolment is sent to the passkey
+// challenge and never to a TOTP one.
 //
 // It shares the gateway, the fixture and the helpers of flow_integration_test.go,
 // so it skips on the same environment variable and it creates its own person and
@@ -124,13 +124,15 @@ func TestOrganizationOverrideDecidesTheRequirement(t *testing.T) {
 }
 
 // TestAPasskeyIsNeverATOTPChallenge proves that a person who holds a passkey and
-// no TOTP Enrolment signs in with their password alone.
+// no TOTP Enrolment reaches the passkey challenge, and never the TOTP one.
 //
 // The console renders one flag for both kinds of factor, and the derived column
-// behind that flag counts a passkey as a second factor. No passkey backend
-// answers a sign-in, so a step that read the derived column would send this
-// person to a TOTP challenge that nothing can answer, and the account would be
-// shut out of the gateway.
+// behind that flag counts both in one value. A step list built from that column
+// could not say which challenge this person can answer, and it would send them
+// to a TOTP challenge they hold no secret for.
+//
+// Each Factor is therefore read from the module that owns it. This test is what
+// says so: the person holds a passkey row and no TOTP row, and one step is owed.
 func TestAPasskeyIsNeverATOTPChallenge(t *testing.T) {
 	skipUnlessIntegration(t)
 
@@ -143,22 +145,20 @@ func TestAPasskeyIsNeverATOTPChallenge(t *testing.T) {
 		t.Fatalf("the person holds %d totp rows, want none", held)
 	}
 
-	auth := gw.startAuthorization(t, fx.confidential)
-	token, methods := signInToPassword(t, gw, fx)
+	_, methods := signInToPassword(t, gw, fx)
 
-	if len(methods) != 0 {
-		t.Fatalf("methods is %v, want none: the person holds no totp enrolment", methods)
-	}
-	if issued := gw.finish(t, fx.confidential, auth, token); issued.AccessToken == "" {
-		t.Fatal("the sign-in issued no token")
+	want := []string{session.StepChallengePasskey}
+	if len(methods) != 1 || methods[0] != want[0] {
+		t.Fatalf("methods is %v, want %v", methods, want)
 	}
 }
 
-// givePasskey registers one passkey on the person, and removes it when the test
+// givePasskey writes one passkey row for the person, and removes it when the test
 // ends. The fixture cleanup does not reach this table.
 //
-// The stored blob is a public key and metadata, so an empty object is enough.
-// Nothing in a sign-in reads it, and that is what the test is about.
+// The blob is an empty object, so this device can answer no challenge. The step
+// signal is what this test reads, and the step signal counts rows. A ceremony
+// that a real device answers is driven in passkey_challenge_flow_test.go.
 func givePasskey(t *testing.T, gw *gateway, fx fixture) {
 	t.Helper()
 

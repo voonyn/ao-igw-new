@@ -141,7 +141,7 @@ func Routes(app *fiber.App, cfg *config.Config, bdb *bun.DB, rdb cache.Client, l
 	// The second-factor service serves both stacks. The sign-in drives its two
 	// enrolment steps and its challenge, and the portal drives the same enrolment
 	// under an access token, so one build is handed to each.
-	factorSvc := mountMFA(loginGroup, bdb, rdb, cipher, factors, recorder, sessions, tx.RunInTx, log)
+	factorSvc := mountMFA(loginGroup, cfg, bdb, rdb, cipher, factors, recorder, sessions, tx.RunInTx, log)
 	// How this deployment sends mail. Both stacks send: the console configures
 	// the templates, and the account stack tells a person that a Factor changed
 	// on their account. One build means one set of settings and one set of
@@ -232,9 +232,9 @@ func mountLogin(
 // access token, and a second build would give that path its own dependencies to
 // drift from these.
 func mountMFA(
-	loginGroup fiber.Router, bdb *bun.DB, rdb cache.Client, cipher *crypto.Cipher,
-	factors *totp.Repository, recorder *audit.Recorder, sessions *session.Service,
-	tx db.TxRunner, log logger.Logger,
+	loginGroup fiber.Router, cfg *config.Config, bdb *bun.DB, rdb cache.Client,
+	cipher *crypto.Cipher, factors *totp.Repository, recorder *audit.Recorder,
+	sessions *session.Service, tx db.TxRunner, log logger.Logger,
 ) *totp.Service {
 	users := user.NewRepository(bdb, log)
 
@@ -317,8 +317,103 @@ func mountMFA(
 		Log:    log,
 	})
 
-	totp.LoginRoutes(loginGroup.Group(mfaSuffix), totp.NewHandler(svc))
+	// One group holds both Second Factors, so the credential of the front end,
+	// the tenant lookup, and the tenant guard each run once per request.
+	mfaGroup := loginGroup.Group(mfaSuffix)
+	totp.LoginRoutes(mfaGroup, totp.NewHandler(svc))
+
+	// The Passkey challenge of the sign-in. It mounts beside the TOTP routes, so
+	// the two Second Factors sit side by side.
+	//
+	// The module imports neither the user domain nor the login session domain,
+	// so both crossings are composed here, the way the TOTP crossings above are.
+	passkeys := passkey.NewRepository(bdb, log)
+	deps := passkeyCeremony(cfg, passkeys, tenant.NewRepository(bdb, log), rdb, users,
+		svc.SpendGuess, recorder, tx, log)
+	deps.Touch = passkeys.Touch
+	deps.FindSession = func(ctx context.Context, tenantID, token string) (passkey.Principal, error) {
+		// Find, and not Resolve: the module decides what an unfinished session
+		// may do, and it refuses one that proved no password.
+		live, err := sessions.Find(ctx, tenantID, token)
+		if err != nil {
+			return passkey.Principal{}, err
+		}
+		_, proved := live.Factors[session.FactorPassword]
+		return passkey.Principal{
+			UserID:         live.UserID,
+			IP:             live.IP,
+			UserAgent:      live.UserAgent,
+			SessionID:      live.ID,
+			PasswordProved: proved,
+		}, nil
+	}
+	// The factor name is the login session domain's to spell, so it is named
+	// here and nowhere inside the passkey module. ADR 0012 fixes the value.
+	deps.CompleteSession = func(ctx context.Context, tenantID, token, userID string) (string, error) {
+		upgraded, err := sessions.Complete(ctx, tenantID, token, userID, session.FactorPasskey)
+		return upgraded.Token, err
+	}
+	passkey.LoginRoutes(mfaGroup, passkey.NewHandler(passkey.NewService(deps)))
+
 	return svc
+}
+
+// passkeyCeremony is the half of the passkey dependencies both ceremonies share:
+// who the person is, the Passkeys they hold, the origins a ceremony may run
+// from, the RP ID override, the challenge store, and the shared guessing budget.
+//
+// One builder holds them because the sign-in and the portal must derive the same
+// RP ID from the same host and keep the same origins. Two copies of that
+// resolution would let a Passkey register under a relying party no sign-in
+// answers.
+//
+// Each caller fills the rest: the portal adds the writes and the password proof,
+// and the sign-in adds the two login session crossings and the write-back.
+func passkeyCeremony(
+	cfg *config.Config, passkeys *passkey.Repository, tenants *tenant.Repository,
+	rdb cache.Client, users *user.Repository, budget passkey.BudgetSpender,
+	recorder *audit.Recorder, tx db.TxRunner, log logger.Logger,
+) passkey.Deps {
+	return passkey.Deps{
+		// What the library prints beside the prompt. It never reaches an
+		// authenticator screen here, because a Passkey is a Second Factor and
+		// the person already typed an identifier, but the library demands it.
+		Account: func(ctx context.Context, tenantID, userID string) (string, error) {
+			row, err := users.FindByID(ctx, tenantID, userID)
+			if err != nil {
+				return "", err
+			}
+			if row.Email != "" {
+				return row.Email, nil
+			}
+			return row.Username, nil
+		},
+
+		List: passkeys.List,
+
+		// Every origin a ceremony of this tenant may run from: the hosts the
+		// tenant serves, and the front ends of the deployment. The library
+		// refuses to start with an empty list, so a tenant that serves no
+		// verified host and a deployment that named no front end run no ceremony.
+		Origins: func(ctx context.Context, tenantID string) ([]string, error) {
+			rows, err := tenants.ListDomains(ctx, tenantID)
+			if err != nil {
+				return nil, err
+			}
+			return webAuthnOrigins(rows, cfg.OIDC.WebAuthnOrigins), nil
+		},
+
+		// The one guessing budget of both Second Factors. A start is what costs
+		// the gateway work, so a start spends it, the way a TOTP submission does.
+		Budget: budget,
+
+		RPIDOverride: cfg.OIDC.WebAuthnRPID,
+		Ceremony:     rdb,
+
+		InTx:  tx,
+		Audit: recorder,
+		Log:   log,
+	}
 }
 
 // mountQRLogin builds the three routes that turn a scan into a sign-in.
@@ -748,82 +843,45 @@ func mountAccount(
 	// The ceremony store is Redis and nothing else. No table holds a challenge,
 	// and a cache failure refuses the ceremony. See
 	// docs/adr/0002-session-storage.md.
-	tenants := tenant.NewRepository(bdb, log)
 	passkeys := passkey.NewRepository(bdb, log)
-	passkeySvc := passkey.NewService(passkey.Deps{
-		// What the library prints beside the prompt. It never reaches an
-		// authenticator screen here, because a Passkey is a Second Factor and
-		// the person already typed an identifier, but the library demands it.
-		Account: func(ctx context.Context, tenantID, userID string) (string, error) {
-			row, err := users.FindByID(ctx, tenantID, userID)
-			if err != nil {
-				return "", err
-			}
-			if row.Email != "" {
-				return row.Email, nil
-			}
-			return row.Username, nil
-		},
+	passkeyDeps := passkeyCeremony(cfg, passkeys, tenant.NewRepository(bdb, log), rdb, users,
+		factorSvc.SpendGuess, recorder, tx, log)
+	passkeyDeps.Insert = passkeys.Insert
+	passkeyDeps.Find = passkeys.FindByCredential
+	passkeyDeps.Revive = passkeys.Revive
+	passkeyDeps.Rename = passkeys.Rename
+	passkeyDeps.Delete = passkeys.Delete
 
-		List:   passkeys.List,
-		Insert: passkeys.Insert,
-		Find:   passkeys.FindByCredential,
-		Revive: passkeys.Revive,
-		Rename: passkeys.Rename,
-		Delete: passkeys.Delete,
+	// The proof the removal demands. It is the check the TOTP removal and the
+	// password change both run, so a person reads one refusal wherever the portal
+	// asks for a password, and this module imports neither the user domain nor
+	// the password hashing.
+	passkeyDeps.VerifyPassword = func(ctx context.Context, tenantID, userID, plain string) error {
+		return accountSvc.VerifyPassword(ctx,
+			user.Actor{TenantID: tenantID, UserID: userID}, plain)
+	}
 
-		// The proof the removal demands. It is the check the TOTP removal and
-		// the password change both run, so a person reads one refusal wherever
-		// the portal asks for a password, and this module imports neither the
-		// user domain nor the password hashing.
-		VerifyPassword: func(ctx context.Context, tenantID, userID, plain string) error {
-			return accountSvc.VerifyPassword(ctx,
-				user.Actor{TenantID: tenantID, UserID: userID}, plain)
-		},
+	// What tells the person that a Factor was added. It sends to the email
+	// address of the account, and an account that holds none is told nothing: a
+	// machine account has no person to warn.
+	passkeyDeps.Notify = func(ctx context.Context, tenantID, userID, _ string) error {
+		row, err := users.FindByID(ctx, tenantID, userID)
+		if err != nil {
+			return err
+		}
+		if row.Email == "" {
+			return nil
+		}
+		name := row.DisplayName
+		if name == "" {
+			name = row.Email
+		}
+		return notificationSvc.Notify(ctx, tenantID,
+			notification.KeyPasskeyRegistered, row.Email,
+			notification.Vars{DisplayName: name})
+	}
 
-		// Every origin a ceremony of this tenant may run from: the hosts the
-		// tenant serves, and the front ends of the deployment. The library
-		// refuses to start with an empty list, so a tenant that serves no
-		// verified host and a deployment that named no front end run no ceremony.
-		Origins: func(ctx context.Context, tenantID string) ([]string, error) {
-			rows, err := tenants.ListDomains(ctx, tenantID)
-			if err != nil {
-				return nil, err
-			}
-			return webAuthnOrigins(rows, cfg.OIDC.WebAuthnOrigins), nil
-		},
-
-		// The one guessing budget of both Second Factors. A start is what costs
-		// the gateway work, so a start spends it, the way a TOTP submission does.
-		Budget: factorSvc.SpendGuess,
-
-		// What tells the person that a Factor was added. It sends to the email
-		// address of the account, and an account that holds none is told nothing:
-		// a machine account has no person to warn.
-		Notify: func(ctx context.Context, tenantID, userID, _ string) error {
-			row, err := users.FindByID(ctx, tenantID, userID)
-			if err != nil {
-				return err
-			}
-			if row.Email == "" {
-				return nil
-			}
-			name := row.DisplayName
-			if name == "" {
-				name = row.Email
-			}
-			return notificationSvc.Notify(ctx, tenantID,
-				notification.KeyPasskeyRegistered, row.Email,
-				notification.Vars{DisplayName: name})
-		},
-
-		RPIDOverride: cfg.OIDC.WebAuthnRPID,
-		Ceremony:     rdb,
-
-		InTx:  tx,
-		Audit: recorder,
-		Log:   log,
-	})
+	passkeySvc := passkey.NewService(passkeyDeps)
 
 	group := app.Group(accountPrefix, tenantMW, bearer)
 	user.AccountRoutes(group, user.NewAccountHandler(accountSvc))
@@ -964,12 +1022,17 @@ func newSessionService(
 // pendingSteps names the Pending Steps a person still owes after the password
 // step.
 //
-// A person who holds an active factor is sent to the challenge, and a person the
-// requirement governs who holds none is sent to enrolment.
+// A person who holds a Second Factor is sent to the challenge of every Factor
+// they hold, and a person the requirement governs who holds none is sent to
+// enrolment.
 //
-// It reads through three domains, so it is composed here: the person names the
+// The Passkey step comes first. It is the faster Factor and the stronger one, so
+// the sign-in front end renders it and offers the rest as another method.
+//
+// It reads through four domains, so it is composed here: the person names the
 // organization, the organization resolves the MFA Requirement over the tenant
-// default, and the TOTP module answers whether the person holds a factor.
+// default, and the TOTP and passkey modules each answer whether the person holds
+// that Factor.
 //
 // Moving it into internal/authpolicy was weighed and refused. No cycle blocks the
 // move, but that package is a policy leaf today, and Service.MFARequired is shaped
@@ -980,9 +1043,9 @@ func newSessionService(
 // policy already does. A read of the tenant row alone would make every
 // organization override silently do nothing while the console reports it as set.
 //
-// The predicate counts TOTP and nothing else. The derived second-factor column
-// on the user list also counts passkeys, and no passkey backend exists, so a
-// person routed on that column would reach a screen that never moves.
+// Each Factor is read from the module that owns it. The derived second-factor
+// column on the user list counts both in one flag, and a step list built from it
+// could not say which challenge a person can actually answer.
 //
 // One function answers the step signal, so the signal and the gate that enforces
 // it can never disagree. Two copies of an authentication predicate drift, and a
@@ -990,6 +1053,8 @@ func newSessionService(
 func pendingSteps(
 	users *user.Repository, factors *totp.Repository, bdb *bun.DB, log logger.Logger,
 ) session.PendingSteps {
+	passkeys := passkey.NewRepository(bdb, log)
+
 	// Only the stored row of each level is read here, so the policy service is
 	// built with the one dependency it needs. The console writes the policy, and
 	// that is mounted on the admin API.
@@ -1005,15 +1070,22 @@ func pendingSteps(
 			return nil, nil
 		}
 
-		// An active factor is always challenged, whatever the policy says, so the
-		// read comes first and the requirement is never consulted. A person who
-		// chose to protect their account keeps that protection on the day an
-		// administrator clears the flag.
-		// The two reads below are logged here and nowhere else. The caller takes
-		// this as an opaque function value and cannot classify what it answers,
-		// so this is the last layer that can name the tenant and the person the
-		// read was for. MFARequired logs its own failure, which is why the read
-		// under it is returned raw.
+		// A Factor the person holds is always challenged, whatever the policy
+		// says, so both reads come first and the requirement is never consulted.
+		// A person who chose to protect their account keeps that protection on
+		// the day an administrator clears the flag.
+		// The reads below are logged here and nowhere else. The caller takes this
+		// as an opaque function value and cannot classify what it answers, so
+		// this is the last layer that can name the tenant and the person the read
+		// was for. MFARequired logs its own failure, which is why the read under
+		// it is returned raw.
+		key, err := passkeys.HasAny(ctx, tenantID, userID)
+		if err != nil {
+			log.Error("read the passkeys to resolve the pending steps",
+				logger.String("tenant_id", tenantID),
+				logger.String("user_id", userID), logger.Err(err))
+			return nil, err
+		}
 		held, err := factors.HasActiveFactor(ctx, tenantID, userID)
 		if err != nil {
 			log.Error("read the active second factor to resolve the pending steps",
@@ -1021,8 +1093,19 @@ func pendingSteps(
 				logger.String("user_id", userID), logger.Err(err))
 			return nil, err
 		}
+
+		// The Passkey first: it is the faster Factor, and the front end renders
+		// the first step and offers the rest as another method. A person who
+		// holds both is offered both, and proves one of them.
+		steps := make([]string, 0, 2)
+		if key {
+			steps = append(steps, session.StepChallengePasskey)
+		}
 		if held {
-			return []string{session.StepChallengeOTP}, nil
+			steps = append(steps, session.StepChallengeOTP)
+		}
+		if len(steps) > 0 {
+			return steps, nil
 		}
 
 		row, err := users.FindByID(ctx, tenantID, userID)

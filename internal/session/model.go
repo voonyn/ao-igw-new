@@ -58,9 +58,10 @@ const FactorPasskey = "webauthn"
 // gate reads a challenge step as a Factor name, so a step named for one thing and
 // a Factor named for another would be owed for ever.
 //
-// The two passkey steps are named because ADR 0012 fixes their text and the
-// finalize gate reads it. No passkey backend exists yet, so pendingSteps never
-// answers either one, and nobody is routed to a screen that never moves.
+// StepChallengePasskey is answered by the passkey challenge of the sign-in.
+// StepEnrolPasskey is named because ADR 0012 fixes its text and the finalize gate
+// reads it, and the enrolment behind it is not built yet, so pendingSteps never
+// answers that one.
 const (
 	// StepChallengeOTP is owed by a person who holds an active TOTP Enrolment.
 	StepChallengeOTP = "otp"

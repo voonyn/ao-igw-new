@@ -8,19 +8,25 @@
 
 /**
  * stepFor maps the pending steps the gateway says are still owed to the route
- * that runs them. `otp` challenges an enrolled user, and `otp_enroll` forces
- * setup when policy requires MFA. An empty set owes nothing, so the flow goes
- * straight to the finalize step.
+ * that runs them. `webauthn` challenges a passkey holder, `otp` challenges an
+ * enrolled user, and `otp_enroll` forces setup when policy requires MFA. An empty
+ * set owes nothing, so the flow goes straight to the finalize step.
+ *
+ * The gateway lists the steps most preferred first, and this reads them in the
+ * same order. A person who holds both Second Factors lands on the passkey, and
+ * that screen offers the other one as another method.
  *
  * These are steps, not factors. A factor is what the person already proved, and
- * it reaches the ID token as `amr`. Nothing here ever does. `otp` reads the same
- * in both places and means the other thing: the challenge is owed, not answered.
+ * it reaches the ID token as `amr`. Nothing here ever does. `otp` and `webauthn`
+ * read the same in both places and mean the other thing: the challenge is owed,
+ * not answered.
  *
  * Two steps read it. The password step routes forward on the answer it just
  * received, and the finalize step routes back on the same answer when the
  * gateway refuses a session that skipped one of these routes.
  */
 export function stepFor(methods: string[]): string {
+  if (methods.includes("webauthn")) return "/passkey"
   if (methods.includes("otp")) return "/verify"
   if (methods.includes("otp_enroll")) return "/enroll"
   return "/success"

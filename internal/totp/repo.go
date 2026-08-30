@@ -102,9 +102,10 @@ func (r *Repository) Find(ctx context.Context, tenantID, userID string) (Enrolme
 
 // HasActiveFactor reports whether one person holds an active TOTP Enrolment.
 //
-// It counts TOTP and nothing else. The derived column on the user list also
-// counts passkeys, and no passkey backend exists, so a read of that column would
-// send a person to a challenge nothing can answer.
+// It counts TOTP and nothing else. The derived column on the user list counts
+// both Second Factors in one flag, and a read of that column could not say which
+// challenge a person can actually answer. The passkey module answers the other
+// half, and the composed step signal reads both.
 func (r *Repository) HasActiveFactor(ctx context.Context, tenantID, userID string) (bool, error) {
 	r.log.Debug("count the active totp factor",
 		logger.String("tenant_id", tenantID), logger.String("user_id", userID),

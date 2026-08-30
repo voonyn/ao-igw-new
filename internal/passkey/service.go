@@ -69,6 +69,27 @@ var (
 	// the person who asked. An id nobody registered, a device somebody already
 	// removed, and a device of another account all give it.
 	ErrNotFound = errors.New("passkey not found")
+
+	// ErrPasswordNotProved reports a Login Session that has not proved a
+	// password. Every sign-in ceremony address refuses one.
+	//
+	// This is the account takeover guard. A session names a person from the
+	// identifier step onward, so without it anybody who knows an identifier
+	// could ask for the challenge of that account.
+	ErrPasswordNotProved = errors.New("login session has not proved a password")
+
+	// ErrNoPasskey reports a challenge against a person who holds no live
+	// Passkey. Only the password answer routes a person to the challenge, so a
+	// request that reaches it without one is a client that went its own way.
+	ErrNoPasskey = errors.New("the person holds no passkey")
+
+	// ErrCredentialUnknown reports an assertion signed by a credential the
+	// person does not own.
+	//
+	// It is not ErrRejected. A wrong signature is a device that failed, and this
+	// is a device that belongs to somebody else, so the person is told to use a
+	// device of their own instead of to try again.
+	ErrCredentialUnknown = errors.New("the passkey belongs to another person")
 )
 
 // maxPasskeys caps how many Passkeys one person holds. The list is answered
@@ -87,7 +108,12 @@ const ceremonyTTL = 5 * time.Minute
 const defaultName = "Passkey"
 
 // ceremonyKey names the one live ceremony of one holder. A Portal registration
-// keys on the subject of the access token, so no identifier is minted for it.
+// keys on the subject of the access token, and a sign-in ceremony keys on the
+// Login Session id, so no identifier is minted for either.
+//
+// The two holders never collide. A session id and a user id are both UUIDs of
+// the same shape, and a sign-in mints a fresh session id that no user row
+// carries.
 //
 // The tenant id is part of the key, so a ceremony of one tenant is never read
 // under another.
@@ -103,6 +129,19 @@ type Principal struct {
 	UserID    string
 	IP        string
 	UserAgent string
+
+	// SessionID names the Login Session one sign-in ceremony belongs to, and it
+	// keys the challenge of that ceremony. The portal leaves it empty: no
+	// sign-in is in flight there, and the person themselves is the holder.
+	//
+	// A session id is not a credential. The opaque token credentials the
+	// session, and the id is disclosed to the client, so it reaches a log line.
+	SessionID string
+
+	// PasswordProved is whether the Login Session already answered the password
+	// step. The portal leaves it false and never reads it: an access token is
+	// what guards that path.
+	PasswordProved bool
 }
 
 // The reads, writes, and sends the service composes its answers from. Each one
@@ -155,6 +194,23 @@ type (
 	// hash, so one refusal is read wherever the portal asks for a password.
 	PasswordVerifier func(ctx context.Context, tenantID, userID, plain string) error
 
+	// SessionFinder reads the Login Session one token credentials. The token is
+	// a credential, so only the session id it answers reaches a log line.
+	SessionFinder func(ctx context.Context, tenantID, token string) (Principal, error)
+
+	// SessionCompleter records the Passkey factor on the Login Session and
+	// rotates its token. It answers the rotated token, disclosed exactly once.
+	//
+	// The factor name lives with the login session domain, which owns every AMR
+	// name. The router closes over it, so it is spelled in one place.
+	SessionCompleter func(ctx context.Context, tenantID, token, userID string) (string, error)
+
+	// CredentialToucher writes back what one successful assertion changed: the
+	// stored blob, which carries the new sign counter and the new backup state,
+	// and the moment the Passkey was last used. It runs on the caller's
+	// transaction.
+	CredentialToucher func(ctx context.Context, tenantID, userID string, credID []byte, record string) error
+
 	// Notifier tells one person that a Passkey was registered on their account.
 	// A send that fails is logged and never refuses the registration: the key
 	// pair is already stored, and the audit trail is the record of it.
@@ -171,7 +227,14 @@ type Deps struct {
 	Revive  CredentialReviver
 	Rename  CredentialRenamer
 	Delete  CredentialRemover
+	Touch   CredentialToucher
 	Origins OriginLister
+
+	// The two crossings into the login session domain. The sign-in ceremony
+	// reads the session one token credentials, and records the Factor on it.
+	// The portal path uses neither.
+	FindSession     SessionFinder
+	CompleteSession SessionCompleter
 
 	// VerifyPassword guards the removal. The access token carries no session
 	// identifier and the bearer guard reads no store, so the password in the
@@ -328,7 +391,7 @@ func (s *Service) registerFinish(
 		return Credential{}, err
 	}
 
-	ceremony, err := s.consume(ctx, tenantID, who)
+	ceremony, err := s.consume(ctx, tenantID, who.UserID, who)
 	if err != nil {
 		return Credential{}, err
 	}
@@ -480,8 +543,8 @@ func (s *Service) claim(
 // then refuses the finish, and the check below refuses the start.
 //
 // The caller's own origin is checked when the request names one. A browser sends
-// it, and the Portal BFF forwards a call that has none, so an empty value is not
-// a refusal: the finish still compares the origin the device signed against the
+// it, and both BFFs call server to server with none, so an empty value is not a
+// refusal: the finish still compares the origin the device signed against the
 // list kept here.
 func (s *Service) relying(
 	ctx context.Context, tenantID, host, origin string,
@@ -641,9 +704,9 @@ func (s *Service) store(
 // already succeeded, the TTL removes the key anyway, and refusing here would
 // cost the person a registration that is otherwise sound.
 func (s *Service) consume(
-	ctx context.Context, tenantID string, who Principal,
+	ctx context.Context, tenantID, holder string, who Principal,
 ) (webauthn.SessionData, error) {
-	key := ceremonyKey(tenantID, who.UserID)
+	key := ceremonyKey(tenantID, holder)
 
 	blob, err := s.deps.Ceremony.Get(ctx, key)
 	if errors.Is(err, cache.ErrCacheMiss) {

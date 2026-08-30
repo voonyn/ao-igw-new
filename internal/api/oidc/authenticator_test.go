@@ -8,8 +8,8 @@ package oidc_test
 // can drive the gateway over HTTP against the real library, with no interface
 // and no fake in the production code.
 //
-// It is a registration device today. Ticket 07 signs an assertion with the same
-// key pair, which is why the key is kept.
+// It registers and it signs in. One device runs both ceremonies with one key
+// pair, which is what a real device does.
 
 import (
 	"bytes"
@@ -44,8 +44,9 @@ const coordinateBytes = 32
 // authenticator is one software device: a key pair, the credential id it minted
 // for it, and the signature counter it reports.
 //
-// The counter stays zero. A synced passkey reports zero too, which is why the
-// gateway logs a counter regression instead of refusing the assertion.
+// The counter stays zero unless a test sets it. A synced passkey reports zero on
+// every ceremony, which is why the gateway logs a counter regression instead of
+// refusing the assertion.
 type authenticator struct {
 	key   *ecdsa.PrivateKey
 	id    []byte
@@ -143,6 +144,73 @@ func (a *authenticator) authData(t *testing.T, rpID string) []byte {
 	_ = binary.Write(&buf, binary.BigEndian, uint16(len(a.id)))
 	buf.Write(a.id)
 	buf.Write(a.publicKey(t))
+	return buf.Bytes()
+}
+
+// assert answers what navigator.credentials.get() hands the page for one set of
+// assertion options.
+//
+// The signature covers the authenticator data and the hash of the client data,
+// in that order, which is what the gateway verifies with the public key it
+// stored at registration.
+//
+// Specification: §6.3.3. The authenticatorGetAssertion Operation.
+func (a *authenticator) assert(t *testing.T, rpID, origin, challenge string) json.RawMessage {
+	t.Helper()
+
+	clientData, err := json.Marshal(map[string]any{
+		"type":        "webauthn.get",
+		"challenge":   challenge,
+		"origin":      origin,
+		"crossOrigin": false,
+	})
+	if err != nil {
+		t.Fatalf("encode the client data: %v", err)
+	}
+
+	authData := a.assertionData(rpID)
+
+	// The signed bytes: the authenticator data, then the hash of the client
+	// data. Nothing else, and in this order.
+	clientHash := sha256.Sum256(clientData)
+	signed := sha256.Sum256(append(append([]byte{}, authData...), clientHash[:]...))
+
+	signature, err := ecdsa.SignASN1(rand.Reader, a.key, signed[:])
+	if err != nil {
+		t.Fatalf("sign the assertion: %v", err)
+	}
+
+	answer, err := json.Marshal(map[string]any{
+		"id":    a.credentialID(),
+		"rawId": a.credentialID(),
+		"type":  "public-key",
+		"response": map[string]any{
+			"clientDataJSON":    base64.RawURLEncoding.EncodeToString(clientData),
+			"authenticatorData": base64.RawURLEncoding.EncodeToString(authData),
+			"signature":         base64.RawURLEncoding.EncodeToString(signature),
+		},
+		"clientExtensionResults": map[string]any{},
+	})
+	if err != nil {
+		t.Fatalf("encode the assertion answer: %v", err)
+	}
+	return answer
+}
+
+// assertionData builds the authenticator data of one assertion: the RP ID hash,
+// the flags, and the counter.
+//
+// No attested credential data follows, and the flag that announces it is absent.
+// A registration publishes the key, and an assertion only proves it.
+//
+// Specification: §6.1. Authenticator Data.
+func (a *authenticator) assertionData(rpID string) []byte {
+	hash := sha256.Sum256([]byte(rpID))
+
+	var buf bytes.Buffer
+	buf.Write(hash[:])
+	buf.WriteByte(flagUserPresent | flagUserVerified)
+	_ = binary.Write(&buf, binary.BigEndian, a.count)
 	return buf.Bytes()
 }
 

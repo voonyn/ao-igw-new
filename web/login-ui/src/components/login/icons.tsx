@@ -179,6 +179,28 @@ export function MfaIcon(props: SvgProps) {
   )
 }
 
+export function PasskeyIcon(props: SvgProps) {
+  return (
+    <svg
+      width="26"
+      height="26"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      {...props}
+    >
+      <circle cx="9.5" cy="8" r="3.5" />
+      <path d="M3.5 20a6 6 0 0 1 9.2-5.1" />
+      <circle cx="17" cy="15.5" r="2.5" />
+      <path d="M17 18v3.5" />
+      <path d="M15.6 20.2h2" />
+    </svg>
+  )
+}
+
 export function SuccessCheckIcon(props: SvgProps) {
   return (
     <svg

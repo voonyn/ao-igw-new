@@ -34,10 +34,10 @@ type PasswordRequest struct {
 // carries a Factor. A Factor is what the person already proved, and the ID token
 // carries that. Every value here is a step the person must still run.
 //
-// It carries otp when the person holds an active TOTP Enrolment, and otp_enroll
-// when the MFA Requirement applies and the person holds none. It never carries a
-// passkey value, because no passkey backend exists and a person routed to one
-// would reach a screen that never moves.
+// It carries webauthn when the person holds a live Passkey, and otp when they
+// hold an active TOTP Enrolment. A person who holds both reads both, webauthn
+// first, and proves one of them. It carries otp_enroll when the MFA Requirement
+// applies and the person holds neither Factor.
 type PasswordResponse struct {
 	SessionToken string   `json:"sessionToken"`
 	Methods      []string `json:"methods"`

@@ -15,10 +15,12 @@ type LoginFlowValue = {
    *  `?redirect_uri=` query; used by /success when there is no OIDC request. */
   redirectUri: string
   setRedirectUri: (uri: string) => void
-  /** The pending steps the gateway named at /password: `otp` for the challenge,
-   *  `otp_enroll` for forced setup, or empty when the sign-in owes nothing. These
-   *  are steps the person still owes, never factors they already proved. The
-   *  gateway names at most one, and /success re-reads it to route back. */
+  /** The pending steps the gateway named at /password: `webauthn` for the passkey
+   *  challenge, `otp` for the code challenge, `otp_enroll` for forced setup, or
+   *  empty when the sign-in owes nothing. These are steps the person still owes,
+   *  never factors they already proved. A person who holds both Second Factors is
+   *  named both, most preferred first, and proves one of them. /success re-reads
+   *  the list to route back. */
   methods: string[]
   setMethods: (methods: string[]) => void
   direction: Direction

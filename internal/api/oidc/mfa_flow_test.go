@@ -89,8 +89,9 @@ func TestForcedEnrolmentFlow(t *testing.T) {
 		if len(verified.Methods) != 1 || verified.Methods[0] != session.StepEnrolOTP {
 			t.Fatalf("methods is %v, want %v", verified.Methods, []string{session.StepEnrolOTP})
 		}
-		// No passkey value is ever named. No passkey backend exists, so a person
-		// routed to one would reach a screen that never moves.
+		// No passkey value is named. This person holds no Passkey, and a step
+		// list that offered one would send them to a challenge no device of
+		// theirs can answer.
 		for _, method := range verified.Methods {
 			if strings.Contains(method, "webauthn") || strings.Contains(method, "passkey") {
 				t.Errorf("methods names a passkey: %v", verified.Methods)
