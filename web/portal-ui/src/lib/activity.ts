@@ -28,6 +28,7 @@ const ACTION_PRESENTATION: Record<string, Presentation> = {
   // unavailable, which is the row a user should notice if it wasn't them.
   "mfa.recovery_code_used": { type: "mfa", icon: "key", tone: "warn", title: "Recovery code used" },
   "mfa.recovery_codes_regenerated": { type: "mfa", icon: "key", tone: "good", title: "Recovery codes replaced" },
+  "mfa.passkey_registered": { type: "mfa", icon: "shield", tone: "good", title: "Passkey added" },
   "consent.granted": { type: "consent", icon: "link", tone: "neutral", title: "App connected" },
   "consent.revoked": { type: "consent", icon: "link", tone: "good", title: "Revoked app access" },
   "user.updated": { type: "profile", icon: "idcard", tone: "neutral", title: "Profile updated" },

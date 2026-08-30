@@ -101,9 +101,31 @@ No in-process state. Any instance must serve any request.
 - Read: read Redis. On a miss, read the database and refill Redis.
 - Logout: delete from the database and from Redis.
 
-One exception. The Guessing Budget in `totp.Service.spendGuess` lives only in Redis,
-and no table holds it. A cache failure there refuses the submission, because a
-failure that let the guess through would leave second-factor guessing unbounded. The
-comment on that function carries the reasoning and the upgrade path.
+Two exceptions. Both live only in Redis, no table holds either, and a cache failure
+refuses the request instead of letting it through.
+
+- The Guessing Budget in `totp.Service.spendGuess`. A failure that let the guess
+  through would leave second-factor guessing unbounded. The comment on that function
+  carries the reasoning and the upgrade path.
+- The passkey ceremony in `passkey.Service.store` and `passkey.Service.consume`. A
+  ceremony that proceeds without a stored challenge proves nothing, and a challenge
+  a table held would outlive the one prompt it belongs to.
 
 See `docs/adr/0002-session-storage.md`.
+
+## Agent skills
+
+### Issue tracker
+
+Local markdown. Tickets live under `.scratch/<feature-slug>/issues/`, and specs live
+under `docs/specs/`. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+The five default roles, each label string equal to its name. A label is the `Status:`
+line of a ticket file. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: one `CONTEXT.md` and one `docs/adr/` at the root. See
+`docs/agents/domain.md`.

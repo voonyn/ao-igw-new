@@ -17,6 +17,22 @@ The **database is the source of truth**. Redis is a cache in front of it.
 - **Read** — read Redis. On a miss, read the database and refill Redis.
 - **Logout** — delete from the database and from Redis.
 
+## The two exceptions
+
+Two values live in Redis and in no table. Each one is a cap or a challenge that
+belongs to one moment, and a database row would outlive that moment.
+
+- **The second-factor Guessing Budget** (`totp.Service.spendGuess`). It counts the
+  guesses of one person across every sign-in they open.
+- **The passkey ceremony** (`passkey.Service.store`, `passkey.Service.consume`). It
+  holds the challenge of one registration or one assertion, under a short TTL, and
+  the finish step deletes it before it verifies the answer.
+
+Both refuse the request when the cache cannot answer. This is the opposite of the
+rule above, and it is deliberate: a budget that let the guess through would leave
+guessing unbounded, and a ceremony that ran without a stored challenge would prove
+nothing.
+
 ## Alternatives
 
 - **Redis as the primary store, database as an async backup** — a Redis restart logs
@@ -30,4 +46,5 @@ The **database is the source of truth**. Redis is a cache in front of it.
 - A Redis flush costs latency, not correctness. Traffic falls through to the database
   and Redis refills.
 - Every session write pays two round trips. This is accepted.
-- Redis must never hold data that is absent from the database.
+- Redis must never hold data that is absent from the database, except the two values
+  named above.

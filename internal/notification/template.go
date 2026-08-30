@@ -16,10 +16,13 @@ const (
 	KeyPasswordReset     = "password_reset"
 	KeyEmailVerification = "email_verification"
 	KeyMemberInvitation  = "member_invitation"
+	KeyPasskeyRegistered = "passkey_registered"
 )
 
 // Keys is every message key, in the order the console lists them.
-var Keys = []string{KeyPasswordReset, KeyEmailVerification, KeyMemberInvitation}
+var Keys = []string{
+	KeyPasswordReset, KeyEmailVerification, KeyMemberInvitation, KeyPasskeyRegistered,
+}
 
 // The three levels one message can come from, most specific first.
 const (
@@ -55,6 +58,11 @@ var embedded = map[string]Content{
 		Subject:  "Verify your email address",
 		BodyText: "Hello {{.DisplayName}},\n\nOpen this link to verify your email address:\n{{.Link}}\n\nYour code is {{.Code}}.\n",
 		BodyHTML: "<p>Hello {{.DisplayName}},</p>\n<p>Open this link to verify your email address:</p>\n<p><a href=\"{{.Link}}\">Verify your email address</a></p>\n<p>Your code is <strong>{{.Code}}</strong>.</p>\n",
+	},
+	KeyPasskeyRegistered: {
+		Subject:  "A passkey was added to your account",
+		BodyText: "Hello {{.DisplayName}},\n\nA passkey was added to your account. You can now sign in with the device that holds it.\n\nIf you did not add it, open your security settings, remove the passkey, and change your password.\n",
+		BodyHTML: "<p>Hello {{.DisplayName}},</p>\n<p>A passkey was added to your account. You can now sign in with the device that holds it.</p>\n<p>If you did not add it, open your security settings, remove the passkey, and change your password.</p>\n",
 	},
 	KeyMemberInvitation: {
 		Subject:  "You are invited",

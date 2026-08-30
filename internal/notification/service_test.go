@@ -324,3 +324,50 @@ func TestSettingsRefuseAPersonWhoDoesNotManageTheTenant(t *testing.T) {
 		t.Errorf("the refused write stored %+v, want nothing", storedSettings)
 	}
 }
+
+// TestNotify_SendsTheGatewaysOwnMessage proves the send the gateway makes for
+// itself, with no administrator behind it.
+//
+// A person whose Second Factor changed is told so. Nothing about that request
+// carries a role, so the send authorizes nobody, and the caller here holds none.
+func TestNotify_SendsTheGatewaysOwnMessage(t *testing.T) {
+	svc := testService(t, nil, nil)
+
+	err := svc.Notify(context.Background(), noteTenantID, KeyPasskeyRegistered,
+		"person@example.com", Vars{DisplayName: "Ada Lovelace"})
+	if err != nil {
+		t.Fatalf("the send answered %v, want no error", err)
+	}
+
+	if len(sentMessages) != 1 {
+		t.Fatalf("the transport received %d messages, want 1", len(sentMessages))
+	}
+
+	msg := sentMessages[0]
+	if msg.To != "person@example.com" {
+		t.Errorf("the message went to %q, want %q", msg.To, "person@example.com")
+	}
+	if msg.Subject == "" {
+		t.Error("the message carries no subject")
+	}
+	// The template renders the person's name, so a message that still holds the
+	// placeholder was never rendered.
+	if !strings.Contains(msg.Text, "Ada Lovelace") || strings.Contains(msg.Text, "{{") {
+		t.Errorf("the message body is %q, want the rendered name", msg.Text)
+	}
+}
+
+// TestNotify_RefusesAnUnknownKey proves that a key the gateway never sends is
+// refused. A row stored under any other name would never be read.
+func TestNotify_RefusesAnUnknownKey(t *testing.T) {
+	svc := testService(t, nil, nil)
+
+	err := svc.Notify(context.Background(), noteTenantID, "not_a_template",
+		"person@example.com", Vars{})
+	if !errors.Is(err, ErrUnknownTemplate) {
+		t.Errorf("the send answered %v, want %v", err, ErrUnknownTemplate)
+	}
+	if len(sentMessages) != 0 {
+		t.Errorf("the transport received %d messages, want 0", len(sentMessages))
+	}
+}

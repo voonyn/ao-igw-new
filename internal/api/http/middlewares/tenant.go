@@ -24,10 +24,17 @@ var ErrIssuerMismatch = errors.New("host does not match the tenant issuer")
 const tenantLocalsKey = "ao_tenant"
 
 // TenantContext is what one request knows about its tenant: the tenant id every
-// store method takes, and the protocol settings the provider is built from.
+// store method takes, the protocol settings the provider is built from, and the
+// host that resolved the two.
+//
+// Host is the verified host, after the trusted header and the proxy rules were
+// applied. The passkey ceremonies derive their RP ID from its registrable
+// domain, so they bind a credential to the same host that already names the
+// tenant.
 type TenantContext struct {
 	TenantID string
 	Config   oidc.ProviderConfig
+	Host     string
 }
 
 // Lookup maps a bare host to its tenant. It returns tenant.ErrDomainNotFound or
@@ -79,6 +86,7 @@ func Tenant(lookup Lookup, trustedHeader string, log logger.Logger) fiber.Handle
 			return response.Error(c, fiber.StatusNotFound, "Not Found", nil)
 		}
 
+		tc.Host = host
 		c.Locals(tenantLocalsKey, tc)
 		return c.Next()
 	}

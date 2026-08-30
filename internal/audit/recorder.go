@@ -71,6 +71,11 @@ const (
 	ActionMFARecoveryCodeUsed         Action = "mfa.recovery_code_used"
 	ActionMFARecoveryCodesRegenerated Action = "mfa.recovery_codes_regenerated"
 
+	// The Passkey actions. They never reuse the names above, because the trail
+	// is the only record that a Factor existed, and a trail that cannot say
+	// which credential was added is not that record.
+	ActionMFAPasskeyRegistered Action = "mfa.passkey_registered"
+
 	ActionMemberAdded   Action = "member.added"
 	ActionMemberUpdated Action = "member.updated"
 	ActionMemberRemoved Action = "member.removed"
@@ -234,6 +239,7 @@ var actionResults = map[Action]string{
 	ActionMFARemoved:                  ResultSuccess,
 	ActionMFARecoveryCodeUsed:         ResultSuccess,
 	ActionMFARecoveryCodesRegenerated: ResultSuccess,
+	ActionMFAPasskeyRegistered:        ResultSuccess,
 }
 
 // allowedMetadata names every key the metadata bag can hold. It is an
@@ -258,6 +264,10 @@ var allowedMetadata = map[string]bool{
 	// The name of a message template. It is a key of a fixed set, never a
 	// recipient address and never a rendered message.
 	"template_key": true,
+	// The id of one Passkey, in the base64url spelling the browser uses. It is
+	// a public handle that every assertion sends in the clear, and it is never
+	// the public key blob beside it.
+	"credential_id": true,
 }
 
 // Entry is what a caller knows about the action it just took. Metadata holds

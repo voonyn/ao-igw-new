@@ -617,6 +617,20 @@ func (s *Service) spendGuess(ctx context.Context, tenantID string, who Principal
 	return fmt.Errorf("%w: user %s", ErrTooManyAttempts, who.UserID)
 }
 
+// SpendGuess spends one guess of the shared second-factor budget of one person.
+//
+// The budget is one budget for every Second Factor, so a passkey ceremony start
+// spends it here too. A second copy of the key, the limit and the window is how
+// the two Factors would drift into two budgets, and an attacker would then hold
+// the sum of both.
+//
+// It answers ErrTooManyAttempts and ErrBudgetUnavailable, which the mapper
+// already knows. The caller names no login session, so no session id reaches the
+// log line of a refusal.
+func (s *Service) SpendGuess(ctx context.Context, tenantID, userID string) error {
+	return s.spendGuess(ctx, tenantID, Principal{UserID: userID})
+}
+
 // wrong records one wrong code against the Login Session, and answers what the
 // person is told.
 //

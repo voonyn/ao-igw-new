@@ -14,11 +14,13 @@
 -- assertion (updated sign count) rather than mapping field-by-field, so the schema
 -- never drifts as the library's struct evolves. credential_id is duplicated out of
 -- the blob as a queryable BINARY column for the PK/lookup and the browser exclude
--- list. rp_id is the domain the passkey was registered under (per-domain binding):
--- an assertion under a different host fails by construction.
+-- list. The primary key is (tenant_id, credential_id), so the id is unique WITHIN
+-- one tenant and the same credential id can exist under two tenants; it is not
+-- globally unique here. rp_id is the domain the passkey was registered under
+-- (per-domain binding): an assertion under a different host fails by construction.
 CREATE TABLE user_webauthn_credentials (
     tenant_id      CHAR(36)       NOT NULL,
-    credential_id  VARBINARY(255) NOT NULL,                   /* raw credential id, globally unique */
+    credential_id  VARBINARY(255) NOT NULL,                   /* raw credential id, unique per tenant */
 
     user_id        CHAR(36)       NOT NULL,
     rp_id          VARCHAR(255)   NOT NULL,                   /* domain registered under (RP ID) */

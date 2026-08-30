@@ -19,6 +19,7 @@ import (
 	"alphaomega/identitygateway/internal/notification"
 	"alphaomega/identitygateway/internal/oidc"
 	"alphaomega/identitygateway/internal/organization"
+	"alphaomega/identitygateway/internal/passkey"
 	"alphaomega/identitygateway/internal/platform/cache"
 	"alphaomega/identitygateway/internal/platform/config"
 	"alphaomega/identitygateway/internal/platform/crypto"
@@ -141,8 +142,14 @@ func Routes(app *fiber.App, cfg *config.Config, bdb *bun.DB, rdb cache.Client, l
 	// enrolment steps and its challenge, and the portal drives the same enrolment
 	// under an access token, so one build is handed to each.
 	factorSvc := mountMFA(loginGroup, bdb, rdb, cipher, factors, recorder, sessions, tx.RunInTx, log)
-	mountAdmin(app, bdb, rdb, cipher, storage, factors, recorder, cfg.Notification, diClient, tenantMW, tx.RunInTx, log)
-	mountAccount(app, bdb, rdb, cipher, storage, recorder, factorSvc, tenantMW, tx.RunInTx, log)
+	// How this deployment sends mail. Both stacks send: the console configures
+	// the templates, and the account stack tells a person that a Factor changed
+	// on their account. One build means one set of settings and one set of
+	// templates behind both.
+	notificationSvc := newNotificationService(bdb, cipher, cfg.Notification, recorder, tx.RunInTx, log)
+
+	mountAdmin(app, bdb, rdb, cipher, storage, factors, recorder, notificationSvc, diClient, tenantMW, tx.RunInTx, log)
+	mountAccount(app, cfg, bdb, rdb, cipher, storage, recorder, factorSvc, notificationSvc, tenantMW, tx.RunInTx, log)
 
 	// QR Login exists only where a Scan Verifier does. With the integration off,
 	// none of the three routes are mounted, so the sign-in front end reads the
@@ -384,7 +391,7 @@ func mountQRLogin(
 func mountAdmin(
 	app *fiber.App, bdb *bun.DB, rdb cache.Client, cipher *crypto.Cipher,
 	storage *oidc.StorageRepository, factors *totp.Repository, recorder *audit.Recorder,
-	notify config.NotificationConfig, diClient *di.Client, tenantMW fiber.Handler,
+	notificationSvc *notification.Service, diClient *di.Client, tenantMW fiber.Handler,
 	tx db.TxRunner, log logger.Logger,
 ) {
 	keyRepo := oidc.NewKeyRepository(bdb, log)
@@ -588,39 +595,6 @@ func mountAdmin(
 		Log:         log,
 	})
 
-	// How the tenant sends mail, and the message each key renders. The relay is
-	// tenant-wide, and a template resolves the organization override over the
-	// tenant one over the message the gateway ships.
-	notifications := notification.NewRepository(bdb, cipher, log)
-	notificationSvc := notification.NewService(notification.Deps{
-		FindSettings:   notifications.FindSettings,
-		UpsertSettings: notifications.UpsertSettings,
-		FindTemplate:   notifications.FindTemplate,
-		UpsertTemplate: notifications.UpsertTemplate,
-		RemoveTemplate: notifications.RemoveTemplate,
-		Send:           notification.NewSender(log),
-		// What a tenant that stores no row sends with. The configuration layer
-		// carries the transport, the port, the TLS mode, and the timeout as
-		// defaults, so this value is always complete.
-		Defaults: notification.Settings{
-			Transport:     notify.Transport,
-			SMTPHost:      notify.SMTPHost,
-			SMTPPort:      notify.SMTPPort,
-			SMTPUsername:  notify.SMTPUsername,
-			Password:      notify.SMTPPassword,
-			FromAddress:   notify.FromAddress,
-			FromName:      notify.FromName,
-			TLSMode:       notify.TLSMode,
-			SendTimeoutMS: int(notify.SendTimeout.Milliseconds()),
-		},
-		Org:         orgs.FindByID,
-		TenantRoles: tenants.MemberRoles,
-		Memberships: orgs.ListMemberships,
-		InTx:        tx,
-		Audit:       recorder,
-		Log:         log,
-	})
-
 	// What every write above left behind. The feed is a read and nothing more:
 	// a row of audit_events records a fact, so it is never updated and never
 	// deleted.
@@ -671,9 +645,10 @@ func mountAdmin(
 // group takes the same recorder and the same transaction runner the other stacks
 // take.
 func mountAccount(
-	app *fiber.App, bdb *bun.DB, rdb cache.Client, cipher *crypto.Cipher,
+	app *fiber.App, cfg *config.Config, bdb *bun.DB, rdb cache.Client, cipher *crypto.Cipher,
 	storage *oidc.StorageRepository, recorder *audit.Recorder, factorSvc *totp.Service,
-	tenantMW fiber.Handler, tx db.TxRunner, log logger.Logger,
+	notificationSvc *notification.Service, tenantMW fiber.Handler, tx db.TxRunner,
+	log logger.Logger,
 ) {
 	keys := oidc.NewKeyService(oidc.NewKeyRepository(bdb, log), cipher, log)
 	bearer := middlewares.Bearer(keys.PublicKeySet, oidc.ResourceAccountAPI, log)
@@ -743,13 +718,159 @@ func mountAccount(
 		Log:      log,
 	})
 
+	// The Passkeys of the person the token names. The module imports neither the
+	// user domain nor the login session domain, so every crossing between them is
+	// composed here, the way the second-factor mount composes the TOTP module.
+	//
+	// The ceremony store is Redis and nothing else. No table holds a challenge,
+	// and a cache failure refuses the ceremony. See
+	// docs/adr/0002-session-storage.md.
+	tenants := tenant.NewRepository(bdb, log)
+	passkeys := passkey.NewRepository(bdb, log)
+	passkeySvc := passkey.NewService(passkey.Deps{
+		// What the library prints beside the prompt. It never reaches an
+		// authenticator screen here, because a Passkey is a Second Factor and
+		// the person already typed an identifier, but the library demands it.
+		Account: func(ctx context.Context, tenantID, userID string) (string, error) {
+			row, err := users.FindByID(ctx, tenantID, userID)
+			if err != nil {
+				return "", err
+			}
+			if row.Email != "" {
+				return row.Email, nil
+			}
+			return row.Username, nil
+		},
+
+		List:   passkeys.List,
+		Insert: passkeys.Insert,
+
+		// Every origin a ceremony of this tenant may run from: the hosts the
+		// tenant serves, and the front ends of the deployment. The library
+		// refuses to start with an empty list, so a tenant that serves no
+		// verified host and a deployment that named no front end run no ceremony.
+		Origins: func(ctx context.Context, tenantID string) ([]string, error) {
+			rows, err := tenants.ListDomains(ctx, tenantID)
+			if err != nil {
+				return nil, err
+			}
+			return webAuthnOrigins(rows, cfg.OIDC.WebAuthnOrigins), nil
+		},
+
+		// The one guessing budget of both Second Factors. A start is what costs
+		// the gateway work, so a start spends it, the way a TOTP submission does.
+		Budget: factorSvc.SpendGuess,
+
+		// What tells the person that a Factor was added. It sends to the email
+		// address of the account, and an account that holds none is told nothing:
+		// a machine account has no person to warn.
+		Notify: func(ctx context.Context, tenantID, userID, _ string) error {
+			row, err := users.FindByID(ctx, tenantID, userID)
+			if err != nil {
+				return err
+			}
+			if row.Email == "" {
+				return nil
+			}
+			name := row.DisplayName
+			if name == "" {
+				name = row.Email
+			}
+			return notificationSvc.Notify(ctx, tenantID,
+				notification.KeyPasskeyRegistered, row.Email,
+				notification.Vars{DisplayName: name})
+		},
+
+		RPIDOverride: cfg.OIDC.WebAuthnRPID,
+		Ceremony:     rdb,
+
+		InTx:  tx,
+		Audit: recorder,
+		Log:   log,
+	})
+
 	group := app.Group(accountPrefix, tenantMW, bearer)
 	user.AccountRoutes(group, user.NewAccountHandler(accountSvc))
+	passkey.AccountRoutes(group, passkey.NewAccountHandler(passkeySvc))
 	oidc.AccountRoutes(group, oidc.NewAccountHandler(connectionSvc, accountActor))
 	session.AccountRoutes(group, session.NewAccountHandler(sessionSvc))
 	totp.AccountRoutes(group, totp.NewAccountHandler(factorSvc))
 	audit.AccountRoutes(group, audit.NewAccountHandler(activitySvc, auditActor),
 		middlewares.Paginate(audit.SortKeys...))
+}
+
+// newNotificationService builds the mail service both stacks share.
+//
+// The relay is tenant-wide, and a template resolves the organization override
+// over the tenant one over the message the gateway ships. The console
+// configures all three, and the account stack sends through the same resolution,
+// so a tenant that reworded a message sends the words it chose wherever the
+// message comes from.
+//
+// It builds its own organization and tenant repositories. Both are stateless
+// query holders, and the two authorization reads below are all this service
+// takes from them.
+func newNotificationService(
+	bdb *bun.DB, cipher *crypto.Cipher, notify config.NotificationConfig,
+	recorder *audit.Recorder, tx db.TxRunner, log logger.Logger,
+) *notification.Service {
+	orgs := organization.NewRepository(bdb, log)
+	tenants := tenant.NewRepository(bdb, log)
+	notifications := notification.NewRepository(bdb, cipher, log)
+
+	return notification.NewService(notification.Deps{
+		FindSettings:   notifications.FindSettings,
+		UpsertSettings: notifications.UpsertSettings,
+		FindTemplate:   notifications.FindTemplate,
+		UpsertTemplate: notifications.UpsertTemplate,
+		RemoveTemplate: notifications.RemoveTemplate,
+		Send:           notification.NewSender(log),
+		// What a tenant that stores no row sends with. The configuration layer
+		// carries the transport, the port, the TLS mode, and the timeout as
+		// defaults, so this value is always complete.
+		Defaults: notification.Settings{
+			Transport:     notify.Transport,
+			SMTPHost:      notify.SMTPHost,
+			SMTPPort:      notify.SMTPPort,
+			SMTPUsername:  notify.SMTPUsername,
+			Password:      notify.SMTPPassword,
+			FromAddress:   notify.FromAddress,
+			FromName:      notify.FromName,
+			TLSMode:       notify.TLSMode,
+			SendTimeoutMS: int(notify.SendTimeout.Milliseconds()),
+		},
+		Org:         orgs.FindByID,
+		TenantRoles: tenants.MemberRoles,
+		Memberships: orgs.ListMemberships,
+		InTx:        tx,
+		Audit:       recorder,
+		Log:         log,
+	})
+}
+
+// webAuthnOrigins names every origin a passkey ceremony of one tenant may run
+// from.
+//
+// The tenant's own hosts come from its domain rows, so a tenant that adds a host
+// can register a Passkey on it with no deployment change. Each one is https:
+// the sign-in serves nothing else, and a browser runs no ceremony over http
+// anyway, except on localhost.
+//
+// The deployment origins are the portal and the console. They are whole origins,
+// scheme and port included, because those front ends are not tenant hosts and a
+// development one runs on http.
+//
+// This list is what the ceremony may run from, not what it will run from. The
+// passkey module keeps only the origins the tenant's RP ID covers, because a
+// device binds to that RP ID and a Passkey created anywhere else answers no
+// sign-in of this tenant.
+func webAuthnOrigins(rows []tenant.Domain, deployment []string) []string {
+	origins := make([]string, 0, len(rows)+len(deployment))
+	origins = append(origins, deployment...)
+	for _, row := range rows {
+		origins = append(origins, "https://"+row.Domain)
+	}
+	return origins
 }
 
 // tenantActor, providerActor, and auditActor read the person behind one admin

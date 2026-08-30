@@ -213,6 +213,22 @@ type OIDCConfig struct {
 	// yields no domain the portal and auth hosts share. Bound to AO_WEBAUTHN_RP_ID.
 	WebAuthnRPID string `mapstructure:"webauthn_rp_id"`
 
+	// WebAuthnOrigins names the deployment origins a passkey ceremony may run
+	// from: the portal and the console, each as a whole origin with its scheme
+	// and its port (e.g. "https://portal.acme.com,http://localhost:3001"). The
+	// tenant's own verified hosts are added per request from its domain rows, so
+	// this setting names only the front ends that are not tenant hosts.
+	//
+	// Only the origins the tenant's RP ID covers are used. A device binds its key
+	// pair to that RP ID, so a portal on another registrable domain can register
+	// no Passkey for that tenant, whatever this setting names. Put the portal and
+	// the console under the same registrable domain as the tenant hosts.
+	//
+	// The WebAuthn library refuses to start with an empty origin list, so a
+	// deployment that leaves both this and the tenant domains empty runs no
+	// ceremony. Bound to AO_WEBAUTHN_ORIGINS (comma-separated).
+	WebAuthnOrigins []string `mapstructure:"webauthn_origins"`
+
 	// ACRPrefix is the URN the two assurance levels of the ID token acr claim
 	// are built on: one level for a single factor, another for two or more.
 	// Bound to AO_OIDC_ACR_PREFIX, defaulting to urn:alphaomega:acr. Shared by
@@ -323,6 +339,9 @@ func InitConfig() (*Config, error) {
 	// WebAuthn RP-ID override (shared by login + account passkey ceremonies); empty
 	// ⇒ derive the registrable domain of the request host.
 	_ = viper.BindEnv("oidc.webauthn_rp_id", "AO_WEBAUTHN_RP_ID")
+	// Portal and console origins a passkey ceremony may run from; the tenant's
+	// own hosts are added per request.
+	_ = viper.BindEnv("oidc.webauthn_origins", "AO_WEBAUTHN_ORIGINS")
 	// Base URL of the login UI; enables the OIDC login policy when set.
 	_ = viper.BindEnv("app.login_url", "AO_LOGIN_URL")
 	// IANA zone that drives the process clock. AutomaticEnv alone never reaches

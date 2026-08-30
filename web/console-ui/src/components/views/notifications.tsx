@@ -417,6 +417,7 @@ function TestSend() {
               <option value="password_reset">password_reset</option>
               <option value="email_verification">email_verification</option>
               <option value="member_invitation">member_invitation</option>
+              <option value="passkey_registered">passkey_registered</option>
             </select>
           </Field>
         </div>

@@ -233,6 +233,66 @@ func (s *Service) SendTest(ctx context.Context, a Actor, body TestBody) error {
 	return nil
 }
 
+// Notify sends one message of the gateway's own, on this tenant's transport.
+//
+// It authorizes nobody. The caller is the gateway itself, acting on something
+// that already happened to the person named by `to`, so there is no
+// administrator to check and no organization scope to read.
+//
+// It renders the tenant template, so a tenant that overrode the message sends
+// the words it chose. An organization override is not read: the events that
+// reach this call belong to the account and not to one membership.
+//
+// The recipient never reaches a log line. The address is a person, and the
+// caller already logged the user id behind it.
+func (s *Service) Notify(ctx context.Context, tenantID, key, to string, vars Vars) error {
+	s.log.Debug("send a message",
+		logger.String("tenant_id", tenantID),
+		logger.String("template_key", key), logger.RequestID(ctx))
+
+	if !known(key) {
+		return fmt.Errorf("%w: %s", ErrUnknownTemplate, key)
+	}
+
+	settings, err := s.settings(ctx, tenantID)
+	if err != nil {
+		s.log.Error("read the delivery settings",
+			logger.String("tenant_id", tenantID), logger.Err(err))
+		return err
+	}
+
+	found, err := s.resolve(ctx, tenantID, "", key)
+	if err != nil {
+		s.log.Error("read the message template",
+			logger.String("tenant_id", tenantID),
+			logger.String("template_key", key), logger.Err(err))
+		return err
+	}
+
+	rendered, err := found.content.render(vars)
+	if err != nil {
+		s.log.Error("render the message template",
+			logger.String("tenant_id", tenantID),
+			logger.String("template_key", key), logger.Err(err))
+		return err
+	}
+
+	msg := Message{To: to, Subject: rendered.Subject, Text: rendered.Text, HTML: rendered.HTML}
+	if err := s.deps.Send(ctx, settings, msg); err != nil {
+		s.log.Error("the transport refused the message",
+			logger.String("tenant_id", tenantID),
+			logger.String("template_key", key),
+			logger.String("transport", settings.Transport), logger.Err(err))
+		return fmt.Errorf("%w: tenant %s: %v", ErrSendFailed, tenantID, err)
+	}
+
+	s.log.Info("sent a message",
+		logger.String("tenant_id", tenantID),
+		logger.String("template_key", key),
+		logger.String("transport", settings.Transport))
+	return nil
+}
+
 // ListTemplates answers every message key the gateway sends, with the level each
 // one resolves from at the scope that was read.
 //

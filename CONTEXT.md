@@ -105,15 +105,22 @@ _Avoid_: Method, credential, step (see Pending Step), AMR
 Note: a factor name is a value of the AMR registry of RFC 8176 where one fits. A
 password is `pwd`, and an Authenticator code is `otp`. Where the registry lists no
 value, this deployment names the factor itself, and the registry permits that. A
-scan is `vc`.
+scan is `vc`, and a Passkey is `webauthn`.
+
+The registry lists `hwk` and `swk`, and this deployment uses neither. Both name
+where the private key lives, and a Passkey moves between a secure element and a
+software keystore. The gateway cannot tell the two apart, so it claims neither.
+See `docs/adr/0012-passkey-amr-value.md`.
 
 **Second Factor**:
-A Factor a person proves after the password. This deployment serves one, TOTP.
+A Factor a person proves after the password. This deployment serves two: a TOTP
+Enrolment, and a Passkey.
 _Avoid_: 2FA, MFA, two-step, second step
 
 **Authenticator**:
 The application on the person's phone that generates TOTP codes. It is not a
-Wallet. A Wallet answers a scan, and an Authenticator answers a challenge.
+Wallet, and it is not a Passkey. A Wallet answers a scan, and an Authenticator
+answers a challenge.
 _Avoid_: TOTP app, authenticator app, token generator
 
 **TOTP Enrolment**:
@@ -133,6 +140,20 @@ _Avoid_: Backup code, one-time code, reset code
 Note: a Recovery Code is not an Authorization Code, and it is not the token that
 resets a forgotten password. It recovers a Second Factor and nothing else.
 
+**Passkey**:
+A key pair one person registers with this tenant, held by a device that person
+controls. The device keeps the private half, and the gateway stores the public
+half alone. One person can register several.
+_Avoid_: WebAuthn credential, security key, authenticator, FIDO key, token
+
+Note: the device that holds a Passkey is never an Authenticator here. That word
+names the TOTP application and nothing else. Name the device itself.
+
+**RP ID**:
+The domain one Passkey binds to. The device answers a challenge under that domain
+alone, so every front end of one tenant must share it.
+_Avoid_: Origin, host, domain (unqualified), relying party
+
 **MFA Requirement**:
 The policy that forces a person holding no Second Factor to enrol before they
 finish signing in. It does not decide whether a person is challenged. An active
@@ -145,11 +166,24 @@ finishes. It is not a Factor. A Factor is what the person already proved, and a
 Pending Step is what they still owe.
 _Avoid_: Method, factor, next factor, AMR
 
-Note: this deployment names two. A person who holds an active Second Factor owes
-the Authenticator challenge, `otp`. A person the MFA Requirement governs who holds
-no Second Factor owes enrolment, `otp_enroll`. A Pending Step never reaches a
-token. The challenge step shares its text with the Factor `otp`, and the two stay
-distinct: one is owed, and the other is proved.
+Note: this deployment names four. A person who holds an active TOTP Enrolment owes
+the Authenticator challenge, `otp`. A person who holds a Passkey owes the passkey
+challenge, `webauthn`. A person the MFA Requirement governs who holds no Second
+Factor owes enrolment, and the two enrolments are `otp_enroll` and
+`webauthn_enroll`.
+
+A challenge step always carries the name of the Factor it asks for. The gate reads
+the step name as a Factor name, so the two can never be different words.
+
+The gateway names every step the person can run, most preferred first, and the
+person runs one of them. It is a menu, not a queue. A person who holds both kinds
+of Second Factor is offered both, so a device left at home never shuts that person
+out of a factor that works.
+
+A Pending Step never reaches a token. Two step names share their text with a
+Factor name, `otp` and `webauthn`, and each pair stays distinct: one is owed, and
+the other is proved. The word `passkey` names no step and no Factor. See
+`docs/adr/0012-passkey-amr-value.md`.
 
 **Guessing Budget**:
 How many second-factor codes one person may submit inside a trailing window,
