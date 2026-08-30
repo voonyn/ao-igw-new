@@ -39,15 +39,19 @@ test("an unknown browser failure still reads as a sentence", function () {
   assert.match(message, /\.$/)
 })
 
-// Every slug the gateway answers on these three routes gets a message of its
-// own, and no two of them read the same. A slug that fell through to the generic
-// message would tell a person to retry a thing that cannot succeed.
+// Every slug the gateway answers on these routes gets a message of its own, and
+// no two of them read the same. A slug that fell through to the generic message
+// would tell a person to retry a thing that cannot succeed.
 test("every gateway slug maps to a message of its own", function () {
   const slugs = [
     "passkey_origin_refused",
     "passkey_challenge_expired",
     "passkey_rejected",
     "passkey_unavailable",
+    "passkey_limit_reached",
+    "passkey_duplicate",
+    "passkey_not_found",
+    "invalid_credentials",
     "mfa_unavailable",
     "rate_limited",
     "invalid_input",
@@ -68,6 +72,12 @@ test("every gateway slug maps to a message of its own", function () {
 test("a refused passkey is not read as a lost session", function () {
   assert.match(passkeyMessage(401, "passkey_rejected"), /device/i)
   assert.match(passkeyMessage(401, "unauthenticated"), /session/i)
+})
+
+// The wrong password on a removal arrives as a 401 too. A status-first branch
+// would send a person to the sign-in screen over one mistyped password.
+test("a wrong password is not read as a lost session", function () {
+  assert.match(passkeyMessage(401, "invalid_credentials"), /password/i)
 })
 
 test("a status with no slug still maps", function () {

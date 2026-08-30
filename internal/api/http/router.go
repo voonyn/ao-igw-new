@@ -744,6 +744,19 @@ func mountAccount(
 
 		List:   passkeys.List,
 		Insert: passkeys.Insert,
+		Find:   passkeys.FindByCredential,
+		Revive: passkeys.Revive,
+		Rename: passkeys.Rename,
+		Delete: passkeys.Delete,
+
+		// The proof the removal demands. It is the check the TOTP removal and
+		// the password change both run, so a person reads one refusal wherever
+		// the portal asks for a password, and this module imports neither the
+		// user domain nor the password hashing.
+		VerifyPassword: func(ctx context.Context, tenantID, userID, plain string) error {
+			return accountSvc.VerifyPassword(ctx,
+				user.Actor{TenantID: tenantID, UserID: userID}, plain)
+		},
 
 		// Every origin a ceremony of this tenant may run from: the hosts the
 		// tenant serves, and the front ends of the deployment. The library

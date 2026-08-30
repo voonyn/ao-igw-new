@@ -19,10 +19,15 @@ type PasskeyRow = {
   lastUsedAt?: string;
 };
 
-// PasskeyCard lists the Passkeys of the caller and adds one.
+// PasskeyCard lists the Passkeys of the caller, adds one, renames one, and
+// removes one.
 //
 // It sits beside the two-step block, so a person reads every Second Factor they
 // hold on one screen.
+//
+// The removal demands the current password. The access token carries no session
+// identifier and the gateway guard reads no store, so the password is the only
+// proof the request can hold. A rename demands none: it destroys no Factor.
 export function PasskeyCard({ A }: { A: Actions }) {
   const [rows, setRows] = useState<PasskeyRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -37,6 +42,10 @@ export function PasskeyCard({ A }: { A: Actions }) {
   // changes their mind is not left with a browser sheet over a screen that moved
   // on.
   const ceremony = useRef<AbortController | null>(null);
+  // The row one open dialog acts on. The whole row is held and not the id alone,
+  // because both dialogs name the device the person is about to change.
+  const [renaming, setRenaming] = useState<PasskeyRow | null>(null);
+  const [removing, setRemoving] = useState<PasskeyRow | null>(null);
 
   // The feature check reads `window`, and the server renders no window. React
   // subscribes to it instead of an effect: the server answer enables the control,
@@ -71,7 +80,7 @@ export function PasskeyCard({ A }: { A: Actions }) {
 
   function openAdd() {
     // The default name is what the person would type anyway. They can replace it
-    // before the prompt opens, and ticket 05 renames it later.
+    // before the prompt opens, and rename it later.
     setName(deviceLabel(navigator.userAgent));
     setAddErr("");
     setAdding(true);
@@ -150,6 +159,24 @@ export function PasskeyCard({ A }: { A: Actions }) {
                 <div className="lttl">{row.name}</div>
                 <div className="lsub">Added {relTime(row.createdAt)} · {used}</div>
               </div>
+              <span className="lend">
+                <button
+                  type="button"
+                  className="icon-btn"
+                  aria-label={'Rename ' + row.name}
+                  onClick={function () { setRenaming(row); }}
+                >
+                  <Icon name="edit" size={16} sw={2} />
+                </button>
+                <button
+                  type="button"
+                  className="icon-btn"
+                  aria-label={'Remove ' + row.name}
+                  onClick={function () { setRemoving(row); }}
+                >
+                  <Icon name="trash" size={16} sw={2} />
+                </button>
+              </span>
             </div>
           );
         })}
@@ -209,6 +236,207 @@ export function PasskeyCard({ A }: { A: Actions }) {
           </div>
         </Modal>
       )}
+
+      {renaming && (
+        <RenamePasskeyModal
+          row={renaming}
+          onClose={function () { setRenaming(null); }}
+          onDone={async function () {
+            setRenaming(null);
+            A.toast("Passkey renamed", "key");
+            await load();
+          }}
+        />
+      )}
+
+      {removing && (
+        <RemovePasskeyModal
+          row={removing}
+          onClose={function () { setRemoving(null); }}
+          onDone={async function () {
+            setRemoving(null);
+            A.toast("Passkey removed", "key");
+            await load();
+          }}
+        />
+      )}
     </div>
+  );
+}
+
+// RenamePasskeyModal writes a new name onto one Passkey.
+//
+// It asks for no password. A rename destroys no Factor and changes no key, so
+// the proof the removal demands would only cost the person a step here.
+//
+// Two Passkeys may share a name. Two devices a person calls "Phone" are their
+// own business, and nothing here refuses it.
+function RenamePasskeyModal({
+  row,
+  onClose,
+  onDone,
+}: {
+  row: PasskeyRow;
+  onClose: () => void;
+  onDone: () => void;
+}) {
+  const [name, setName] = useState(row.name);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  async function save() {
+    const next = name.trim();
+    if (!next) {
+      setError("Enter a name for this passkey.");
+      return;
+    }
+    setError("");
+    setBusy(true);
+    try {
+      const res = await fetch("/api/account/mfa/passkeys/" + encodeURIComponent(row.id), {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: next }),
+      });
+      if (res.ok) {
+        onDone();
+        return;
+      }
+      const data = await res.json().catch(function () { return {}; });
+      setError(passkeyMessage(res.status, data && data.error));
+    } catch {
+      setError("Something went wrong. Please try again.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Modal onClose={onClose}>
+      <div className="drawer-head">
+        <Icon name="edit" size={18} sw={2} style={{ color: 'var(--accent)' }} />
+        <span className="card-title">Rename passkey</span>
+        <span style={{ marginLeft: 'auto' }}>
+          <button type="button" className="icon-btn" onClick={onClose}><Icon name="x" size={18} /></button>
+        </span>
+      </div>
+      <div className="drawer-body">
+        <label className="field-label" htmlFor="passkey-rename">Name</label>
+        <input
+          id="passkey-rename"
+          className="text-input"
+          maxLength={255}
+          value={name}
+          placeholder="My laptop"
+          onChange={function (e) { setName(e.target.value); if (error) setError(''); }}
+        />
+        <div aria-live="polite">
+          {error && <div style={{ marginTop: 10, fontSize: 13, color: 'var(--error)' }}>{error}</div>}
+        </div>
+      </div>
+      <div className="drawer-foot">
+        <button type="button" className="btn ghost" style={{ flex: 1 }} onClick={onClose} disabled={busy}>Cancel</button>
+        <button type="button" className="btn primary" style={{ flex: 1 }} onClick={save} disabled={busy}>
+          {busy ? 'Saving…' : 'Save name'}
+        </button>
+      </div>
+    </Modal>
+  );
+}
+
+// RemovePasskeyModal names the device and takes the current password.
+//
+// The copy names the device, because a person who holds several must know which
+// one is about to go. It also states what happens when this was the last Second
+// Factor: the next sign-in asks for enrolment, which is where a person with no
+// Factor belongs.
+function RemovePasskeyModal({
+  row,
+  onClose,
+  onDone,
+}: {
+  row: PasskeyRow;
+  onClose: () => void;
+  onDone: () => void;
+}) {
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const [reauth, setReauth] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  async function submit() {
+    if (!password) {
+      setError("Enter your current password.");
+      return;
+    }
+    setError("");
+    setReauth(false);
+    setBusy(true);
+    try {
+      const res = await fetch("/api/account/mfa/passkeys/" + encodeURIComponent(row.id) + "/remove", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password }),
+      });
+      if (res.ok) {
+        onDone();
+        return;
+      }
+      const data = await res.json().catch(function () { return {}; });
+      const code = data && data.error;
+      setError(passkeyMessage(res.status, code));
+      // Only a dead portal session offers the sign-in link. A wrong password
+      // arrives as a 401 too, and it is retried in this dialog.
+      setReauth(res.status === 401 && (code === "unauthenticated" || code === "unauthorized"));
+      setPassword("");
+    } catch {
+      setError("Something went wrong. Please try again.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Modal onClose={onClose}>
+      <div className="drawer-head">
+        <Icon name="trash" size={18} sw={2} style={{ color: 'var(--accent)' }} />
+        <span className="card-title">Remove passkey</span>
+        <span style={{ marginLeft: 'auto' }}>
+          <button type="button" className="icon-btn" onClick={onClose}><Icon name="x" size={18} /></button>
+        </span>
+      </div>
+      <div className="drawer-body">
+        <p style={{ fontSize: 13, color: 'var(--muted)', marginBottom: 14, textWrap: 'pretty' }}>
+          <strong style={{ color: 'var(--text)' }}>{row.name}</strong> stops signing you in. Do this when you
+          no longer have the device. If this was your last second factor, your next sign-in asks you to set
+          one up again.
+        </p>
+        <label className="field-label" htmlFor="passkey-remove-password">Current password</label>
+        <input
+          id="passkey-remove-password"
+          className="text-input"
+          type="password"
+          maxLength={72}
+          placeholder="••••••••"
+          autoComplete="current-password"
+          value={password}
+          onChange={function (e) { setPassword(e.target.value); if (error) setError(''); }}
+        />
+        <div aria-live="polite">
+          {error && (
+            <div style={{ marginTop: 10, fontSize: 13, color: 'var(--error)' }}>
+              {error}
+              {reauth && <> <a href="/auth/login" style={{ color: 'var(--accent)', fontWeight: 600 }}>Sign in again</a></>}
+            </div>
+          )}
+        </div>
+      </div>
+      <div className="drawer-foot">
+        <button type="button" className="btn ghost" style={{ flex: 1 }} onClick={onClose} disabled={busy}>Cancel</button>
+        <button type="button" className="btn danger-ghost" style={{ flex: 1 }} onClick={submit} disabled={busy}>
+          {busy ? 'Removing…' : 'Remove passkey'}
+        </button>
+      </div>
+    </Modal>
   );
 }

@@ -57,7 +57,7 @@ export function browserPasskeyMessage(err: unknown): string {
   return "Your device could not create a passkey. Please try again."
 }
 
-// passkeyMessage says why the gateway refused one of the three Passkey calls.
+// passkeyMessage says why the gateway refused one of the Passkey calls.
 //
 // The slug is read before the status, and never the message: the gateway carries
 // the reason in the slug, so a reworded message never changes what a person
@@ -70,8 +70,19 @@ export function passkeyMessage(status: number, code: unknown): string {
   if (code === "passkey_challenge_expired") return "That took too long. Please try again."
   if (code === "passkey_rejected") return "Your device could not be verified. Please try again."
   if (code === "passkey_unavailable") return "Passkeys are unavailable right now. Please try again in a moment."
+  if (code === "passkey_limit_reached") {
+    return "You already have ten passkeys. Remove one you no longer use, then try again."
+  }
+  if (code === "passkey_duplicate") return "This device already has a passkey here."
+  if (code === "passkey_not_found") return "That passkey is already gone. The list has been refreshed."
+  // The wrong password on a removal. It arrives as a 401 and does not mean the
+  // portal session ended, which is why it is read before the status.
+  if (code === "invalid_credentials") return "Current password is incorrect."
   if (code === "mfa_unavailable") return "Two-step verification is unavailable right now. Please try again in a moment."
-  if (code === "invalid_input") return "That name is too long. Use 255 characters or fewer."
+  // One helper serves the add, the rename and the removal, and each dialog caps
+  // its own field in the browser. A gateway that still refuses the body means
+  // something the person can see and fix, so the copy names no one field.
+  if (code === "invalid_input") return "Check what you typed and try again."
   if (code === "rate_limited" || status === 429) return "Too many attempts. Please wait a minute and try again."
   // Both 401 slugs mean the same thing to a person: `unauthenticated` is the BFF
   // holding no token, and `unauthorized` is the gateway refusing the one it sent.

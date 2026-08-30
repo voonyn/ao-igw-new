@@ -24,6 +24,9 @@ func init() {
 	response.Map(ErrRejected, fiber.StatusUnauthorized, "passkey_rejected", "Unauthorized")
 	response.Map(ErrCeremonyUnavailable,
 		fiber.StatusServiceUnavailable, "passkey_unavailable", "Service Unavailable")
+	response.Map(ErrTooManyPasskeys, fiber.StatusConflict, "passkey_limit_reached", "Conflict")
+	response.Map(ErrDuplicateDevice, fiber.StatusConflict, "passkey_duplicate", "Conflict")
+	response.Map(ErrNotFound, fiber.StatusNotFound, "passkey_not_found", "Not Found")
 }
 
 // AccountHandler serves a person their own Passkeys. It binds the request, calls
@@ -49,6 +52,8 @@ func AccountRoutes(router fiber.Router, h *AccountHandler) {
 	router.Get("/mfa/passkeys", h.list)
 	router.Post("/mfa/passkeys/register/start", h.start)
 	router.Post("/mfa/passkeys/register/finish", h.finish)
+	router.Patch("/mfa/passkeys/:id", h.rename)
+	router.Post("/mfa/passkeys/:id/remove", h.remove)
 }
 
 // list answers the live Passkeys of the person the token names.
@@ -97,6 +102,50 @@ func (h *AccountHandler) finish(c fiber.Ctx) error {
 	}
 
 	return response.Created(c, view(row))
+}
+
+// rename writes the new name of one Passkey of the person the token names.
+//
+// Nothing is answered but the empty envelope. The card re-reads the list, and a
+// rename that answered the row would be a second copy of the list shape.
+func (h *AccountHandler) rename(c fiber.Ctx) error {
+	var req RenameRequest
+	if err := c.Bind().Body(&req); err != nil {
+		return response.Validation(c, err)
+	}
+
+	tc, _ := middlewares.TenantFrom(c)
+
+	if err := h.svc.AccountRename(
+		c.Context(), tc.TenantID, accountPrincipal(c), c.Params("id"), req.Name,
+	); err != nil {
+		return response.Fail(c, err)
+	}
+
+	return response.NoContent(c)
+}
+
+// remove marks one Passkey of the person the token names as removed, once they
+// present the password stored now.
+//
+// The address is POST and not DELETE, because it carries a body: the current
+// password is the whole proof of the request, and a body on a DELETE is what
+// proxies and clients drop. The TOTP removal reads the same way.
+func (h *AccountHandler) remove(c fiber.Ctx) error {
+	var req PasswordProofRequest
+	if err := c.Bind().Body(&req); err != nil {
+		return response.Validation(c, err)
+	}
+
+	tc, _ := middlewares.TenantFrom(c)
+
+	if err := h.svc.AccountRemove(
+		c.Context(), tc.TenantID, accountPrincipal(c), c.Params("id"), req.Password,
+	); err != nil {
+		return response.Fail(c, err)
+	}
+
+	return response.NoContent(c)
 }
 
 // origin reads the origin the browser calls from.

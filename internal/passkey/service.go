@@ -51,7 +51,30 @@ var (
 	//
 	// The answer never says which of them happened.
 	ErrRejected = errors.New("the passkey answer is wrong")
+
+	// ErrTooManyPasskeys reports a registration over the cap. The person removes
+	// a device they no longer hold and registers again.
+	ErrTooManyPasskeys = errors.New("the person holds the most passkeys allowed")
+
+	// ErrDuplicateDevice reports a registration of a credential id that a live
+	// row already holds.
+	//
+	// The exclude list stops the common case in the browser, and it names the
+	// devices of one person alone. This is the case it cannot name: the same
+	// device already registered against another account of the same tenant, and
+	// the primary key is (tenant_id, credential_id).
+	ErrDuplicateDevice = errors.New("the device already holds a passkey")
+
+	// ErrNotFound reports a rename or a removal that names no live Passkey of
+	// the person who asked. An id nobody registered, a device somebody already
+	// removed, and a device of another account all give it.
+	ErrNotFound = errors.New("passkey not found")
 )
+
+// maxPasskeys caps how many Passkeys one person holds. The list is answered
+// whole and carries no pager, the exclude list of a ceremony carries every one
+// of them, and a person who runs out removes a device they no longer hold.
+const maxPasskeys = 10
 
 // ceremonyTTL bounds one ceremony. It matches the timeout a browser gives the
 // person to touch the device, so a prompt that is still open never meets an
@@ -111,6 +134,27 @@ type (
 	// the budget, so one cap covers both Second Factors.
 	BudgetSpender func(ctx context.Context, tenantID, userID string) error
 
+	// CredentialFinder reads one row by its credential id, removed rows
+	// included. The primary key is (tenant_id, credential_id), so a removed row
+	// blocks an insert of the same id as firmly as a live one does.
+	CredentialFinder func(ctx context.Context, tenantID string, credID []byte) (Credential, error)
+
+	// CredentialReviver rewrites a removed row as a fresh registration and
+	// clears the delete mark. It runs on the caller's transaction.
+	CredentialReviver func(ctx context.Context, row Credential) error
+
+	// CredentialRenamer writes the new name of one live Passkey of one person.
+	CredentialRenamer func(ctx context.Context, tenantID, userID string, credID []byte, name string) error
+
+	// CredentialRemover marks one live Passkey of one person as removed. It runs
+	// on the caller's transaction.
+	CredentialRemover func(ctx context.Context, tenantID, userID string, credID []byte) error
+
+	// PasswordVerifier checks the password stored now against what the person
+	// typed. It answers the refusal sentinel of the user domain, which owns the
+	// hash, so one refusal is read wherever the portal asks for a password.
+	PasswordVerifier func(ctx context.Context, tenantID, userID, plain string) error
+
 	// Notifier tells one person that a Passkey was registered on their account.
 	// A send that fails is logged and never refuses the registration: the key
 	// pair is already stored, and the audit trail is the record of it.
@@ -123,7 +167,17 @@ type Deps struct {
 	Account Account
 	List    CredentialLister
 	Insert  CredentialInserter
+	Find    CredentialFinder
+	Revive  CredentialReviver
+	Rename  CredentialRenamer
+	Delete  CredentialRemover
 	Origins OriginLister
+
+	// VerifyPassword guards the removal. The access token carries no session
+	// identifier and the bearer guard reads no store, so the password in the
+	// body is the only proof the request can hold. Without it, a leaked access
+	// token strips the account of a Factor in one request.
+	VerifyPassword PasswordVerifier
 
 	// Budget is the shared second-factor guessing budget. A ceremony start
 	// spends it, because a start is the request that costs work and a valid
@@ -167,6 +221,7 @@ type account struct {
 	id          string
 	name        string
 	credentials []webauthn.Credential
+	held        int
 }
 
 func (a account) WebAuthnID() []byte                         { return []byte(a.id) }
@@ -198,6 +253,10 @@ func NewService(deps Deps) *Service {
 // The exclude list names every Passkey the person already holds, so a device
 // that already registered tells the person so instead of creating a second key
 // pair for the same account.
+//
+// The cap is checked here and not at the finish. A start refused costs the
+// person nothing, and a browser prompt that ends in a refusal costs them a touch
+// of the device for a Factor the gateway was never going to keep.
 func (s *Service) registerStart(
 	ctx context.Context, tenantID, host, origin string, who Principal,
 ) (*protocol.CredentialCreation, error) {
@@ -213,6 +272,13 @@ func (s *Service) registerStart(
 	person, err := s.account(ctx, tenantID, who.UserID)
 	if err != nil {
 		return nil, err
+	}
+
+	if person.held >= maxPasskeys {
+		s.log.Warn("refused a passkey registration over the cap",
+			logger.String("tenant_id", tenantID),
+			logger.String("user_id", who.UserID), logger.Int("held", person.held))
+		return nil, fmt.Errorf("%w: user %s holds %d", ErrTooManyPasskeys, who.UserID, person.held)
 	}
 
 	exclude := make([]protocol.CredentialDescriptor, 0, len(person.credentials))
@@ -249,6 +315,9 @@ func (s *Service) registerStart(
 //
 // The row and the audit event land on one transaction. The notification is sent
 // after it, because a message a relay accepted cannot be rolled back.
+//
+// A credential id a live row already holds is refused. A credential id a removed
+// row holds takes that row back. See claim, which decides between the two.
 //
 // No private key exists here. The stored blob is a public key and its metadata.
 func (s *Service) registerFinish(
@@ -310,8 +379,13 @@ func (s *Service) registerFinish(
 		CreatedAt:    time.Now().UTC(),
 	}
 
+	write, err := s.claim(ctx, tenantID, who, made.ID)
+	if err != nil {
+		return Credential{}, err
+	}
+
 	err = s.deps.InTx(ctx, func(ctx context.Context) error {
-		if err := s.deps.Insert(ctx, row); err != nil {
+		if err := write(ctx, row); err != nil {
 			return err
 		}
 		return s.deps.Audit.Record(ctx, audit.Entry{
@@ -340,6 +414,53 @@ func (s *Service) registerFinish(
 
 	s.notify(ctx, tenantID, who.UserID, name)
 	return row, nil
+}
+
+// claim decides how one proved credential reaches the table, and refuses the id
+// of a device that is already registered.
+//
+// The primary key is (tenant_id, credential_id), so three states exist for one
+// id and each needs its own answer:
+//
+//   - No row: insert.
+//   - A removed row: revive it. The device registered here before, somebody
+//     removed it, and the person is registering it again. A plain insert would
+//     fail on the primary key, and the person could never use that device again.
+//   - A live row: refuse. The exclude list already stops one person registering
+//     their own device twice, and this is the case it cannot see, where the row
+//     belongs to another account of the same tenant.
+//
+// It reads before the transaction opens and answers the write to run inside it.
+// Two registrations of one id that race still cannot both land: the insert meets
+// the primary key, and the revive demands a row that still carries the delete
+// mark.
+func (s *Service) claim(
+	ctx context.Context, tenantID string, who Principal, credID []byte,
+) (func(context.Context, Credential) error, error) {
+	held, err := s.deps.Find(ctx, tenantID, credID)
+	if errors.Is(err, ErrNotFound) {
+		return s.deps.Insert, nil
+	}
+	if err != nil {
+		s.log.Error("find the passkey by its credential id",
+			logger.String("tenant_id", tenantID),
+			logger.String("user_id", who.UserID), logger.Err(err))
+		return nil, err
+	}
+
+	if held.DeletedAt.IsZero() {
+		s.log.Warn("refused a passkey registration of a device already registered",
+			logger.String("tenant_id", tenantID),
+			logger.String("user_id", who.UserID),
+			logger.String("credential_id", credentialID(credID)))
+		return nil, fmt.Errorf("%w: credential %s", ErrDuplicateDevice, credentialID(credID))
+	}
+
+	s.log.Debug("revive a removed passkey",
+		logger.String("tenant_id", tenantID),
+		logger.String("user_id", who.UserID),
+		logger.String("credential_id", credentialID(credID)), logger.RequestID(ctx))
+	return s.deps.Revive, nil
 }
 
 // relying builds the WebAuthn Relying Party of one request, and refuses an
@@ -458,7 +579,12 @@ func (s *Service) account(ctx context.Context, tenantID, userID string) (account
 		name = userID
 	}
 
-	person := account{id: userID, name: name, credentials: make([]webauthn.Credential, 0, len(held))}
+	person := account{
+		id:          userID,
+		name:        name,
+		credentials: make([]webauthn.Credential, 0, len(held)),
+		held:        len(held),
+	}
 	for _, row := range held {
 		var one webauthn.Credential
 		if err := json.Unmarshal([]byte(row.Record), &one); err != nil {

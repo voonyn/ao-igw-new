@@ -260,6 +260,7 @@ func TestRecord_SecondFactorActions(t *testing.T) {
 		ActionMFARecoveryCodeUsed,
 		ActionMFARecoveryCodesRegenerated,
 		ActionMFAPasskeyRegistered,
+		ActionMFAPasskeyRemoved,
 	}
 
 	for _, action := range actions {

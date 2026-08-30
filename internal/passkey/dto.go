@@ -59,3 +59,24 @@ func views(rows []Credential) []View {
 	}
 	return answer
 }
+
+// RenameRequest is the body of PATCH /mfa/passkeys/:id.
+//
+// The name is required here, unlike on the registration. A name of spaces alone
+// meets that rule and then trims to nothing, so the service falls back to the
+// same default a registration uses. The column is never emptied by a rename.
+type RenameRequest struct {
+	Name string `json:"name" validate:"required,max=255"`
+}
+
+// PasswordProofRequest is the body of POST /mfa/passkeys/:id/remove.
+//
+// The access token carries no session identifier and the bearer guard reads no
+// store, so this field is the only place a proof can go. Without it, a leaked
+// access token strips the account of a Factor in one request. The TOTP removal
+// carries the same field for the same reason.
+//
+// The cap is the one bcrypt reads, the same cap the password change carries.
+type PasswordProofRequest struct {
+	Password string `json:"password" validate:"required,max=72"`
+}

@@ -75,6 +75,7 @@ const (
 	// is the only record that a Factor existed, and a trail that cannot say
 	// which credential was added is not that record.
 	ActionMFAPasskeyRegistered Action = "mfa.passkey_registered"
+	ActionMFAPasskeyRemoved    Action = "mfa.passkey_removed"
 
 	ActionMemberAdded   Action = "member.added"
 	ActionMemberUpdated Action = "member.updated"
@@ -240,6 +241,7 @@ var actionResults = map[Action]string{
 	ActionMFARecoveryCodeUsed:         ResultSuccess,
 	ActionMFARecoveryCodesRegenerated: ResultSuccess,
 	ActionMFAPasskeyRegistered:        ResultSuccess,
+	ActionMFAPasskeyRemoved:           ResultSuccess,
 }
 
 // allowedMetadata names every key the metadata bag can hold. It is an
