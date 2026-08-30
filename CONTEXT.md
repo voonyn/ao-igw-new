@@ -100,7 +100,7 @@ _Avoid_: Auth session, request session, transaction, flow state
 **Factor**:
 One thing a person proved during a Login Session, recorded with the moment they
 proved it. The ID token carries the names in `amr`.
-_Avoid_: Method, credential, step, AMR
+_Avoid_: Method, credential, step (see Pending Step), AMR
 
 Note: a factor name is a value of the AMR registry of RFC 8176 where one fits. A
 password is `pwd`, and an Authenticator code is `otp`. Where the registry lists no
@@ -138,6 +138,18 @@ The policy that forces a person holding no Second Factor to enrol before they
 finish signing in. It does not decide whether a person is challenged. An active
 Second Factor is always challenged.
 _Avoid_: MFA policy, 2FA setting, MFA enforcement
+
+**Pending Step**:
+Something the gateway tells the sign-in front end to run next, before the person
+finishes. It is not a Factor. A Factor is what the person already proved, and a
+Pending Step is what they still owe.
+_Avoid_: Method, factor, next factor, AMR
+
+Note: this deployment names two. A person who holds an active Second Factor owes
+the Authenticator challenge, `otp`. A person the MFA Requirement governs who holds
+no Second Factor owes enrolment, `otp_enroll`. A Pending Step never reaches a
+token. The challenge step shares its text with the Factor `otp`, and the two stay
+distinct: one is owed, and the other is proved.
 
 **Guessing Budget**:
 How many second-factor codes one person may submit inside a trailing window,

@@ -41,20 +41,20 @@ type Terminator func(ctx context.Context, tenantID, sessionID string) error
 // user.ErrNotFound when no live account of the tenant carries the id.
 type CredentialFinder func(ctx context.Context, tenantID, userID string) (string, error)
 
-// FactorSteps names the factors one person must still verify after the password
+// PendingSteps names the Pending Steps one person still owes after the password
 // step. It answers an empty list when the sign-in owes nothing.
 //
 // The router composes it, because it reads the organization of the person, the
 // MFA Requirement of that level, and the second factors the person holds, and
 // those live in three domains this one must not import.
-type FactorSteps func(ctx context.Context, tenantID, userID string) ([]string, error)
+type PendingSteps func(ctx context.Context, tenantID, userID string) ([]string, error)
 
 // Deps is the database side of the service. Every field is a function value or
 // a recorder, so the logic is testable without a database.
 type Deps struct {
 	Identity   IdentityFinder
 	Credential CredentialFinder
-	Steps      FactorSteps
+	Steps      PendingSteps
 	Save       Saver
 	Find       Finder
 	Terminate  Terminator

@@ -7,10 +7,14 @@
  */
 
 /**
- * stepFor maps the factors the gateway says are still owed to the route that
- * collects them. `otp` challenges an enrolled user, and `otp_enroll` forces
+ * stepFor maps the pending steps the gateway says are still owed to the route
+ * that runs them. `otp` challenges an enrolled user, and `otp_enroll` forces
  * setup when policy requires MFA. An empty set owes nothing, so the flow goes
  * straight to the finalize step.
+ *
+ * These are steps, not factors. A factor is what the person already proved, and
+ * it reaches the ID token as `amr`. Nothing here ever does. `otp` reads the same
+ * in both places and means the other thing: the challenge is owed, not answered.
  *
  * Two steps read it. The password step routes forward on the answer it just
  * received, and the finalize step routes back on the same answer when the

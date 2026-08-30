@@ -788,7 +788,7 @@ func newSessionService(
 
 	return session.NewService(session.Deps{
 		Identity: identityFinder(users),
-		Steps:    factorSteps(users, factors, bdb, log),
+		Steps:    pendingSteps(users, factors, bdb, log),
 		// The one credential read of the user domain answers the organization
 		// beside the hash. The sign-in needs the hash only.
 		Credential: func(ctx context.Context, tenantID, userID string) (string, error) {
@@ -804,7 +804,8 @@ func newSessionService(
 	})
 }
 
-// factorSteps names the steps a person still owes after the password step.
+// pendingSteps names the Pending Steps a person still owes after the password
+// step.
 //
 // A person who holds an active factor is sent to the challenge, and a person the
 // requirement governs who holds none is sent to enrolment.
@@ -812,6 +813,11 @@ func newSessionService(
 // It reads through three domains, so it is composed here: the person names the
 // organization, the organization resolves the MFA Requirement over the tenant
 // default, and the TOTP module answers whether the person holds a factor.
+//
+// Moving it into internal/authpolicy was weighed and refused. No cycle blocks the
+// move, but that package is a policy leaf today, and Service.MFARequired is shaped
+// as a function value so that the login stack imports nothing from it. The move
+// would make authpolicy import user, totp and session to gain nothing at runtime.
 //
 // The requirement resolves through both policy levels, the way the password
 // policy already does. A read of the tenant row alone would make every
@@ -824,9 +830,9 @@ func newSessionService(
 // One function answers the step signal, so the signal and the gate that enforces
 // it can never disagree. Two copies of an authentication predicate drift, and a
 // drifted predicate is a security defect.
-func factorSteps(
+func pendingSteps(
 	users *user.Repository, factors *totp.Repository, bdb *bun.DB, log logger.Logger,
-) session.FactorSteps {
+) session.PendingSteps {
 	// Only the stored row of each level is read here, so the policy service is
 	// built with the one dependency it needs. The console writes the policy, and
 	// that is mounted on the admin API.
@@ -851,7 +857,7 @@ func factorSteps(
 			return nil, err
 		}
 		if held {
-			return []string{session.FactorOTP}, nil
+			return []string{session.StepChallengeOTP}, nil
 		}
 
 		row, err := users.FindByID(ctx, tenantID, userID)

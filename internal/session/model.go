@@ -39,14 +39,26 @@ const FactorScan = "vc"
 // factor, and the audit metadata tells the two apart.
 const FactorOTP = "otp"
 
-// StepEnrolOTP is what the password answer names when the MFA Requirement
-// applies and the person holds no active TOTP Enrolment. The sign-in front end
-// reads it and walks the person through enrolment.
+// StepChallengeOTP and StepEnrolOTP are the two Pending Steps this deployment
+// names. The password answer carries one of them, and the sign-in front end
+// reads it to pick the next route.
 //
-// It is a step signal and not an AMR name, so it never reaches a token. No
-// passkey value is ever named here, because no passkey backend exists and a
+// A Pending Step is not a Factor. A Factor is what the person already proved, and
+// the ID token carries its name. A Pending Step is what the person still owes, and
+// it never reaches a token. StepChallengeOTP therefore holds the same text as
+// FactorOTP and means the other thing: the person owes the challenge, and did not
+// answer it. Read FactorOTP where a proved factor is recorded.
+//
+// No passkey value is ever named here, because no passkey backend exists and a
 // person routed to one would reach a screen that never moves.
-const StepEnrolOTP = "otp_enroll"
+const (
+	// StepChallengeOTP is owed by a person who holds an active TOTP Enrolment.
+	StepChallengeOTP = "otp"
+
+	// StepEnrolOTP is owed when the MFA Requirement applies and the person holds
+	// no active TOTP Enrolment.
+	StepEnrolOTP = "otp_enroll"
+)
 
 // partialLifetime bounds the identifier step. The person has proved nothing
 // yet, so the session lives only long enough to type a password.

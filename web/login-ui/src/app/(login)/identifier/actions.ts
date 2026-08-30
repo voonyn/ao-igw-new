@@ -5,7 +5,11 @@ import { cookies, headers } from "next/headers"
 import { callLoginAPI } from "@/lib/login-api"
 import { SESSION_COOKIE, serializeSessionCookie, sessionCookieOptions } from "@/lib/session-cookie"
 
-export type CheckResult = { ok: true; methods: string[] } | { ok: false; error: string }
+// The identifier step names no pending steps. The gateway answers the same
+// whether or not the identifier names a person, so a step list here would
+// disclose whether that person holds a second factor before the password is
+// proved. /password is the first answer that carries them.
+export type CheckResult = { ok: true } | { ok: false; error: string }
 
 // Server Action for the identifier step. The browser POSTs to the current route
 // (basePath-aware, unlike a client `fetch("/api/...")`), so this always reaches
@@ -30,5 +34,5 @@ export async function checkIdentifier(identifier: string): Promise<CheckResult> 
     sessionCookieOptions,
   )
 
-  return { ok: true, methods: Array.isArray(data.methods) ? (data.methods as string[]) : [] }
+  return { ok: true }
 }

@@ -26,14 +26,18 @@ type PasswordRequest struct {
 // token, disclosed exactly once, here. The token the caller presented is dead
 // from this moment.
 //
-// Methods names the factors the person must still verify. It is empty when the
+// Methods names the Pending Steps the person still owes. It is empty when the
 // sign-in owes nothing, and the login UI then goes straight to the finalize
 // step.
 //
-// It carries otp_enroll when the MFA Requirement applies and the person holds no
-// active TOTP Enrolment. It never carries a passkey value, because no passkey
-// backend exists and a person routed to one would reach a screen that never
-// moves.
+// The field is named for the wire, and the wire name predates the term. It never
+// carries a Factor. A Factor is what the person already proved, and the ID token
+// carries that. Every value here is a step the person must still run.
+//
+// It carries otp when the person holds an active TOTP Enrolment, and otp_enroll
+// when the MFA Requirement applies and the person holds none. It never carries a
+// passkey value, because no passkey backend exists and a person routed to one
+// would reach a screen that never moves.
 type PasswordResponse struct {
 	SessionToken string   `json:"sessionToken"`
 	Methods      []string `json:"methods"`
