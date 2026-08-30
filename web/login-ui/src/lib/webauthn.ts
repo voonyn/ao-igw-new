@@ -1,24 +1,49 @@
-// The browser half of the Passkey challenge, and the copy for every way it can
-// fail.
+// The browser half of the Passkey ceremonies, and the copy for every way one can
+// fail. The sign-in runs two of them: the challenge a holder answers, and the
+// registration a person the MFA Requirement governs runs instead.
 //
 // Nothing here reads inside the options or inside the answer. The options are
 // what the device signs over, so a field this file picked out and rebuilt would
 // change what the signature covers. The platform parses the one and serialises
 // the other, and this file carries both across whole.
 
-// passkeysSupported says whether this browser can run the ceremony at all.
+// passkeysSupported says whether this browser can run either ceremony.
 //
-// The check is the JSON pair the code below calls, not `PublicKeyCredential`
-// alone: a browser that has the credential API without the JSON helpers cannot
-// take the options the gateway sends. The control is disabled when this answers
-// false, and it is never hidden — a person who sees no control cannot tell a
-// missing feature from a broken page.
+// The check is the JSON helpers the code below calls, not `PublicKeyCredential`
+// alone: a browser that has the credential API without them cannot take the
+// options the gateway sends. Both helpers are demanded, and one answer covers
+// both screens: a browser ships the pair together, and a screen that ran one
+// ceremony but not the other would offer a passkey it cannot create.
+//
+// The control is disabled when this answers false, and it is never hidden — a
+// person who sees no control cannot tell a missing feature from a broken page.
 export function passkeysSupported(): boolean {
   return (
     typeof window !== "undefined" &&
     typeof window.PublicKeyCredential === "function" &&
-    typeof PublicKeyCredential.parseRequestOptionsFromJSON === "function"
+    typeof PublicKeyCredential.parseRequestOptionsFromJSON === "function" &&
+    typeof PublicKeyCredential.parseCreationOptionsFromJSON === "function"
   )
+}
+
+// createPasskey asks the device to make one key pair and answers what the
+// gateway stores.
+//
+// It is the enrolment twin of getPasskey, and it carries the options and the
+// answer across whole for the same reason: every field of them is part of what
+// the device signs.
+export async function createPasskey(
+  options: PublicKeyCredentialCreationOptionsJSON,
+  signal: AbortSignal,
+): Promise<PublicKeyCredentialJSON> {
+  const credential = await navigator.credentials.create({
+    publicKey: PublicKeyCredential.parseCreationOptionsFromJSON(options),
+    signal,
+  })
+  if (!(credential instanceof PublicKeyCredential)) {
+    throw new Error("the browser answered no passkey")
+  }
+  return credential.toJSON()
 }
 
 // getPasskey asks the device to sign one challenge and answers what the gateway
@@ -55,7 +80,9 @@ export function browserPasskeyMessage(err: unknown): string {
   return "Your device could not answer. Please try again, or use another method."
 }
 
-// passkeyMessage says why the gateway refused one of the challenge calls.
+// passkeyMessage says why the gateway refused one of the ceremony calls. The
+// challenge and the enrolment share it, so a person reads one wording for a
+// refusal that means one thing.
 //
 // The slug is read before the status, and never the message: the gateway carries
 // the reason in the slug, so a reworded message never changes what a person
@@ -81,6 +108,13 @@ export function passkeyMessage(code: unknown): string {
       return "That passkey is no longer registered. Please use another method."
     case "no_passkey":
       return "There is no passkey on this account. Please use another method."
+    // The enrolment refusals. A device that already holds a passkey for this
+    // account, and an account that holds the most passkeys allowed, both name a
+    // state the person can act on.
+    case "passkey_duplicate":
+      return "This device already has a passkey for your account. Please use another method."
+    case "passkey_limit_reached":
+      return "Your account has the most passkeys allowed. Please use another method."
     case "rate_limited":
       return "Too many attempts. Please wait a moment and try again."
     case "unauthenticated":

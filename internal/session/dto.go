@@ -36,8 +36,12 @@ type PasswordRequest struct {
 //
 // It carries webauthn when the person holds a live Passkey, and otp when they
 // hold an active TOTP Enrolment. A person who holds both reads both, webauthn
-// first, and proves one of them. It carries otp_enroll when the MFA Requirement
-// applies and the person holds neither Factor.
+// first, and proves one of them.
+//
+// It carries webauthn_enroll and otp_enroll, in that order, when the MFA
+// Requirement applies and the person holds neither Factor. Both are named
+// every time. The enrolment screen renders both at once, so a device with no
+// authenticator never dead-ends, and the person enrols one of the two.
 type PasswordResponse struct {
 	SessionToken string   `json:"sessionToken"`
 	Methods      []string `json:"methods"`

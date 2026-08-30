@@ -16,6 +16,7 @@ package oidc_test
 import (
 	"context"
 	"fmt"
+	"slices"
 	"testing"
 
 	"github.com/gofiber/fiber/v3"
@@ -94,8 +95,9 @@ func TestOrganizationOverrideDecidesTheRequirement(t *testing.T) {
 		auth := gw.startAuthorization(t, fx.confidential)
 		token, methods := signInToPassword(t, gw, fx)
 
-		if len(methods) != 1 || methods[0] != session.StepEnrolOTP {
-			t.Fatalf("methods is %v, want %v", methods, []string{session.StepEnrolOTP})
+		want := []string{session.StepEnrolPasskey, session.StepEnrolOTP}
+		if !slices.Equal(methods, want) {
+			t.Fatalf("methods is %v, want %v", methods, want)
 		}
 
 		// The step signal is the route forward, and the finalize step is the

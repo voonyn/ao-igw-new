@@ -144,6 +144,17 @@ type Principal struct {
 	PasswordProved bool
 }
 
+// holder names the ceremony this principal runs, the way ceremonyKey reads it.
+// A sign-in keys on the Login Session id, so a person who opens a second sign-in
+// never answers the ceremony of the first. The portal leaves the session empty
+// and keys on the person themselves.
+func (p Principal) holder() string {
+	if p.SessionID != "" {
+		return p.SessionID
+	}
+	return p.UserID
+}
+
 // The reads, writes, and sends the service composes its answers from. Each one
 // is a function value, so the logic is testable without a database.
 type (
@@ -358,7 +369,7 @@ func (s *Service) registerStart(
 		return nil, fmt.Errorf("%w: user %s", ErrCeremonyUnavailable, who.UserID)
 	}
 
-	if err := s.store(ctx, tenantID, who.UserID, ceremony); err != nil {
+	if err := s.store(ctx, tenantID, who.holder(), ceremony); err != nil {
 		return nil, err
 	}
 
@@ -376,8 +387,14 @@ func (s *Service) registerStart(
 // cannot be replayed against it. A verification that then fails costs the person
 // one restart, which is the price of a challenge that is consumed exactly once.
 //
-// The row and the audit event land on one transaction. The notification is sent
-// after it, because a message a relay accepted cannot be rolled back.
+// The row and the audit event land on one transaction, and finish runs on it
+// too, after the row lands. The sign-in path completes the Login Session there,
+// so an enrolment that reports a Factor is an enrolment the database records.
+// The portal path passes nil: it holds an access token, and no login session
+// waits on this registration.
+//
+// The notification is sent after the transaction, because a message a relay
+// accepted cannot be rolled back.
 //
 // A credential id a live row already holds is refused. A credential id a removed
 // row holds takes that row back. See claim, which decides between the two.
@@ -385,13 +402,14 @@ func (s *Service) registerStart(
 // No private key exists here. The stored blob is a public key and its metadata.
 func (s *Service) registerFinish(
 	ctx context.Context, tenantID, host, origin, name string, who Principal, answer []byte,
+	finish func(context.Context) error,
 ) (Credential, error) {
 	party, rpID, err := s.relying(ctx, tenantID, host, origin)
 	if err != nil {
 		return Credential{}, err
 	}
 
-	ceremony, err := s.consume(ctx, tenantID, who.UserID, who)
+	ceremony, err := s.consume(ctx, tenantID, who.holder(), who)
 	if err != nil {
 		return Credential{}, err
 	}
@@ -451,7 +469,7 @@ func (s *Service) registerFinish(
 		if err := write(ctx, row); err != nil {
 			return err
 		}
-		return s.deps.Audit.Record(ctx, audit.Entry{
+		if err := s.deps.Audit.Record(ctx, audit.Entry{
 			TenantID:   tenantID,
 			ActorID:    who.UserID,
 			Action:     audit.ActionMFAPasskeyRegistered,
@@ -460,7 +478,13 @@ func (s *Service) registerFinish(
 			IP:         who.IP,
 			UserAgent:  who.UserAgent,
 			Metadata:   map[string]any{"credential_id": credentialID(made.ID)},
-		})
+		}); err != nil {
+			return err
+		}
+		if finish == nil {
+			return nil
+		}
+		return finish(ctx)
 	})
 	if err != nil {
 		s.log.Error("register a passkey",

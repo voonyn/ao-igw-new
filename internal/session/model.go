@@ -58,23 +58,23 @@ const FactorPasskey = "webauthn"
 // gate reads a challenge step as a Factor name, so a step named for one thing and
 // a Factor named for another would be owed for ever.
 //
-// StepChallengePasskey is answered by the passkey challenge of the sign-in.
-// StepEnrolPasskey is named because ADR 0012 fixes its text and the finalize gate
-// reads it, and the enrolment behind it is not built yet, so pendingSteps never
-// answers that one.
+// StepChallengePasskey is answered by the passkey challenge of the sign-in, and
+// StepEnrolPasskey by its forced enrolment. ADR 0012 fixes the text of both.
 const (
 	// StepChallengeOTP is owed by a person who holds an active TOTP Enrolment.
 	StepChallengeOTP = "otp"
 
 	// StepEnrolOTP is owed when the MFA Requirement applies and the person holds
-	// no active TOTP Enrolment.
+	// no Second Factor at all. It is owed beside StepEnrolPasskey, and the person
+	// answers one of the two.
 	StepEnrolOTP = "otp_enroll"
 
 	// StepChallengePasskey is owed by a person who holds an active Passkey.
 	StepChallengePasskey = FactorPasskey
 
-	// StepEnrolPasskey is owed when the person chooses to enrol a Passkey to
-	// answer the MFA Requirement.
+	// StepEnrolPasskey is owed when the MFA Requirement applies and the person
+	// holds no Second Factor at all. It is owed beside StepEnrolOTP, and it is
+	// named first: the Passkey is the Factor the enrolment screen offers first.
 	StepEnrolPasskey = "webauthn_enroll"
 )
 
@@ -183,10 +183,17 @@ func (s LoginSession) AuthTime() time.Time {
 // two Second Factors proves one of them, so a gate that demanded the exact name
 // of each step would refuse a sign-in that is complete.
 //
-// Every other step is refused. An enrolment step is met by its own name alone,
-// and no Factor carries an enrolment name, so nothing on the session answers one.
+// Every other step is refused. An enrolment step is met by its own exact name
+// alone, and no Factor carries an enrolment name, so nothing on the session
+// answers one. A person who enrolled is let through by Steps and not by this
+// function: the enrolment landed, so the step the account owes is now the
+// challenge of the Factor they hold, and the Factor they just proved meets it.
 // A step this build cannot classify is refused for the same reason a wrong code
 // is: a gate that guesses is a gate that opens.
+//
+// The names are compared whole. webauthn_enroll is not the webauthn challenge,
+// so a person who owes the enrolment is never let through by a Passkey the
+// account does not hold yet.
 //
 // The password answers no challenge step, and neither does a Wallet presentation.
 // Only a name this list carries counts. See docs/adr/0012-passkey-amr-value.md.

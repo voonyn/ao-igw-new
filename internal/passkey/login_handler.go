@@ -42,13 +42,15 @@ func NewHandler(svc *Service) *Handler {
 	return &Handler{svc: svc}
 }
 
-// LoginRoutes mounts the two steps of the Passkey challenge. The caller mounts
-// the login credential of the front end and the tenant middleware on the group,
-// the same way it mounts them on the other login steps.
+// LoginRoutes mounts the four steps of the sign-in: the Passkey challenge a
+// holder answers, and the enrolment a person the MFA Requirement governs runs
+// instead. The caller mounts the login credential of the front end and the
+// tenant middleware on the group, the same way it mounts them on the other login
+// steps.
 //
-// The two addresses are siblings of the TOTP routes, and they repeat the shape
-// of the self-service pair one prefix down. The same two steps run everywhere, so
-// a reader who knows one knows the others.
+// The four addresses are siblings of the TOTP routes, and they repeat the shape
+// of the self-service pair one prefix down. The same steps run everywhere, so a
+// reader who knows one knows the others.
 //
 // Nothing is mounted on the group itself. The TOTP routes share it, so a guard
 // installed here would run on every one of theirs too. Each handler below reads
@@ -56,6 +58,60 @@ func NewHandler(svc *Service) *Handler {
 func LoginRoutes(router fiber.Router, h *Handler) {
 	router.Post("/passkey/challenge/start", h.challengeStart)
 	router.Post("/passkey/challenge/finish", h.challengeFinish)
+	router.Post("/passkey/enroll/start", h.enrolStart)
+	router.Post("/passkey/enroll/finish", h.enrolFinish)
+}
+
+// enrolStart answers the registration options the browser passes to
+// navigator.credentials.create().
+//
+// The whole object is answered as it stands, the way the challenge options are.
+// The sign-in front end hands it to the browser untouched.
+func (h *Handler) enrolStart(c fiber.Ctx) error {
+	tc, ok := middlewares.TenantFrom(c)
+	if !ok {
+		return response.Error(c, fiber.StatusNotFound, "Not Found", nil)
+	}
+
+	token := bearerToken(c)
+	if token == "" {
+		return response.Error(c, fiber.StatusUnauthorized, "Unauthorized", nil)
+	}
+
+	creation, err := h.svc.LoginEnrolStart(c.Context(), tc.TenantID, tc.Host, origin(c), token)
+	if err != nil {
+		return response.Fail(c, err)
+	}
+
+	return response.OK(c, creation)
+}
+
+// enrolFinish stores the proved Passkey and hands back the rotated token. It
+// answers the same shape the challenge finish answers, so the sign-in front end
+// reads one field at both steps.
+func (h *Handler) enrolFinish(c fiber.Ctx) error {
+	var req ChallengeFinishRequest
+	if err := c.Bind().Body(&req); err != nil {
+		return response.Validation(c, err)
+	}
+
+	tc, ok := middlewares.TenantFrom(c)
+	if !ok {
+		return response.Error(c, fiber.StatusNotFound, "Not Found", nil)
+	}
+
+	token := bearerToken(c)
+	if token == "" {
+		return response.Error(c, fiber.StatusUnauthorized, "Unauthorized", nil)
+	}
+
+	rotated, err := h.svc.LoginEnrolFinish(
+		c.Context(), tc.TenantID, tc.Host, origin(c), token, req.Credential)
+	if err != nil {
+		return response.Fail(c, err)
+	}
+
+	return response.OK(c, ChallengeResponse{SessionToken: rotated})
 }
 
 // challengeStart answers the assertion options the browser passes to

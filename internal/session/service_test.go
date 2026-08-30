@@ -593,6 +593,24 @@ func TestResolveForFinalize_OwedEnrolment(t *testing.T) {
 	}
 }
 
+// TestResolveForFinalize_EnrolmentIsMatchedWhole covers the gate reading an
+// enrolment step by its exact name.
+//
+// The two Passkey steps differ by a suffix, and a challenge step is met by any
+// proved Second Factor. A gate that matched on a prefix would therefore let a
+// person who owes webauthn_enroll through on a Passkey the account does not
+// hold yet, which is the whole demand the requirement makes of them.
+func TestResolveForFinalize_EnrolmentIsMatchedWhole(t *testing.T) {
+	now := time.Now().UTC()
+	svc, token := finalizeService(t, []string{StepEnrolPasskey, StepEnrolOTP},
+		map[string]time.Time{FactorPassword: now, FactorPasskey: now})
+
+	_, err := svc.ResolveForFinalize(context.Background(), "tenant-1", token)
+	if !errors.Is(err, ErrInsufficientFactors) {
+		t.Errorf("resolve for finalize gave %v, want %v", err, ErrInsufficientFactors)
+	}
+}
+
 // TestResolveForFinalize_ProvedFactor covers the person who answered the
 // challenge. The seam still names the factor, because the account still holds
 // it, and the session says the demand was answered.

@@ -45,7 +45,9 @@ func (s *Service) AccountRegisterFinish(
 		logger.String("tenant_id", tenantID),
 		logger.String("user_id", who.UserID), logger.RequestID(ctx))
 
-	return s.registerFinish(ctx, tenantID, host, origin, name, who, answer)
+	// No finish hook. The portal holds an access token, and no login session
+	// waits on this registration.
+	return s.registerFinish(ctx, tenantID, host, origin, name, who, answer, nil)
 }
 
 // AccountList answers the live Passkeys of the person the access token names.

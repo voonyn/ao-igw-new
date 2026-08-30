@@ -120,7 +120,7 @@ func TestRegisterFinish_NoChallengeIsRefused(t *testing.T) {
 	who := Principal{UserID: testUserID}
 	_, err := svc.registerFinish(
 		context.Background(), testTenantID, testHost, testOrigin, "Laptop", who,
-		[]byte(`{"id":"aaaa","rawId":"aaaa","type":"public-key"}`))
+		[]byte(`{"id":"aaaa","rawId":"aaaa","type":"public-key"}`), nil)
 
 	if !errors.Is(err, ErrChallengeExpired) {
 		t.Errorf("the finish answered %v, want %v", err, ErrChallengeExpired)

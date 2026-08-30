@@ -17,6 +17,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -86,15 +87,18 @@ func TestForcedEnrolmentFlow(t *testing.T) {
 		if token == "" || token == opened.SessionToken {
 			t.Fatal("the password step did not rotate the session token")
 		}
-		if len(verified.Methods) != 1 || verified.Methods[0] != session.StepEnrolOTP {
-			t.Fatalf("methods is %v, want %v", verified.Methods, []string{session.StepEnrolOTP})
+		// Both enrolments, the Passkey first. The person holds neither Factor, so
+		// both are offered and they enrol one of them.
+		want := []string{session.StepEnrolPasskey, session.StepEnrolOTP}
+		if !slices.Equal(verified.Methods, want) {
+			t.Fatalf("methods is %v, want %v", verified.Methods, want)
 		}
-		// No passkey value is named. This person holds no Passkey, and a step
+		// No challenge step is named. This person holds no Factor, and a step
 		// list that offered one would send them to a challenge no device of
 		// theirs can answer.
 		for _, method := range verified.Methods {
-			if strings.Contains(method, "webauthn") || strings.Contains(method, "passkey") {
-				t.Errorf("methods names a passkey: %v", verified.Methods)
+			if !strings.HasSuffix(method, "_enroll") {
+				t.Errorf("methods names the challenge step %q: %v", method, verified.Methods)
 			}
 		}
 	})

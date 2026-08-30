@@ -267,3 +267,76 @@ func (s *Service) principal(ctx context.Context, tenantID, token string) (Princi
 	}
 	return who, nil
 }
+
+// LoginEnrolStart hands the person the registration options their browser
+// passes to navigator.credentials.create().
+//
+// It is the enrolment half of the sign-in: a person the MFA Requirement governs,
+// who holds no Second Factor, reaches this instead of a challenge. The password
+// answer names the step, and the Authenticator sits beside it on the same
+// screen, so a device with no authenticator never dead-ends.
+//
+// It demands the password and nothing more. A registration creates a Factor and
+// destroys none, and the finish below proves the device before any row is
+// written.
+//
+// The ceremony keys on the Login Session id, the way the challenge does. A
+// person who opens a second sign-in never answers the ceremony of the first.
+func (s *Service) LoginEnrolStart(
+	ctx context.Context, tenantID, host, origin, token string,
+) (*protocol.CredentialCreation, error) {
+	s.log.Debug("start a passkey enrolment at sign-in",
+		logger.String("tenant_id", tenantID), logger.RequestID(ctx))
+
+	who, err := s.principal(ctx, tenantID, token)
+	if err != nil {
+		return nil, err
+	}
+
+	return s.registerStart(ctx, tenantID, host, origin, who)
+}
+
+// LoginEnrolFinish stores the proved Passkey and signs the person in.
+//
+// The Passkey row, the audit row, and the session completion land on one
+// transaction. A sign-in that reports the Factor is a sign-in the database
+// records, and a Passkey the database kept is a Passkey the person got a session
+// for.
+//
+// The person continues straight to the application. They proved the password and
+// they proved possession of the device, so a second challenge would ask for what
+// the enrolment already showed.
+//
+// The device is not named here. The sign-in screen asks for no name, so the
+// registration takes the default, and the person renames it in the portal.
+//
+// A refusal leaves the sign-in alive. The person tries again on the same screen,
+// or enrols an Authenticator instead.
+func (s *Service) LoginEnrolFinish(
+	ctx context.Context, tenantID, host, origin, token string, answer []byte,
+) (string, error) {
+	s.log.Debug("finish a passkey enrolment at sign-in",
+		logger.String("tenant_id", tenantID), logger.RequestID(ctx))
+
+	who, err := s.principal(ctx, tenantID, token)
+	if err != nil {
+		return "", err
+	}
+
+	var rotated string
+	if _, err := s.registerFinish(ctx, tenantID, host, origin, "", who, answer,
+		func(ctx context.Context) error {
+			upgraded, err := s.deps.CompleteSession(ctx, tenantID, token, who.UserID)
+			rotated = upgraded
+			return err
+		},
+	); err != nil {
+		return "", err
+	}
+
+	s.log.Info("enrolled a passkey at sign-in",
+		logger.String("tenant_id", tenantID),
+		logger.String("session_id", who.SessionID),
+		logger.String("user_id", who.UserID))
+	return rotated, nil
+}

@@ -322,8 +322,9 @@ func mountMFA(
 	mfaGroup := loginGroup.Group(mfaSuffix)
 	totp.LoginRoutes(mfaGroup, totp.NewHandler(svc))
 
-	// The Passkey challenge of the sign-in. It mounts beside the TOTP routes, so
-	// the two Second Factors sit side by side.
+	// The Passkey half of the sign-in: the challenge a holder answers, and the
+	// enrolment a person the MFA Requirement governs runs instead. It mounts
+	// beside the TOTP routes, so the two Second Factors sit side by side.
 	//
 	// The module imports neither the user domain nor the login session domain,
 	// so both crossings are composed here, the way the TOTP crossings above are.
@@ -331,6 +332,17 @@ func mountMFA(
 	deps := passkeyCeremony(cfg, passkeys, tenant.NewRepository(bdb, log), rdb, users,
 		svc.SpendGuess, recorder, tx, log)
 	deps.Touch = passkeys.Touch
+
+	// The three writes the enrolment needs. A registration inserts a new
+	// credential id, or takes back the row of a device somebody removed, and the
+	// read is what decides between them.
+	//
+	// No notification is wired. The person is at the keyboard signing in, so a
+	// message telling them a Factor was added says nothing they do not see, and
+	// the TOTP enrolment beside it sends none either.
+	deps.Insert = passkeys.Insert
+	deps.Find = passkeys.FindByCredential
+	deps.Revive = passkeys.Revive
 	deps.FindSession = func(ctx context.Context, tenantID, token string) (passkey.Principal, error) {
 		// Find, and not Resolve: the module decides what an unfinished session
 		// may do, and it refuses one that proved no password.
@@ -1122,7 +1134,16 @@ func pendingSteps(
 		if !required {
 			return nil, nil
 		}
-		return []string{session.StepEnrolOTP}, nil
+
+		// Both enrolments, the Passkey first. The person picks one, and the
+		// screen renders both at once: a device with no authenticator must never
+		// dead-end, so the Authenticator stays beside the Passkey at all times.
+		//
+		// The order is the same preference the challenge steps carry. It names
+		// which Factor the screen offers first, and nothing more: the front end
+		// renders both, and the finalize gate reads whichever one the person
+		// enrolled.
+		return []string{session.StepEnrolPasskey, session.StepEnrolOTP}, nil
 	}
 }
 
