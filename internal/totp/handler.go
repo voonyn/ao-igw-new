@@ -27,6 +27,10 @@ const bearerPrefix = "Bearer "
 // sign-in ended and the person must start again, and rate_limited says the
 // person must wait. A generic failure would leave the login UI unable to say
 // either, and the person would keep typing into a session that is dead.
+//
+// A budget nobody could read answers mfa_unavailable, not rate_limited. It is
+// the gateway that failed, not the person who guessed too much, so the answer
+// asks them to try again rather than to wait out a window that is not counting.
 func init() {
 	response.Map(ErrPasswordNotProved, fiber.StatusUnauthorized, "unauthenticated", "Unauthorized")
 	response.Map(ErrBadCode, fiber.StatusUnauthorized, "invalid_credentials", "Unauthorized")
@@ -35,6 +39,7 @@ func init() {
 	response.Map(ErrNoActiveFactor, fiber.StatusConflict, "no_active_factor", "Conflict")
 	response.Map(ErrSignInEnded, fiber.StatusUnauthorized, "too_many_codes", "Unauthorized")
 	response.Map(ErrTooManyAttempts, fiber.StatusTooManyRequests, "rate_limited", "Too Many Requests")
+	response.Map(ErrBudgetUnavailable, fiber.StatusServiceUnavailable, "mfa_unavailable", "Service Unavailable")
 }
 
 // Handler serves the enrolment steps of the sign-in. It binds the request, calls

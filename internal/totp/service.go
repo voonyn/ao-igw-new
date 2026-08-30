@@ -56,6 +56,15 @@ var (
 	// ErrTooManyAttempts reports a person who spent the whole guessing budget of
 	// the trailing window, across every sign-in they opened.
 	ErrTooManyAttempts = errors.New("too many second-factor attempts")
+
+	// ErrBudgetUnavailable reports a guessing budget nobody could read. The
+	// submission is refused, the same way a spent budget refuses it.
+	//
+	// It is not ErrTooManyAttempts. Both refuse, and the two ask the person for
+	// different things: a spent budget asks them to wait, and this asks them to
+	// try again. A person told to wait out an outage waits for nothing, because
+	// no amount of waiting refills a budget that cannot be read.
+	ErrBudgetUnavailable = errors.New("the second-factor guessing budget is unavailable")
 )
 
 // attemptLimit and attemptWindow cap second-factor guessing per person, across
@@ -295,6 +304,13 @@ func (s *Service) start(
 		return Started{}, fmt.Errorf("seal the totp secret of user %s: %w", who.UserID, err)
 	}
 	if err := s.deps.SavePending(ctx, tenantID, who.UserID, sealed); err != nil {
+		// A factor that landed between the read above and this write answers the
+		// conflict the caller expects, not a failure. Logging it at error would
+		// fill the log with a race the person resolves by removing the factor
+		// they hold.
+		if errors.Is(err, ErrAlreadyEnrolled) {
+			return Started{}, err
+		}
 		s.log.Error("write the pending totp enrolment",
 			logger.String("tenant_id", tenantID),
 			logger.String("user_id", who.UserID), logger.Err(err))
@@ -330,6 +346,12 @@ func (s *Service) Activate(ctx context.Context, tenantID, token, code string) (A
 		rotated = upgraded
 		return err
 	})
+	// A wrong code counts against this sign-in, the way a wrong code at the
+	// challenge does. The count lives here and not in the shared body, because
+	// the portal path holds an access token and has no session to count against.
+	if errors.Is(err, ErrBadCode) {
+		return Activated{}, s.wrong(ctx, tenantID, token, who)
+	}
 	if err != nil {
 		return Activated{}, err
 	}
@@ -342,10 +364,20 @@ func (s *Service) Activate(ctx context.Context, tenantID, token, code string) (A
 // finish runs on the same transaction, after the factor lands. The sign-in path
 // rotates the Login Session token there. The portal path passes nil: it holds an
 // access token, and no login session waits on this enrolment.
+//
+// The guessing budget is spent here, before the enrolment is read, the way the
+// challenge spends it. This address accepts six digits, so without the budget it
+// is the way around the cap: a person who holds the password starts an enrolment
+// of their own and guesses the code of the secret they were just given. Both
+// entry points run this body, so one spend covers both.
 func (s *Service) activate(
 	ctx context.Context, tenantID string, who Principal, code string,
 	finish func(context.Context) error,
 ) ([]string, error) {
+	if err := s.spendGuess(ctx, tenantID, who); err != nil {
+		return nil, err
+	}
+
 	row, err := s.deps.Find(ctx, tenantID, who.UserID)
 	if errors.Is(err, ErrNoEnrolment) || (err == nil && row.Active()) {
 		return nil, fmt.Errorf("%w: user %s", ErrNoPendingEnrolment, who.UserID)
@@ -572,7 +604,7 @@ func (s *Service) spendGuess(ctx context.Context, tenantID string, who Principal
 		s.log.Error("read the second-factor guessing budget",
 			logger.String("tenant_id", tenantID),
 			logger.String("user_id", who.UserID), logger.Err(err))
-		return fmt.Errorf("%w: user %s", ErrTooManyAttempts, who.UserID)
+		return fmt.Errorf("%w: user %s", ErrBudgetUnavailable, who.UserID)
 	}
 	if allowed {
 		return nil

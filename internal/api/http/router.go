@@ -852,8 +852,16 @@ func pendingSteps(
 		// read comes first and the requirement is never consulted. A person who
 		// chose to protect their account keeps that protection on the day an
 		// administrator clears the flag.
+		// The two reads below are logged here and nowhere else. The caller takes
+		// this as an opaque function value and cannot classify what it answers,
+		// so this is the last layer that can name the tenant and the person the
+		// read was for. MFARequired logs its own failure, which is why the read
+		// under it is returned raw.
 		held, err := factors.HasActiveFactor(ctx, tenantID, userID)
 		if err != nil {
+			log.Error("read the active second factor to resolve the pending steps",
+				logger.String("tenant_id", tenantID),
+				logger.String("user_id", userID), logger.Err(err))
 			return nil, err
 		}
 		if held {
@@ -862,6 +870,9 @@ func pendingSteps(
 
 		row, err := users.FindByID(ctx, tenantID, userID)
 		if err != nil {
+			log.Error("read the account to resolve the pending steps",
+				logger.String("tenant_id", tenantID),
+				logger.String("user_id", userID), logger.Err(err))
 			return nil, err
 		}
 		required, err := policies.MFARequired(ctx, tenantID, row.OrgID)
