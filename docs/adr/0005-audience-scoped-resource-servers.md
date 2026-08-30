@@ -60,3 +60,18 @@ that names another resource is refused with 401.
   already issued lives out its lifetime. See `internal/api/oidc/logout.go`.
 - The two identifiers are Go constants in `internal/oidc`. A front end repeats the
   string in its environment, and the two must agree.
+- The audience is minted only when the policy grants the resource the engine
+  validated. `internal/api/oidc/policy.go` sets `GrantedResources` beside
+  `GrantedScopes`. goidc copies the granted set onto the grant, the grant onto the
+  token, and the token onto the `aud` claim. An unset `GrantedResources` breaks the
+  chain at the first link, and every token is then minted with no `aud`. Commit
+  `f6a9abf` wired it.
+- A broken chain has two symptoms, and the first is the one to expect. A client
+  that sends `resource` only at `/authorize` receives a token with no `aud`, and
+  the bearer middleware refuses it with 401. `portal-ui` and `console-ui` both send
+  it that way. A client that also sends `resource` at `/token` is refused at the
+  token endpoint with `invalid_target`, and the integration harness sends it that
+  way. The commit message of `f6a9abf` names only the second symptom.
+- The audience rule is proved end to end by `TestAccountAPIFlow`, which skips
+  unless `integrationEnv=1`. A default `go test ./...` passes while the chain is
+  broken.

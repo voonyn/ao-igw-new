@@ -58,6 +58,4 @@ type RecoveryCode struct {
 	TenantID string `bun:"tenant_id,pk"`
 	UserID   string `bun:"user_id,pk"`
 	CodeHash string `bun:"code_hash,pk"`
-
-	UsedAt time.Time `bun:"used_at,nullzero"`
 }
