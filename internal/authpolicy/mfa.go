@@ -32,5 +32,9 @@ func (s *Service) MFARequired(ctx context.Context, tenantID, orgID string) (bool
 			logger.String("org_id", orgID), logger.Err(err))
 		return false, fmt.Errorf("read the auth policy of %s/%s: %w", tenantID, orgID, err)
 	}
+
+	s.log.Debug("read the mfa requirement",
+		logger.String("tenant_id", tenantID), logger.String("org_id", orgID),
+		logger.Bool("mfa_required", view.MfaRequired), logger.RequestID(ctx))
 	return view.MfaRequired, nil
 }
