@@ -145,6 +145,12 @@ export function StepMfa({
         </LinkButton>
       </p>
 
+      <p className="mt-3 text-center text-[12.5px] text-pretty text-ao-muted">
+        Lost your authenticator app and used every recovery code? An administrator can
+        reset two-factor authentication for you. The reset deletes your current secret
+        and all remaining recovery codes, and you set it up again at your next sign-in.
+      </p>
+
       <BackLink onClick={onBack} />
     </>
   )
