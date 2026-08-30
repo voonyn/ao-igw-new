@@ -39,9 +39,14 @@ const FactorScan = "vc"
 // factor, and the audit metadata tells the two apart.
 const FactorOTP = "otp"
 
-// StepChallengeOTP and StepEnrolOTP are the two Pending Steps this deployment
-// names. The password answer carries one of them, and the sign-in front end
-// reads it to pick the next route.
+// FactorPasskey names the factor a person proves with a Passkey. The AMR
+// registry lists no value that this gateway can state truthfully, so the name is
+// its own. See docs/adr/0012-passkey-amr-value.md.
+const FactorPasskey = "webauthn"
+
+// The four Pending Steps this deployment names. The password answer carries the
+// ones the person can run, and the sign-in front end reads them to pick the next
+// route.
 //
 // A Pending Step is not a Factor. A Factor is what the person already proved, and
 // the ID token carries its name. A Pending Step is what the person still owes, and
@@ -49,8 +54,13 @@ const FactorOTP = "otp"
 // FactorOTP and means the other thing: the person owes the challenge, and did not
 // answer it. Read FactorOTP where a proved factor is recorded.
 //
-// No passkey value is ever named here, because no passkey backend exists and a
-// person routed to one would reach a screen that never moves.
+// A challenge step must hold the text of the Factor it asks for. The finalize
+// gate reads a challenge step as a Factor name, so a step named for one thing and
+// a Factor named for another would be owed for ever.
+//
+// The two passkey steps are named because ADR 0012 fixes their text and the
+// finalize gate reads it. No passkey backend exists yet, so pendingSteps never
+// answers either one, and nobody is routed to a screen that never moves.
 const (
 	// StepChallengeOTP is owed by a person who holds an active TOTP Enrolment.
 	StepChallengeOTP = "otp"
@@ -58,7 +68,23 @@ const (
 	// StepEnrolOTP is owed when the MFA Requirement applies and the person holds
 	// no active TOTP Enrolment.
 	StepEnrolOTP = "otp_enroll"
+
+	// StepChallengePasskey is owed by a person who holds an active Passkey.
+	StepChallengePasskey = FactorPasskey
+
+	// StepEnrolPasskey is owed when the person chooses to enrol a Passkey to
+	// answer the MFA Requirement.
+	StepEnrolPasskey = "webauthn_enroll"
 )
+
+// challengeSteps names every challenge step. Anything else a step list carries
+// is an enrolment step, or a step this build does not know, and the finalize gate
+// refuses both.
+//
+// It also names every Second Factor, because a challenge step holds the text of
+// the Factor it asks for. One list therefore answers both halves of the gate, and
+// the two halves cannot drift apart.
+var challengeSteps = []string{StepChallengeOTP, StepChallengePasskey}
 
 // partialLifetime bounds the identifier step. The person has proved nothing
 // yet, so the session lives only long enough to type a password.
@@ -148,6 +174,31 @@ func (s LoginSession) AuthTime() time.Time {
 		}
 	}
 	return latest
+}
+
+// meets reports whether this session answered one Pending Step.
+//
+// A challenge step is met by any proved Second Factor. A person who is offered
+// two Second Factors proves one of them, so a gate that demanded the exact name
+// of each step would refuse a sign-in that is complete.
+//
+// Every other step is refused. An enrolment step is met by its own name alone,
+// and no Factor carries an enrolment name, so nothing on the session answers one.
+// A step this build cannot classify is refused for the same reason a wrong code
+// is: a gate that guesses is a gate that opens.
+//
+// The password answers no challenge step, and neither does a Wallet presentation.
+// Only a name this list carries counts. See docs/adr/0012-passkey-amr-value.md.
+func (s LoginSession) meets(step string) bool {
+	if !slices.Contains(challengeSteps, step) {
+		return false
+	}
+	for _, factor := range challengeSteps {
+		if _, proved := s.Factors[factor]; proved {
+			return true
+		}
+	}
+	return false
 }
 
 // FactorNames names every factor the person proved, sorted. The ID token

@@ -467,9 +467,10 @@ func (s *Service) Resolve(ctx context.Context, tenantID, token string) (LoginSes
 // step signal of the password step. Two copies of an authentication predicate
 // drift, and a drifted predicate is a security defect.
 //
-// A step the session already proved is met. Steps answers what the account and
+// A step the session already answered is met. Steps answers what the account and
 // the policy demand, not what this sign-in did, so the session is what says
-// whether the demand was answered.
+// whether the demand was answered. LoginSession.meets carries that reading: a
+// challenge step takes any proved Second Factor, and every other step is refused.
 //
 // A QR Login is exempt. A Wallet presentation is a possession factor already,
 // and the poll answers pending, authenticated, or expired, with no room to name
@@ -488,7 +489,7 @@ func (s *Service) ResolveForFinalize(ctx context.Context, tenantID, token string
 		return LoginSession{}, err
 	}
 	for _, step := range steps {
-		if _, proved := live.Factors[step]; proved {
+		if live.meets(step) {
 			continue
 		}
 		s.log.Warn("refused the finalize step: the sign-in owes a factor",

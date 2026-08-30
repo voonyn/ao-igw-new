@@ -643,6 +643,74 @@ func TestResolveForFinalize_PartialSession(t *testing.T) {
 	}
 }
 
+// TestResolveForFinalize_TwoChallengeSteps covers the person who is offered two
+// Second Factors. Both challenge steps are owed, the person proves one of them,
+// and the gate passes. A gate that demanded both would refuse a sign-in that is
+// complete. See docs/adr/0012-passkey-amr-value.md.
+func TestResolveForFinalize_TwoChallengeSteps(t *testing.T) {
+	now := time.Now().UTC()
+	svc, token := finalizeService(t, []string{StepChallengePasskey, StepChallengeOTP},
+		map[string]time.Time{FactorPassword: now, FactorOTP: now})
+
+	if _, err := svc.ResolveForFinalize(context.Background(), "tenant-1", token); err != nil {
+		t.Fatalf("resolve for finalize: %v", err)
+	}
+}
+
+// TestResolveForFinalize_TwoChallengeStepsPasswordOnly covers the same list with
+// no Second Factor proved. Any Second Factor meets a challenge step, and the
+// password is not one, so the sign-in is refused.
+func TestResolveForFinalize_TwoChallengeStepsPasswordOnly(t *testing.T) {
+	svc, token := finalizeService(t, []string{StepChallengePasskey, StepChallengeOTP},
+		map[string]time.Time{FactorPassword: time.Now().UTC()})
+
+	_, err := svc.ResolveForFinalize(context.Background(), "tenant-1", token)
+	if !errors.Is(err, ErrInsufficientFactors) {
+		t.Errorf("resolve for finalize gave %v, want %v", err, ErrInsufficientFactors)
+	}
+}
+
+// TestResolveForFinalize_EnrolmentTakesNoSubstitute covers the enrolment step
+// beside a proved Second Factor. A person who owes enrolment proved nothing of
+// that step, so another factor never answers it.
+func TestResolveForFinalize_EnrolmentTakesNoSubstitute(t *testing.T) {
+	now := time.Now().UTC()
+	svc, token := finalizeService(t, []string{StepEnrolPasskey},
+		map[string]time.Time{FactorPassword: now, FactorOTP: now})
+
+	_, err := svc.ResolveForFinalize(context.Background(), "tenant-1", token)
+	if !errors.Is(err, ErrInsufficientFactors) {
+		t.Errorf("resolve for finalize gave %v, want %v", err, ErrInsufficientFactors)
+	}
+}
+
+// TestResolveForFinalize_UnknownStepIsRefused covers the step this build cannot
+// classify. A gate that took an unknown step for a challenge would sign the
+// person in on a factor that answers something else, so it refuses instead.
+func TestResolveForFinalize_UnknownStepIsRefused(t *testing.T) {
+	now := time.Now().UTC()
+	svc, token := finalizeService(t, []string{"webauthn_enrollment"},
+		map[string]time.Time{FactorPassword: now, FactorOTP: now})
+
+	_, err := svc.ResolveForFinalize(context.Background(), "tenant-1", token)
+	if !errors.Is(err, ErrInsufficientFactors) {
+		t.Errorf("resolve for finalize gave %v, want %v", err, ErrInsufficientFactors)
+	}
+}
+
+// TestResolveForFinalize_PasskeyMeetsTheOTPChallenge covers the person who holds
+// both Second Factors and answers the passkey challenge. The TOTP step is still
+// owed, and the Passkey answers it.
+func TestResolveForFinalize_PasskeyMeetsTheOTPChallenge(t *testing.T) {
+	now := time.Now().UTC()
+	svc, token := finalizeService(t, []string{StepChallengeOTP},
+		map[string]time.Time{FactorPassword: now, FactorPasskey: now})
+
+	if _, err := svc.ResolveForFinalize(context.Background(), "tenant-1", token); err != nil {
+		t.Fatalf("resolve for finalize: %v", err)
+	}
+}
+
 // TestFailSecondFactor covers the per-session cap on code guessing. The codes
 // before the last one are counted and nothing else happens. The last one ends
 // the session and records one login.failed naming a wrong second factor.
