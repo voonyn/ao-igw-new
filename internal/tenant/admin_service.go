@@ -11,6 +11,7 @@ import (
 	"alphaomega/identitygateway/internal/audit"
 	"alphaomega/identitygateway/internal/platform/db"
 	"alphaomega/identitygateway/internal/platform/logger"
+	"alphaomega/identitygateway/internal/utils"
 )
 
 // ErrForbidden reports that the person does not hold the role this step needs.
@@ -26,6 +27,16 @@ var ErrDomainTaken = errors.New("the host is already mapped to a tenant")
 // The issuer names that host, so removing it would refuse every token the tenant
 // signed, including the one the operator is holding.
 var ErrPrimaryDomain = errors.New("the primary domain cannot be removed")
+
+// ErrRegistrableDomain reports a host that does not share the registrable
+// domain (eTLD+1) of the hosts the tenant already serves.
+//
+// A passkey is bound to the registrable domain it was registered on, and the
+// gateway derives that domain from the request host. A tenant that answers on
+// two registrable domains therefore holds passkeys that work on one of them and
+// fail on the other, one silent failure at a time. The refusal turns that into
+// one message, at the moment somebody makes the mistake.
+var ErrRegistrableDomain = errors.New("the host does not share the registrable domain of the tenant")
 
 // ErrNoBootstrapRecord reports a deployment whose schema was migrated but never
 // bootstrapped. No tenant, no keys, and no provider config exist yet.
@@ -126,6 +137,9 @@ func (s *AdminService) Read(ctx context.Context, a Actor) (View, error) {
 // The write maps the host and nothing more. The host still has to resolve to
 // this gateway in DNS and be forwarded by the reverse proxy before anything
 // answers on it.
+//
+// The new host has to share the registrable domain of the hosts the tenant
+// already serves. See ErrRegistrableDomain.
 func (s *AdminService) AddDomain(ctx context.Context, a Actor, domain string) (DomainView, error) {
 	host := bareHost(domain)
 	s.log.Debug("add a tenant domain",
@@ -156,6 +170,14 @@ func (s *AdminService) AddDomain(ctx context.Context, a Actor, domain string) (D
 		case err == nil:
 			return fmt.Errorf("%w: %s", ErrDomainTaken, host)
 		case errors.Is(err, ErrDomainNotFound):
+			// A host new to the deployment. It is the only branch the
+			// registrable-domain rule governs: the restore above puts back a
+			// row this tenant already held, and nothing enforced the rule when
+			// that row was written, so refusing it would strand the host with
+			// no way back.
+			if err := s.refuseAnotherRegistrableDomain(ctx, a, host); err != nil {
+				return err
+			}
 			if err := s.deps.InsertDomain(ctx, row); err != nil {
 				return err
 			}
@@ -174,7 +196,7 @@ func (s *AdminService) AddDomain(ctx context.Context, a Actor, domain string) (D
 		})
 	})
 	if err != nil {
-		if errors.Is(err, ErrDomainTaken) {
+		if errors.Is(err, ErrDomainTaken) || errors.Is(err, ErrRegistrableDomain) {
 			return DomainView{}, err
 		}
 		return DomainView{}, s.fail(a, "add a tenant domain", err)
@@ -310,6 +332,56 @@ func (s *AdminService) fail(a Actor, what string, err error) error {
 // lowercased too and the two always meet.
 func bareHost(domain string) string {
 	return strings.ToLower(strings.TrimSpace(domain))
+}
+
+// refuseAnotherRegistrableDomain answers ErrRegistrableDomain when the new host
+// does not share the registrable domain of the hosts the tenant already serves.
+//
+// Both sides have to name a registrable domain before the two can disagree. A
+// tenant that names none, and a development host that names none, are each left
+// alone: neither can carry a passkey that a derived RP ID could strand.
+func (s *AdminService) refuseAnotherRegistrableDomain(ctx context.Context, a Actor, host string) error {
+	domains, err := s.deps.Domains(ctx, a.TenantID)
+	if err != nil {
+		return s.fail(a, "read the domains of the tenant", err)
+	}
+
+	anchor, registrable := registrableAnchor(domains), utils.RegistrableDomain(host)
+	if anchor == "" || registrable == "" || registrable == anchor {
+		return nil
+	}
+
+	s.log.Warn("refused a host that breaks the registrable domain of the tenant",
+		logger.String("tenant_id", a.TenantID),
+		logger.String("user_id", a.UserID),
+		logger.String("domain", host),
+		logger.String("registrable_domain", anchor))
+	return fmt.Errorf("%w: %s, want %s", ErrRegistrableDomain, host, anchor)
+}
+
+// registrableAnchor answers the registrable domain that every host of the tenant
+// has to share. The primary host is the anchor, because the issuer names it and
+// no write can remove it. A tenant whose primary host names no registrable
+// domain anchors on the first active host that names one.
+//
+// A tenant with no host at all, and a tenant whose every active host is a
+// development host, both answer the empty string. The caller then adds the host
+// without a check: there is nothing to break yet.
+func registrableAnchor(domains []Domain) string {
+	anchor := ""
+	for _, d := range domains {
+		if d.State != DomainStateActive {
+			continue
+		}
+		registrable := utils.RegistrableDomain(d.Domain)
+		if d.IsPrimary && registrable != "" {
+			return registrable
+		}
+		if anchor == "" {
+			anchor = registrable
+		}
+	}
+	return anchor
 }
 
 func view(row Tenant, domains []Domain) View {

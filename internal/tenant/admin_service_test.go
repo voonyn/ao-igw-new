@@ -183,6 +183,169 @@ func TestAddDomainStoresTheBareHost(t *testing.T) {
 	}
 }
 
+// TestAddDomainAllowsTheFirstHostOfATenant covers the tenant that has nothing to
+// share yet. There is no anchor, so any host is allowed.
+func TestAddDomainAllowsTheFirstHostOfATenant(t *testing.T) {
+	svc := testAdminService(t, adminDeps{roles: []string{RoleIAMOwner}})
+
+	if _, err := svc.AddDomain(context.Background(), owner, "auth.acme.com"); err != nil {
+		t.Fatalf("add the first domain: %v", err)
+	}
+	if len(inserted) != 1 {
+		t.Errorf("the write stored %+v, want one row", inserted)
+	}
+}
+
+// TestAddDomainAcceptsAHostThatSharesTheRegistrableDomain covers the success. A
+// passkey registered on one host of acme.co.uk works on the other, so the write
+// goes through. The multi-part public suffix is the point: a rule that read the
+// last two labels would answer co.uk and let any tenant of the United Kingdom
+// through.
+func TestAddDomainAcceptsAHostThatSharesTheRegistrableDomain(t *testing.T) {
+	svc := testAdminService(t, adminDeps{
+		roles: []string{RoleIAMOwner},
+		domains: []Domain{
+			{Domain: "auth.acme.co.uk", TenantID: testTenantID, IsPrimary: true, State: DomainStateActive},
+		},
+	})
+
+	if _, err := svc.AddDomain(context.Background(), owner, "login.acme.co.uk"); err != nil {
+		t.Fatalf("add a host of the same registrable domain: %v", err)
+	}
+	if len(inserted) != 1 || inserted[0].Domain != "login.acme.co.uk" {
+		t.Errorf("the write stored %+v, want the new host", inserted)
+	}
+}
+
+// TestAddDomainRefusesAHostOfAnotherRegistrableDomain covers the refusal. The
+// gateway derives the passkey RP ID from the request host, so a second
+// registrable domain strands every passkey the tenant already holds.
+func TestAddDomainRefusesAHostOfAnotherRegistrableDomain(t *testing.T) {
+	svc := testAdminService(t, adminDeps{
+		roles: []string{RoleIAMOwner},
+		domains: []Domain{
+			{Domain: "auth.acme.co.uk", TenantID: testTenantID, IsPrimary: true, State: DomainStateActive},
+			{Domain: "login.acme.co.uk", TenantID: testTenantID, State: DomainStateActive},
+		},
+	})
+
+	_, err := svc.AddDomain(context.Background(), owner, "auth.other.co.uk")
+	if !errors.Is(err, ErrRegistrableDomain) {
+		t.Errorf("a host of another registrable domain reads %v, want ErrRegistrableDomain", err)
+	}
+	if len(inserted) != 0 {
+		t.Errorf("the refused write inserted %+v, want nothing", inserted)
+	}
+}
+
+// TestAddDomainSkipsTheCheckForADevelopmentHost covers the host that has no
+// registrable domain. The check cannot compare, so it refuses nothing and the
+// add runs to the end.
+func TestAddDomainSkipsTheCheckForADevelopmentHost(t *testing.T) {
+	// A tenant served from localhost is the anchor that cannot be read.
+	svc := testAdminService(t, adminDeps{
+		roles: []string{RoleIAMOwner},
+		domains: []Domain{
+			{Domain: "localhost", TenantID: testTenantID, IsPrimary: true, State: DomainStateActive},
+		},
+	})
+	if _, err := svc.AddDomain(context.Background(), owner, "auth.acme.com"); err != nil {
+		t.Fatalf("add a host to a tenant served from localhost: %v", err)
+	}
+
+	// The new host is the one that cannot be read.
+	svc = testAdminService(t, adminDeps{
+		roles: []string{RoleIAMOwner},
+		domains: []Domain{
+			{Domain: "auth.acme.com", TenantID: testTenantID, IsPrimary: true, State: DomainStateActive},
+		},
+	})
+	if _, err := svc.AddDomain(context.Background(), owner, "localhost"); err != nil {
+		t.Fatalf("add a development host: %v", err)
+	}
+}
+
+// TestAddDomainAnchorsOnThePrimaryHost covers a tenant whose rows already break
+// the rule, which nothing enforced until now. The primary host is the anchor,
+// because the issuer names it and no write can remove it.
+func TestAddDomainAnchorsOnThePrimaryHost(t *testing.T) {
+	svc := testAdminService(t, adminDeps{
+		roles: []string{RoleIAMOwner},
+		domains: []Domain{
+			{Domain: "auth.legacy.com", TenantID: testTenantID, State: DomainStateActive},
+			{Domain: "auth.acme.com", TenantID: testTenantID, IsPrimary: true, State: DomainStateActive},
+		},
+	})
+
+	if _, err := svc.AddDomain(context.Background(), owner, "login.acme.com"); err != nil {
+		t.Fatalf("add a host of the primary registrable domain: %v", err)
+	}
+	if _, err := svc.AddDomain(context.Background(), owner, "login.legacy.com"); !errors.Is(err, ErrRegistrableDomain) {
+		t.Errorf("a host of the other registrable domain reads %v, want ErrRegistrableDomain", err)
+	}
+}
+
+// TestAddDomainIgnoresARemovedHostAsTheAnchor covers the row that no longer
+// serves. A removed host answers nothing, so it never decides what the tenant
+// can add.
+func TestAddDomainIgnoresARemovedHostAsTheAnchor(t *testing.T) {
+	svc := testAdminService(t, adminDeps{
+		roles: []string{RoleIAMOwner},
+		domains: []Domain{
+			{Domain: "auth.legacy.com", TenantID: testTenantID, State: DomainStateInactive},
+		},
+	})
+
+	if _, err := svc.AddDomain(context.Background(), owner, "auth.acme.com"); err != nil {
+		t.Fatalf("add a host to a tenant whose only row is removed: %v", err)
+	}
+}
+
+// TestAddDomainRestoresAHostThatBreaksTheRule covers the row that predates the
+// rule. Nothing enforced the registrable domain when that row was written, the
+// host is globally unique, and the row is never deleted, so a refusal here would
+// strand the host with no way back. The restore therefore runs the rule on a new
+// host alone.
+func TestAddDomainRestoresAHostThatBreaksTheRule(t *testing.T) {
+	svc := testAdminService(t, adminDeps{
+		roles: []string{RoleIAMOwner},
+		domains: []Domain{
+			{Domain: "auth.acme.com", TenantID: testTenantID, IsPrimary: true, State: DomainStateActive},
+			{Domain: "auth.legacy.com", TenantID: testTenantID, State: DomainStateInactive},
+		},
+		existing: map[string]Domain{
+			"auth.legacy.com": {Domain: "auth.legacy.com", TenantID: testTenantID, State: DomainStateInactive},
+		},
+	})
+
+	if _, err := svc.AddDomain(context.Background(), owner, "auth.legacy.com"); err != nil {
+		t.Fatalf("restore a host that predates the rule: %v", err)
+	}
+	if len(restored) != 1 || restored[0] != "auth.legacy.com" {
+		t.Errorf("the write restored %+v, want the removed host", restored)
+	}
+}
+
+// TestAddDomainAnchorsPastAnUnreadablePrimaryHost covers the tenant whose primary
+// host names no registrable domain while another active host does. The rule has
+// to keep working: that other host is where the passkeys live.
+func TestAddDomainAnchorsPastAnUnreadablePrimaryHost(t *testing.T) {
+	svc := testAdminService(t, adminDeps{
+		roles: []string{RoleIAMOwner},
+		domains: []Domain{
+			{Domain: "localhost", TenantID: testTenantID, IsPrimary: true, State: DomainStateActive},
+			{Domain: "auth.acme.com", TenantID: testTenantID, State: DomainStateActive},
+		},
+	})
+
+	if _, err := svc.AddDomain(context.Background(), owner, "auth.evil.com"); !errors.Is(err, ErrRegistrableDomain) {
+		t.Errorf("a host of another registrable domain reads %v, want ErrRegistrableDomain", err)
+	}
+	if _, err := svc.AddDomain(context.Background(), owner, "login.acme.com"); err != nil {
+		t.Errorf("a host of the same registrable domain: %v", err)
+	}
+}
+
 // TestAddDomainRefusesAHostAnotherTenantHolds covers the globally unique key. A
 // host resolves to exactly one tenant, so a claim on somebody else's host is
 // refused. The answer never says which tenant holds it.

@@ -766,6 +766,11 @@ const MUTATION_MESSAGES: Record<string, string> = {
   // The issuer names the primary host, so removing it would refuse every token
   // this tenant signed — including the one this console is holding.
   primary_domain: "This is the tenant's primary domain and can't be removed.",
+  // The gateway derives the passkey RP ID from the request host, so a tenant that
+  // answers on a second registrable domain holds passkeys that work on one host
+  // and fail on the other. The add is refused instead.
+  registrable_domain:
+    "That host doesn't share the registrable domain (eTLD+1) of this tenant's existing domains. Passkeys would stop working, so the domain wasn't added.",
   invalid_input: "Some fields are invalid — check the form and try again.",
   internal_server_error: "The server hit an error. Please try again.",
   protected_claim: "That claim name is reserved (a protocol or trust claim) and can't be used.",

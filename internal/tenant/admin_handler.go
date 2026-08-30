@@ -11,6 +11,11 @@ import (
 // removal cannot happen.
 const SlugPrimaryDomain = "primary_domain"
 
+// SlugRegistrableDomain is what an operator reads when the new host does not
+// share the registrable domain of the hosts the tenant already serves. The
+// console branches on it and names the rule on the domain form.
+const SlugRegistrableDomain = "registrable_domain"
+
 // The sentinels this domain answers with. A domain registers its own, so no
 // other package maps an error it does not declare.
 //
@@ -25,6 +30,8 @@ func init() {
 		"That host is already mapped to a tenant.")
 	response.Map(ErrPrimaryDomain, fiber.StatusConflict, SlugPrimaryDomain,
 		"The primary domain cannot be removed.")
+	response.Map(ErrRegistrableDomain, fiber.StatusConflict, SlugRegistrableDomain,
+		"That host does not share the registrable domain of this tenant.")
 }
 
 // ActorReader reads the person behind one request.
