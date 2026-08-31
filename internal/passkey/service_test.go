@@ -296,39 +296,57 @@ func TestRegisterStart_TheCapLeavesTheSignInBudgetWhole(t *testing.T) {
 // A host such as localhost has no registrable domain, so nothing is derived and
 // no ceremony could run. The override names the RP ID instead, and the front end
 // origin is then covered by it.
+//
+// The written forms below must all name the same RP ID. A domain name is
+// case-insensitive, and an environment variable often carries a surrounding
+// space, so an operator who types either has made no error.
 func TestRegisterStart_TheOverrideReplacesTheDerivedRPID(t *testing.T) {
 	const (
 		devHost   = "localhost:8080"
 		devOrigin = "http://localhost:3001"
 	)
 
-	log, _ := logger.NewObserved()
-	stored := make(map[string]string)
-	svc := NewService(Deps{
-		Account: func(context.Context, string, string) (string, error) {
-			return "person@example.com", nil
-		},
-		List:    func(context.Context, string, string) ([]Credential, error) { return nil, nil },
-		Origins: func(context.Context, string) ([]string, error) { return []string{devOrigin}, nil },
-		// The derived answer for this host is empty, so a start that succeeds
-		// proves that the override is what supplied the RP ID.
-		RPIDOverride: "localhost",
-		Ceremony:     recordingCache{stored: stored},
-		Log:          log,
-	})
-
-	who := Principal{UserID: testUserID}
-	creation, err := svc.registerStart(context.Background(), testTenantID, devHost, devOrigin, who)
-	if err != nil {
-		t.Fatalf("the start answered %v, want the options", err)
+	written := map[string]string{
+		"the plain form":      "localhost",
+		"a capital letter":    "Localhost",
+		"a surrounding space": " localhost ",
 	}
 
-	if creation.Response.RelyingParty.ID != "localhost" {
-		t.Errorf("the options name rp id %q, want %q",
-			creation.Response.RelyingParty.ID, "localhost")
-	}
-	if len(stored) != 1 {
-		t.Errorf("the start stored %d challenges, want 1", len(stored))
+	for name, override := range written {
+		t.Run(name, func(t *testing.T) {
+			log, _ := logger.NewObserved()
+			stored := make(map[string]string)
+			svc := NewService(Deps{
+				Account: func(context.Context, string, string) (string, error) {
+					return "person@example.com", nil
+				},
+				List: func(context.Context, string, string) ([]Credential, error) { return nil, nil },
+				Origins: func(context.Context, string) ([]string, error) {
+					return []string{devOrigin}, nil
+				},
+				// The derived answer for this host is empty, so a start that
+				// succeeds proves that the override is what supplied the RP ID.
+				RPIDOverride: override,
+				Ceremony:     recordingCache{stored: stored},
+				Log:          log,
+			})
+
+			who := Principal{UserID: testUserID}
+			creation, err := svc.registerStart(
+				context.Background(), testTenantID, devHost, devOrigin, who,
+			)
+			if err != nil {
+				t.Fatalf("the start answered %v, want the options", err)
+			}
+
+			if creation.Response.RelyingParty.ID != "localhost" {
+				t.Errorf("the options name rp id %q, want %q",
+					creation.Response.RelyingParty.ID, "localhost")
+			}
+			if len(stored) != 1 {
+				t.Errorf("the start stored %d challenges, want 1", len(stored))
+			}
+		})
 	}
 }
 

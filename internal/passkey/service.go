@@ -349,7 +349,9 @@ type Deps struct {
 
 	// RPIDOverride replaces the RP ID derived from the request host. It is set
 	// for a development host alone, where the registrable domain is empty and no
-	// ceremony could otherwise run.
+	// ceremony could otherwise run. It names a domain, never an origin: a value
+	// that carries a scheme or a port covers no origin, and the warn line that
+	// refuses the ceremony names it.
 	RPIDOverride string
 
 	// Ceremony holds the challenge of one ceremony in flight, the
@@ -675,7 +677,11 @@ func (s *Service) claim(
 func (s *Service) relying(
 	ctx context.Context, tenantID, host, origin string,
 ) (*webauthn.WebAuthn, string, error) {
-	rpID := s.deps.RPIDOverride
+	// A domain name is case-insensitive, and an environment variable often
+	// carries a surrounding space. RegistrableDomain normalises both on the
+	// derived branch, so the override normalises them too. Otherwise one capital
+	// letter matches no origin and refuses every ceremony the deployment runs.
+	rpID := strings.ToLower(strings.TrimSpace(s.deps.RPIDOverride))
 	if rpID == "" {
 		rpID = utils.RegistrableDomain(host)
 	}
