@@ -10,11 +10,24 @@ import {
   useLoginFlow,
 } from "@/components/login/flow-context"
 
+// The sign-in flow, one entry per screen. `/verify`, `/passkey` and `/enroll`
+// are one step and share pip 3: they are the Second Factor, and a person who
+// switches Factor mid sign-in must not watch the bar run backwards.
+//
+// The other routes under `(login)` are absent on purpose, and the fallback
+// gives them pip 1. `forgot`, `reset`, `accept-invite` and `verify-email` are
+// each a flow of their own that a link starts, so the screen a person lands on
+// is the first screen they see. `change-password` is named because it is not:
+// `/success` routes to it when the gateway forces a change, and it is the last
+// thing the person does, so it holds the last pip instead of jumping back.
 const STEP_BY_PATH: Record<string, number> = {
   "/identifier": 1,
   "/password": 2,
   "/verify": 3,
+  "/passkey": 3,
+  "/enroll": 3,
   "/success": 4,
+  "/change-password": 4,
 }
 
 function Card({ children }: { children: React.ReactNode }) {
