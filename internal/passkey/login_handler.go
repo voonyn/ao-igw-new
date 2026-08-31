@@ -13,7 +13,7 @@ import (
 const bearerPrefix = "Bearer "
 
 // The sentinels the sign-in half answers with. The account handler maps every
-// sentinel the two halves share, so only the three below are mapped here.
+// sentinel the two halves share, so only the four below are mapped here.
 //
 // A session that proved no password answers the one unauthenticated slug every
 // other login step answers, so the response never says whether the session or
@@ -30,12 +30,18 @@ const bearerPrefix = "Bearer "
 // the slug the TOTP module answers for the same refusal. One rule reads as one
 // value, so the front end handles it in one place: it offered an enrolment step
 // for an account that owes a challenge.
+//
+// Too many challenge starts answer rate_limited, which is the slug both other
+// second-factor budgets answer. The three are separate counters, and a person who
+// waits out one never learns which of them refused.
 func init() {
 	response.Map(ErrPasswordNotProved, fiber.StatusUnauthorized, "unauthenticated", "Unauthorized")
 	response.Map(ErrNoPasskey, fiber.StatusConflict, "no_passkey", "Conflict")
 	response.Map(ErrFactorAlreadyHeld, fiber.StatusConflict, "mfa_already_held", "Conflict")
 	response.Map(ErrCredentialUnknown,
 		fiber.StatusUnauthorized, "passkey_unknown_credential", "Unauthorized")
+	response.Map(ErrTooManyChallenges,
+		fiber.StatusTooManyRequests, "rate_limited", "Too Many Requests")
 }
 
 // Handler serves the Passkey challenge of the sign-in. It binds the request,

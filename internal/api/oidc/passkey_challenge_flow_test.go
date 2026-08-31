@@ -226,10 +226,12 @@ func TestPasskeyChallengeFlow(t *testing.T) {
 		}
 	})
 
-	t.Run("a ceremony start spends the shared guessing budget", func(t *testing.T) {
-		// One budget covers both Second Factors, and a start is the request that
-		// costs the gateway work. Without it, a session that proved a password
-		// asks for challenges without end.
+	t.Run("a challenge start spends the challenge budget", func(t *testing.T) {
+		// A start is the request that costs the gateway work. Without the budget,
+		// a session that proved a password asks for challenges without end. The
+		// budget is the challenge budget of the passkey module, and not the shared
+		// guessing budget: a cancelled browser sheet proves nothing, so it must
+		// not cost the person the code they can still type.
 		//
 		// It runs last, because it spends what every step above left. The bound
 		// is well over the limit, so a budget that never refuses fails here
@@ -250,7 +252,7 @@ func TestPasskeyChallengeFlow(t *testing.T) {
 			}
 			return
 		}
-		t.Errorf("%d ceremony starts never met the guessing budget", budgetProbes)
+		t.Errorf("%d challenge starts never met the challenge budget", budgetProbes)
 	})
 }
 

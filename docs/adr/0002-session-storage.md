@@ -19,16 +19,21 @@ The **database is the source of truth**. Redis is a cache in front of it.
 
 ## The exceptions
 
-Three values live in Redis and in no table. Each one is a cap or a challenge that
+Four values live in Redis and in no table. Each one is a cap or a challenge that
 belongs to one moment, and a database row would outlive that moment.
 
 - **The second-factor Guessing Budget** (`totp.Service.spendGuess`). It counts the
   guesses of one person across every sign-in they open. Every request that answers
-  a challenge spends it: a TOTP submission, and a passkey sign-in challenge.
+  a challenge spends it, and every one of them is a TOTP submission.
 - **The passkey enrolment budget** (`passkey.Service.spendEnrolment`). It counts the
   registration starts of one person. It is a separate counter on a separate key,
   because a start answers no challenge and proves nothing. A person who cancels a
   browser prompt must not spend the budget their next code sign-in reads.
+- **The passkey challenge budget** (`passkey.Service.spendChallenge`). It counts the
+  sign-in challenge starts of one person, on a key of its own, for the reason the
+  enrolment budget has one. The person who cancels the browser sheet here is mid
+  sign-in and holds no token, so that cancel must not cost them the code path they
+  have left.
 - **The passkey ceremony** (`passkey.Service.store`, `passkey.Service.consume`). It
   holds the challenge of one registration or one assertion, under a short TTL, and
   the finish step deletes it before it verifies the answer.
@@ -51,5 +56,5 @@ prove nothing.
 - A Redis flush costs latency, not correctness. Traffic falls through to the database
   and Redis refills.
 - Every session write pays two round trips. This is accepted.
-- Redis must never hold data that is absent from the database, except the three values
+- Redis must never hold data that is absent from the database, except the four values
   named above.

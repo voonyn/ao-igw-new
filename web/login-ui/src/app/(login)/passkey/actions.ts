@@ -22,9 +22,10 @@ export type ChallengeFinishResult = { ok: true } | { ok: false; error: string }
 // only the origins the tenant relying party covers, and refuses the ceremony when
 // that list is empty.
 //
-// The gateway spends the shared second-factor guessing budget here, so a start
-// can answer `rate_limited`. It records no factor and it does not rotate the
-// cookie.
+// The gateway spends the passkey challenge budget here, so a start can answer
+// `rate_limited`. That budget is not the one a code submission spends, so a
+// cancelled sheet costs the person no code guess. It records no factor and it
+// does not rotate the cookie.
 export async function startPasskeyChallenge(): Promise<ChallengeStartResult> {
   const cookieStore = await cookies()
   const cookie = parseSessionCookie(cookieStore.get(SESSION_COOKIE)?.value)

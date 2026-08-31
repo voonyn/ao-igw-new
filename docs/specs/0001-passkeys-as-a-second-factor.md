@@ -115,7 +115,7 @@ home never shuts that person out of a Factor that works.
 
 52. As a security reviewer, I want a challenge consumed once, so that a captured answer cannot be replayed.
 53. As a security reviewer, I want a challenge to expire, so that an old one cannot be answered tomorrow.
-54. As a security reviewer, I want a sign-in challenge start to spend the shared guessing budget and an enrolment start to spend a budget of its own, so that a flood of challenges is bounded and a cancelled prompt does not spend the budget a code sign-in reads.
+54. As a security reviewer, I want each ceremony start to spend a budget of its own, apart from the shared guessing budget, so that a flood of starts is bounded and a cancelled prompt does not spend the budget a code sign-in reads.
 55. As a security reviewer, I want a failed assertion to leave the sign-in alive, so that a hostile page cannot end a person's session for them.
 56. As a security reviewer, I want a Passkey bound to its domain, so that a phishing site cannot use it.
 57. As a security reviewer, I want a revoked Passkey to stop working at once, so that a revoke is not advisory.
@@ -178,11 +178,11 @@ This is the part the code constrains hardest. Read it before anything else.
 
 - A ceremony **start** spends a budget keyed by tenant and person. A start is the
   request that costs work, and a valid session can otherwise ask for challenges without
-  end. There are two budgets, and they are separate keys. A **sign-in** challenge start
-  spends the shared guessing budget, exactly as a TOTP submission does. An **enrolment**
-  start spends the enrolment budget of its own, because a start answers no challenge and
-  proves nothing: a person who cancels a browser prompt must not spend the budget their
-  next code sign-in reads.
+  end. There are two of these budgets, on two separate keys: one for the **enrolment**
+  start, and one for the **sign-in** challenge start. Neither is the shared guessing
+  budget, because a start answers no challenge and proves nothing: a person who cancels
+  a browser prompt must not spend the budget their next code sign-in reads. The finish
+  is what answers, and a consumed challenge forces a new start.
 - A **failed assertion does not** count against the per-session wrong-answer count. A
   signature is not a guessable value, and a hostile page that could burn those five
   failures would hold a free way to end a person's sign-in.
@@ -233,9 +233,9 @@ This is the part the code constrains hardest. Read it before anything else.
 - A cache failure refuses the ceremony. A ceremony that proceeds without a stored
   challenge is not a ceremony.
 - A challenge is consumed once. The finish step deletes the key before it verifies.
-- **This is a third exception to the stateless rule, beside the Guessing Budget and the
-  enrolment budget.** CLAUDE.md and ADR 0002 both name three. Do not leave the reasoning
-  in a code comment alone.
+- **This is a fourth exception to the stateless rule, beside the Guessing Budget, the
+  enrolment budget and the challenge budget.** CLAUDE.md and ADR 0002 both name four. Do
+  not leave the reasoning in a code comment alone.
 
 ### API contracts
 
@@ -359,8 +359,8 @@ instead of the library that does the real work.
 - The forced enrolment path, and both enrolment steps in the answer.
 - A replayed challenge, an expired challenge, and a challenge answered by the credential
   of another person. Each one is refused with its own slug.
-- A ceremony start that exhausts the shared budget, and a failed assertion that leaves
-  the sign-in alive.
+- A ceremony start that exhausts its own budget and leaves the shared guessing budget
+  whole, and a failed assertion that leaves the sign-in alive.
 - A registration under an origin the RP ID does not cover.
 - Registration of a device that already holds a live credential, and of one that holds a
   soft-deleted row. The second revives the row.

@@ -367,7 +367,7 @@ func mountMFA(
 	// so both crossings are composed here, the way the TOTP crossings above are.
 	passkeys := passkey.NewRepository(bdb, log)
 	deps := passkeyCeremony(cfg, passkeys, tenant.NewRepository(bdb, log), rdb, users,
-		svc.SpendGuess, recorder, tx, log)
+		recorder, tx, log)
 	deps.Touch = passkeys.Touch
 
 	// The three writes the enrolment needs. A registration inserts a new
@@ -414,7 +414,8 @@ func mountMFA(
 
 // passkeyCeremony is the half of the passkey dependencies both ceremonies share:
 // who the person is, the Passkeys they hold, the origins a ceremony may run
-// from, the RP ID override, the challenge store, and the shared guessing budget.
+// from, the RP ID override, and the challenge store. The store holds the two
+// start budgets of the module too, and the module owns both of them.
 //
 // One builder holds them because the sign-in and the portal must derive the same
 // RP ID from the same host and keep the same origins. Two copies of that
@@ -425,7 +426,7 @@ func mountMFA(
 // and the sign-in adds the two login session crossings and the write-back.
 func passkeyCeremony(
 	cfg *config.Config, passkeys *passkey.Repository, tenants *tenant.Repository,
-	rdb cache.Client, users *user.Repository, budget passkey.BudgetSpender,
+	rdb cache.Client, users *user.Repository,
 	recorder *audit.Recorder, tx db.TxRunner, log logger.Logger,
 ) passkey.Deps {
 	return passkey.Deps{
@@ -456,14 +457,6 @@ func passkeyCeremony(
 			}
 			return webAuthnOrigins(rows, cfg.OIDC.WebAuthnOrigins), nil
 		},
-
-		// The one guessing budget of both Second Factors. The sign-in Passkey
-		// challenge spends it, the way a TOTP submission does, so the two Factors
-		// are never countable apart.
-		//
-		// A registration start spends none of it. It answers no challenge, and
-		// the passkey module caps it on a counter of its own.
-		Budget: budget,
 
 		RPIDOverride: cfg.OIDC.WebAuthnRPID,
 		Ceremony:     rdb,
@@ -911,7 +904,7 @@ func mountAccount(
 	// docs/adr/0002-session-storage.md.
 	passkeys := passkey.NewRepository(bdb, log)
 	passkeyDeps := passkeyCeremony(cfg, passkeys, tenant.NewRepository(bdb, log), rdb, users,
-		factorSvc.SpendGuess, recorder, tx, log)
+		recorder, tx, log)
 	passkeyDeps.Insert = passkeys.Insert
 	passkeyDeps.Find = passkeys.FindByCredential
 	passkeyDeps.Revive = passkeys.Revive

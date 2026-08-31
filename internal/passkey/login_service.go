@@ -26,9 +26,13 @@ import (
 // navigator.credentials.get().
 //
 // The budget is spent before the ceremony is built, and after the session is
-// read. A start is what costs the gateway work, and it is the shared
-// second-factor budget, so a flood of challenges is bounded across both Factors
-// at once. A request that names no live session buys nothing and spends nothing.
+// read. A start is what costs the gateway work. A request that names no live
+// session buys nothing and spends nothing.
+//
+// The budget is the challenge budget of spendChallenge, and it is not the shared
+// second-factor guessing budget. A start answers nothing, so a cancelled browser
+// sheet must not cost the person the code sign-in beside it. LoginFinish is what
+// answers, and consume deletes the challenge, so every retry pays a new start.
 //
 // The allow list is every live Passkey of the person. A device that holds none
 // of them cannot answer, and the browser says so without a prompt.
@@ -53,7 +57,7 @@ func (s *Service) LoginStart(
 		return nil, err
 	}
 
-	if err := s.deps.Budget(ctx, tenantID, who.UserID); err != nil {
+	if err := s.spendChallenge(ctx, tenantID, who.UserID); err != nil {
 		return nil, err
 	}
 
@@ -120,7 +124,7 @@ func (s *Service) LoginStart(
 // records, and a counter the database advanced is a counter the person got a
 // session for.
 //
-// A failed assertion counts against nothing but the shared budget the start
+// A failed assertion counts against nothing but the challenge budget the start
 // already spent. It never counts against the wrong-code cap of the Login
 // Session: a signature is not a guessable value, and a hostile page that could
 // burn those five failures would hold a free way to end a person's sign-in.

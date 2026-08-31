@@ -52,7 +52,6 @@ func TestRegisterStart_TheCapRefusesTheEleventh(t *testing.T) {
 		Origins: func(context.Context, string) ([]string, error) {
 			return []string{testOrigin}, nil
 		},
-		Budget: func(context.Context, string, string) error { return nil },
 		// A cap that let the ceremony through would store a challenge here. The
 		// budget read still answers, because the cap is what the test is about.
 		Ceremony: budgetOnlyCache{errCache{err: errors.New("no challenge belongs to a refused start")}},
@@ -81,7 +80,6 @@ func TestRegisterStart_OneUnderTheCapRuns(t *testing.T) {
 		Origins: func(context.Context, string) ([]string, error) {
 			return []string{testOrigin}, nil
 		},
-		Budget:   func(context.Context, string, string) error { return nil },
 		Ceremony: recordingCache{stored: make(map[string]string)},
 		Log:      log,
 	})

@@ -38,10 +38,10 @@ const (
 	accountPasskeyFinishPath = "/mfa/passkeys/register/finish"
 )
 
-// budgetProbes bounds the loop that proves the guessing budget refuses a start.
-// The budget allows fifteen attempts in a trailing window, so a loop that never
-// meets it inside this many is a budget that is not counting.
-const budgetProbes = 25
+// budgetProbes bounds the loop that proves a start budget refuses a start. Each
+// of the two start budgets allows thirty starts in a trailing window, so a loop
+// that never meets one inside this many is a budget that is not counting.
+const budgetProbes = 40
 
 // TestAccountPasskeyFlow registers a Passkey from the portal, under an access
 // token and nothing else, and reads it back.
@@ -243,10 +243,10 @@ func TestAccountPasskeyFlow(t *testing.T) {
 		t.Errorf("no %s event in the activity feed", audit.ActionMFAPasskeyRegistered)
 	})
 
-	t.Run("a ceremony start spends the shared guessing budget", func(t *testing.T) {
-		// One budget covers both Second Factors, and a start is the request that
-		// costs the gateway work. Without it, a valid token asks for challenges
-		// without end.
+	t.Run("a registration start spends the enrolment budget", func(t *testing.T) {
+		// A start is the request that costs the gateway work. Without the budget,
+		// a valid token asks for options without end. The budget is the enrolment
+		// budget of the passkey module, and not the shared guessing budget.
 		//
 		// It runs last, because it spends what every step above left. The bound
 		// is well over the limit, so a budget that never refuses fails here
@@ -267,7 +267,7 @@ func TestAccountPasskeyFlow(t *testing.T) {
 			}
 			return
 		}
-		t.Errorf("%d ceremony starts never met the guessing budget", budgetProbes)
+		t.Errorf("%d registration starts never met the enrolment budget", budgetProbes)
 	})
 
 	t.Run("an unauthenticated caller reads nothing", func(t *testing.T) {

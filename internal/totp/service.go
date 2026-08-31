@@ -661,10 +661,13 @@ func (s *Service) spend(
 // the last one of that sign-in, so the budget counts every wrong code plus at
 // most one right code per sign-in.
 //
-// Only a request that answers a challenge spends it: a TOTP submission and a
-// passkey sign-in challenge. An enrolment start spends the separate budget in
-// passkey.Service.spendEnrolment, so a cancelled browser prompt never costs a
-// person the guesses their next code sign-in needs. See SpendGuess below.
+// Only a request that answers a challenge spends it, and every one of them is a
+// TOTP submission: the code of a sign-in, and the code of an enrolment. The
+// passkey module spends none of it. A passkey ceremony start answers nothing,
+// and the two starts of that module each hold a budget of their own, in
+// passkey.Service.spendEnrolment and passkey.Service.spendChallenge, so a
+// cancelled browser prompt never costs a person the guesses their next code
+// sign-in needs.
 //
 // A cache failure refuses the submission. Redis is only a cache elsewhere in
 // this gateway, and here it is the whole budget: a failure that let the guess
@@ -692,25 +695,6 @@ func (s *Service) spendGuess(ctx context.Context, tenantID string, who Principal
 		logger.String("session_id", who.SessionID),
 		logger.String("user_id", who.UserID))
 	return fmt.Errorf("%w: user %s", ErrTooManyAttempts, who.UserID)
-}
-
-// SpendGuess spends one guess of the shared second-factor budget of one person.
-//
-// The budget is one budget for every request that answers a challenge, so a
-// passkey sign-in challenge spends it here too. A second copy of the key, the
-// limit and the window is how the two Factors would drift into two budgets, and
-// an attacker would then hold the sum of both.
-//
-// A passkey registration start spends passkey.Service.spendEnrolment instead,
-// and that is a budget of its own. A start answers no challenge and proves
-// nothing, so a cancelled browser prompt must not cost a person the code sign-in
-// that reads this budget.
-//
-// It answers ErrTooManyAttempts and ErrBudgetUnavailable, which the mapper
-// already knows. The caller names no login session, so no session id reaches the
-// log line of a refusal.
-func (s *Service) SpendGuess(ctx context.Context, tenantID, userID string) error {
-	return s.spendGuess(ctx, tenantID, Principal{UserID: userID})
 }
 
 // wrong records one wrong code against the Login Session, and answers what the

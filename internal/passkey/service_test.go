@@ -108,7 +108,6 @@ func newTestService(t *testing.T, ceremony cache.Client) *Service {
 		Origins: func(context.Context, string) ([]string, error) {
 			return []string{testOrigin}, nil
 		},
-		Budget:   func(context.Context, string, string) error { return nil },
 		Ceremony: ceremony,
 		Log:      log,
 	})
@@ -168,10 +167,6 @@ func TestRegisterStart_TheEnrolmentBudgetIsSpentFirst(t *testing.T) {
 			t.Error("the passkeys were read before the budget was spent")
 			return nil, nil
 		},
-		Budget: func(context.Context, string, string) error {
-			t.Error("the start spent the shared second-factor guessing budget")
-			return nil
-		},
 		Log: log,
 	})
 
@@ -183,13 +178,13 @@ func TestRegisterStart_TheEnrolmentBudgetIsSpentFirst(t *testing.T) {
 	}
 }
 
-// TestRegisterStart_TheEnrolmentBudgetIsNotTheGuessingBudget proves the split
+// TestRegisterStart_TheEnrolmentBudgetIsTheOnlyCounterSpent proves the split
 // this module exists to keep.
 //
 // A registration start proves nothing and answers no challenge. It spends its
-// own counter and never the shared second-factor guessing budget, so a person
-// who cancels browser prompts all afternoon still answers a code afterwards.
-func TestRegisterStart_TheEnrolmentBudgetIsNotTheGuessingBudget(t *testing.T) {
+// own counter and no other, so a person who cancels browser prompts all
+// afternoon still answers a code afterwards and still starts a challenge.
+func TestRegisterStart_TheEnrolmentBudgetIsTheOnlyCounterSpent(t *testing.T) {
 	keys := make(map[string]int)
 
 	log, _ := logger.NewObserved()
@@ -197,12 +192,8 @@ func TestRegisterStart_TheEnrolmentBudgetIsNotTheGuessingBudget(t *testing.T) {
 		Account: func(context.Context, string, string) (string, error) {
 			return "person@example.com", nil
 		},
-		List:    func(context.Context, string, string) ([]Credential, error) { return nil, nil },
-		Origins: func(context.Context, string) ([]string, error) { return []string{testOrigin}, nil },
-		Budget: func(context.Context, string, string) error {
-			t.Error("the start spent the shared second-factor guessing budget")
-			return nil
-		},
+		List:     func(context.Context, string, string) ([]Credential, error) { return nil, nil },
+		Origins:  func(context.Context, string) ([]string, error) { return []string{testOrigin}, nil },
 		Ceremony: countingCache{emptyCache: emptyCache{}, keys: keys},
 		Log:      log,
 	})
@@ -216,6 +207,9 @@ func TestRegisterStart_TheEnrolmentBudgetIsNotTheGuessingBudget(t *testing.T) {
 
 	if got := keys[enrolKey(testTenantID, testUserID)]; got != 1 {
 		t.Errorf("the enrolment budget was spent %d times, want 1", got)
+	}
+	if len(keys) != 1 {
+		t.Errorf("the start charged %d counters, want the enrolment budget alone", len(keys))
 	}
 }
 
@@ -248,16 +242,16 @@ func (c limitingCache) AllowInWindow(
 	return c.hits[key] <= limit, nil
 }
 
-// TestRegisterStart_TheCapLeavesTheSignInBudgetWhole is the reason the two
-// budgets are apart.
+// TestRegisterStart_TheCapLeavesTheSignInBudgetWhole is the reason the budgets
+// are apart.
 //
 // A person cancels browser prompts until the enrolment cap refuses them. The
-// second-factor guessing budget is untouched by every one of those starts, so
-// the code sign-in they run next still answers.
+// second-factor guessing budget and the challenge budget are untouched by every
+// one of those starts, so the sign-in they run next still answers a code and
+// still starts a challenge.
 func TestRegisterStart_TheCapLeavesTheSignInBudgetWhole(t *testing.T) {
-	// What the TOTP module spends. The key shape and the limit are copied here,
-	// because this module never imports that one.
-	const guessLimit = 15
+	// What the TOTP module spends. The key shape is copied here, because this
+	// module never imports that one.
 	guessKey := "mfa_attempts:" + testTenantID + ":" + testUserID
 
 	store := limitingCache{hits: make(map[string]int)}
@@ -267,20 +261,8 @@ func TestRegisterStart_TheCapLeavesTheSignInBudgetWhole(t *testing.T) {
 		Account: func(context.Context, string, string) (string, error) {
 			return "person@example.com", nil
 		},
-		List:    func(context.Context, string, string) ([]Credential, error) { return nil, nil },
-		Origins: func(context.Context, string) ([]string, error) { return []string{testOrigin}, nil },
-		// The shared guessing budget, on the same store and under a key of its
-		// own. A sign-in challenge spends this one.
-		Budget: func(ctx context.Context, _, _ string) error {
-			allowed, err := store.AllowInWindow(ctx, guessKey, guessLimit, time.Minute)
-			if err != nil {
-				return err
-			}
-			if !allowed {
-				return errors.New("the second-factor guessing budget is spent")
-			}
-			return nil
-		},
+		List:     func(context.Context, string, string) ([]Credential, error) { return nil, nil },
+		Origins:  func(context.Context, string) ([]string, error) { return []string{testOrigin}, nil },
 		Ceremony: store,
 		Log:      log,
 	})
@@ -301,11 +283,10 @@ func TestRegisterStart_TheCapLeavesTheSignInBudgetWhole(t *testing.T) {
 	}
 
 	if got := store.hits[guessKey]; got != 0 {
-		t.Fatalf("the enrolment starts spent the guessing budget %d times, want 0", got)
+		t.Errorf("the enrolment starts spent the guessing budget %d times, want 0", got)
 	}
-
-	if err := svc.deps.Budget(ctx, testTenantID, testUserID); err != nil {
-		t.Errorf("the sign-in challenge answered %v, want the budget", err)
+	if got := store.hits[challengeKey(testTenantID, testUserID)]; got != 0 {
+		t.Errorf("the enrolment starts spent the challenge budget %d times, want 0", got)
 	}
 }
 
@@ -329,7 +310,6 @@ func TestRegisterStart_TheOverrideReplacesTheDerivedRPID(t *testing.T) {
 		},
 		List:    func(context.Context, string, string) ([]Credential, error) { return nil, nil },
 		Origins: func(context.Context, string) ([]string, error) { return []string{devOrigin}, nil },
-		Budget:  func(context.Context, string, string) error { return nil },
 		// The derived answer for this host is empty, so a start that succeeds
 		// proves that the override is what supplied the RP ID.
 		RPIDOverride: "localhost",

@@ -20,9 +20,10 @@ import (
 // change anything.
 //
 // Too many registration starts answer rate_limited, which is the slug the TOTP
-// budget already answers. The front end renders one message for both, and the
-// person is told to wait. The two budgets are separate counters, and a person
-// who waits out one never learns which of them refused.
+// budget already answers. The sign-in half answers it for too many challenge
+// starts too. The front end renders one message for all three, and the person is
+// told to wait. The three budgets are separate counters, and a person who waits
+// out one never learns which of them refused.
 func init() {
 	response.Map(ErrOriginRefused, fiber.StatusBadRequest, "passkey_origin_refused", "Bad Request")
 	response.Map(ErrChallengeExpired, fiber.StatusConflict, "passkey_challenge_expired", "Conflict")

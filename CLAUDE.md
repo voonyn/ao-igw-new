@@ -101,7 +101,7 @@ No in-process state. Any instance must serve any request.
 - Read: read Redis. On a miss, read the database and refill Redis.
 - Logout: delete from the database and from Redis.
 
-Three exceptions. Each lives only in Redis, no table holds any of them, and a cache
+Four exceptions. Each lives only in Redis, no table holds any of them, and a cache
 failure refuses the request instead of letting it through.
 
 - The Guessing Budget in `totp.Service.spendGuess`. A failure that let the guess
@@ -110,6 +110,9 @@ failure refuses the request instead of letting it through.
 - The enrolment budget in `passkey.Service.spendEnrolment`. It caps registration
   starts on a key of its own, so a cancelled browser prompt never spends the
   Guessing Budget a code sign-in reads.
+- The challenge budget in `passkey.Service.spendChallenge`. It caps sign-in challenge
+  starts on a key of its own, for the same reason: a start proves nothing, and the
+  person who cancels it is mid sign-in.
 - The passkey ceremony in `passkey.Service.store` and `passkey.Service.consume`. A
   ceremony that proceeds without a stored challenge proves nothing, and a challenge
   a table held would outlive the one prompt it belongs to.
