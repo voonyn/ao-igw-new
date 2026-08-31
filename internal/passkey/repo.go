@@ -84,12 +84,21 @@ func (r *Repository) HasAny(ctx context.Context, tenantID, userID string) (bool,
 
 // Insert writes one registered Passkey. It runs on the caller's transaction, so
 // the row and the audit event land together.
+//
+// The primary key is (tenant_id, credential_id), so two registrations of one id
+// that race cannot both land. Both reads find no row, both are told to insert,
+// and the loser meets the key. That is a refusal and not a fault, so it answers
+// ErrDuplicateDevice, which is what the revive path answers the same race. Every
+// other write error travels up wrapped.
 func (r *Repository) Insert(ctx context.Context, row Credential) error {
 	r.log.Debug("insert a passkey",
 		logger.String("tenant_id", row.TenantID), logger.String("user_id", row.UserID),
 		logger.RequestID(ctx))
 
 	if _, err := db.Conn(ctx, r.db).NewInsert().Model(&row).Exec(ctx); err != nil {
+		if db.IsUniqueViolation(err) {
+			return ErrDuplicateDevice
+		}
 		return fmt.Errorf("insert the passkey of user %s of tenant %s: %w",
 			row.UserID, row.TenantID, err)
 	}

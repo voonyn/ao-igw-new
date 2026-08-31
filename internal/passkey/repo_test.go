@@ -186,3 +186,44 @@ func TestRepository_FindByCredentialAnswersNotFound(t *testing.T) {
 		t.Errorf("the find answered %v, want %v", err, ErrNotFound)
 	}
 }
+
+// TestRepository_InsertRefusesADuplicate proves the answer the insert path gives
+// the race, and proves that it translates that one error and no other.
+//
+// Two registrations of one credential id read no row and both are told to
+// insert. The loser meets the primary key. It reads ErrDuplicateDevice, which is
+// what the revive path answers the same race, and the mapper turns into a 409.
+func TestRepository_InsertRefusesADuplicate(t *testing.T) {
+	repo, _, ctx := testRepository(t)
+
+	// The seeded id, registered again by another person of the same tenant.
+	again := Credential{
+		TenantID:     repoTenantID,
+		CredentialID: repoCredID,
+		UserID:       repoOtherID,
+		RPID:         "example.com",
+		Record:       `{"id":"AQID"}`,
+		Name:         "Laptop",
+		CreatedAt:    time.Now().UTC(),
+	}
+	if err := repo.Insert(ctx, again); !errors.Is(err, ErrDuplicateDevice) {
+		t.Errorf("the raced insert answered %v, want %v", err, ErrDuplicateDevice)
+	}
+
+	// Every other write error still travels up wrapped. The column is JSON, and
+	// MySQL refuses a blob that is not JSON.
+	broken := again
+	broken.CredentialID = []byte{0xfe, 0xed}
+	broken.Record = "not json"
+
+	err := repo.Insert(ctx, broken)
+	if err == nil {
+		t.Fatal("the broken insert answered nil, want a driver error")
+	}
+	if errors.Is(err, ErrDuplicateDevice) {
+		t.Errorf("the broken insert answered %v, want a wrapped driver error", err)
+	}
+	if !strings.Contains(err.Error(), "insert the passkey") {
+		t.Errorf("the broken insert answered %q, want the wrapped message", err)
+	}
+}

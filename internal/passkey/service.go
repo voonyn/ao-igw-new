@@ -594,6 +594,18 @@ func (s *Service) registerFinish(
 		return finish(ctx)
 	})
 	if err != nil {
+		// A raced registration is a refusal and not a fault. Both writes answer
+		// ErrDuplicateDevice when another registration took the id first, and
+		// claim never saw it, because the read that ran before the transaction
+		// found no live row. An error line here would page an operator for a
+		// person who must pick another device.
+		if errors.Is(err, ErrDuplicateDevice) {
+			s.log.Warn("refused a raced passkey registration",
+				logger.String("tenant_id", tenantID),
+				logger.String("user_id", who.UserID),
+				logger.String("credential_id", credentialID(made.ID)))
+			return Credential{}, err
+		}
 		s.log.Error("register a passkey",
 			logger.String("tenant_id", tenantID),
 			logger.String("user_id", who.UserID), logger.Err(err))
