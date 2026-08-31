@@ -404,9 +404,18 @@ func NewService(deps Deps) *Service {
 // registerStart mints the registration options of one person and stores the
 // challenge behind them.
 //
-// The enrolment budget is spent first, before anything is read. A start is what
-// costs the gateway work, and a person who holds a valid token could otherwise
-// ask for options without end.
+// The enrolment budget is spent between relying and account, and the order is
+// deliberate on both sides. relying sits above it: it reads configuration, it
+// refuses on a deployment fault, and it names nothing the person did, so a
+// misconfigured origin must not cap a person for fifteen minutes on the
+// enrolment they still need. account sits below it: reading the rows of a person
+// is the work the budget bounds, and a person who holds a valid token could
+// otherwise ask for options without end.
+//
+// The Passkey cap below the spend is refused after one start is charged, and
+// that is right. It names a state the person controls: they hold ten devices and
+// can remove one. No refusal here gives the start back. A budget that refunds on
+// failure is a budget an attacker reads for free.
 //
 // That budget is the one spendEnrolment owns, and it is not the shared
 // second-factor guessing budget a TOTP submission spends. A registration start
@@ -414,29 +423,30 @@ func NewService(deps Deps) *Service {
 // budget their next code sign-in reads. LoginStart holds a third counter for the
 // same reason. See spendChallenge.
 //
-// The origin is checked before the options are minted. A key pair created under
-// an origin the RP ID does not cover is a Factor no sign-in can answer, so it
-// must never be created. The check reads the origin the caller names, and the
-// portal BFF names its own, so a deployment that covers no portal origin is
-// refused here rather than at the finish. relying names the caller that sends
-// none, and says why an empty value still runs.
+// The origin is checked first, before the budget and before the options are
+// minted. A key pair created under an origin the RP ID does not cover is a
+// Factor no sign-in can answer, so it must never be created. The check reads the
+// origin the caller names, and the portal BFF names its own, so a deployment
+// that covers no portal origin is refused here rather than at the finish.
+// relying names the caller that sends none, and says why an empty value still
+// runs.
 //
 // The exclude list names every Passkey the person already holds, so a device
 // that already registered tells the person so instead of creating a second key
 // pair for the same account.
 //
-// The cap is checked here and not at the finish. A start refused costs the
-// person nothing, and a browser prompt that ends in a refusal costs them a touch
-// of the device for a Factor the gateway was never going to keep.
+// The cap is checked here and not at the finish. A browser prompt that ends in a
+// refusal costs the person a touch of the device for a Factor the gateway was
+// never going to keep.
 func (s *Service) registerStart(
 	ctx context.Context, tenantID, host, origin string, who Principal,
 ) (*protocol.CredentialCreation, error) {
-	if err := s.spendEnrolment(ctx, tenantID, who.UserID); err != nil {
+	party, rpID, err := s.relying(ctx, tenantID, host, origin)
+	if err != nil {
 		return nil, err
 	}
 
-	party, rpID, err := s.relying(ctx, tenantID, host, origin)
-	if err != nil {
+	if err := s.spendEnrolment(ctx, tenantID, who.UserID); err != nil {
 		return nil, err
 	}
 

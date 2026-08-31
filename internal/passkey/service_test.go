@@ -148,21 +148,18 @@ func TestRegisterFinish_NoChallengeIsRefused(t *testing.T) {
 	}
 }
 
-// TestRegisterStart_TheEnrolmentBudgetIsSpentFirst proves that a start spends
-// the enrolment budget before it does anything else.
+// TestRegisterStart_TheEnrolmentBudgetIsSpentBeforeTheAccountIsRead proves the
+// one thing the budget must stay above.
 //
-// A start is the request that costs the gateway work. Without the budget, a
-// valid token asks for options without end.
-func TestRegisterStart_TheEnrolmentBudgetIsSpentFirst(t *testing.T) {
+// The budget bounds the work a start costs, and the account read is that work. A
+// spend below it lets a valid token ask for rows without end.
+func TestRegisterStart_TheEnrolmentBudgetIsSpentBeforeTheAccountIsRead(t *testing.T) {
 	log, _ := logger.NewObserved()
 	svc := NewService(Deps{
 		Ceremony: spentCache{},
-		// Every other dependency fails the test if it is reached. The budget is
-		// spent before the origin is checked and before a row is read.
-		Origins: func(context.Context, string) ([]string, error) {
-			t.Error("the origins were read before the budget was spent")
-			return nil, nil
-		},
+		Origins:  func(context.Context, string) ([]string, error) { return []string{testOrigin}, nil },
+		// The account read fails the test if it is reached. It is the read the
+		// budget guards.
 		List: func(context.Context, string, string) ([]Credential, error) {
 			t.Error("the passkeys were read before the budget was spent")
 			return nil, nil
@@ -175,6 +172,62 @@ func TestRegisterStart_TheEnrolmentBudgetIsSpentFirst(t *testing.T) {
 
 	if !errors.Is(err, ErrTooManyEnrolments) {
 		t.Errorf("the start answered %v, want %v", err, ErrTooManyEnrolments)
+	}
+}
+
+// TestRegisterStart_AnUncoveredOriginSpendsNoBudget proves the rule the spend
+// order exists for.
+//
+// An uncovered origin is a deployment fault. The person named nothing and can
+// fix nothing, so thirty clicks against a misconfigured portal must not cap them
+// for fifteen minutes on the enrolment they still need.
+func TestRegisterStart_AnUncoveredOriginSpendsNoBudget(t *testing.T) {
+	keys := make(map[string]int)
+
+	log, _ := logger.NewObserved()
+	svc := NewService(Deps{
+		Origins:  func(context.Context, string) ([]string, error) { return []string{testOrigin}, nil },
+		Ceremony: countingCache{emptyCache: emptyCache{}, keys: keys},
+		Log:      log,
+	})
+
+	who := Principal{UserID: testUserID}
+	_, err := svc.registerStart(
+		context.Background(), testTenantID, testHost, "https://not-this-tenant.test", who)
+
+	if !errors.Is(err, ErrOriginRefused) {
+		t.Fatalf("the start answered %v, want %v", err, ErrOriginRefused)
+	}
+	if len(keys) != 0 {
+		t.Errorf("the refused start charged %v, want no counter", keys)
+	}
+}
+
+// TestRegisterStart_TheCapSpendsTheBudget proves the other half of the order.
+//
+// The Passkey cap names a state the person controls: they hold ten devices and
+// can remove one. That refusal stays below the spend, because the account read
+// behind it is the work the budget bounds.
+func TestRegisterStart_TheCapSpendsTheBudget(t *testing.T) {
+	keys := make(map[string]int)
+
+	log, _ := logger.NewObserved()
+	svc := NewService(Deps{
+		Account:  func(context.Context, string, string) (string, error) { return "person@example.com", nil },
+		List:     func(context.Context, string, string) ([]Credential, error) { return heldCredentials(maxPasskeys), nil },
+		Origins:  func(context.Context, string) ([]string, error) { return []string{testOrigin}, nil },
+		Ceremony: countingCache{emptyCache: emptyCache{}, keys: keys},
+		Log:      log,
+	})
+
+	who := Principal{UserID: testUserID}
+	_, err := svc.registerStart(context.Background(), testTenantID, testHost, testOrigin, who)
+
+	if !errors.Is(err, ErrTooManyPasskeys) {
+		t.Fatalf("the start answered %v, want %v", err, ErrTooManyPasskeys)
+	}
+	if got := keys[enrolKey(testTenantID, testUserID)]; got != 1 {
+		t.Errorf("the refused start spent the enrolment budget %d times, want 1", got)
 	}
 }
 

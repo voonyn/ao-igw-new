@@ -25,9 +25,15 @@ import (
 // LoginStart hands the person the assertion options their browser passes to
 // navigator.credentials.get().
 //
-// The budget is spent before the ceremony is built, and after the session is
-// read. A start is what costs the gateway work. A request that names no live
-// session buys nothing and spends nothing.
+// The budget is spent after the session is read and after relying answers, and
+// before the account is. A request that names no live session buys nothing and
+// spends nothing. Neither does one the origin refuses: that is a deployment
+// fault, the person named nothing and can fix nothing, and a person capped here
+// who holds no TOTP Enrolment has nothing else to answer. The account read below
+// the spend is the work the budget bounds, so the spend stays above it.
+//
+// The two refusals below the spend each cost one start, and no refusal gives it
+// back. A budget that refunds on failure is a budget an attacker reads for free.
 //
 // The budget is the challenge budget of spendChallenge, and it is not the shared
 // second-factor guessing budget. A start answers nothing, so a cancelled browser
@@ -57,12 +63,12 @@ func (s *Service) LoginStart(
 		return nil, err
 	}
 
-	if err := s.spendChallenge(ctx, tenantID, who.UserID); err != nil {
+	party, rpID, err := s.relying(ctx, tenantID, host, origin)
+	if err != nil {
 		return nil, err
 	}
 
-	party, rpID, err := s.relying(ctx, tenantID, host, origin)
-	if err != nil {
+	if err := s.spendChallenge(ctx, tenantID, who.UserID); err != nil {
 		return nil, err
 	}
 

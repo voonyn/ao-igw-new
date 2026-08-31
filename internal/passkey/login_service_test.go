@@ -126,6 +126,69 @@ func TestLoginStart_TheCapLeavesTheCodeBudgetWhole(t *testing.T) {
 	}
 }
 
+// TestLoginStart_AnUncoveredOriginSpendsNoBudget proves the rule the spend order
+// exists for.
+//
+// An uncovered origin is a deployment fault. A person who cannot start a
+// challenge and holds no TOTP Enrolment has nothing else to answer, so a
+// misconfiguration must not cap them on top of refusing them.
+func TestLoginStart_AnUncoveredOriginSpendsNoBudget(t *testing.T) {
+	keys := make(map[string]int)
+
+	log, _ := logger.NewObserved()
+	svc := NewService(Deps{
+		FindSession: func(context.Context, string, string) (Principal, error) {
+			return Principal{SessionID: "session-1", UserID: testUserID, PasswordProved: true}, nil
+		},
+		Origins:  func(context.Context, string) ([]string, error) { return []string{testOrigin}, nil },
+		Ceremony: countingCache{emptyCache: emptyCache{}, keys: keys},
+		Log:      log,
+	})
+
+	_, err := svc.LoginStart(
+		context.Background(), testTenantID, testHost,
+		"https://not-this-tenant.test", "a-login-session-token")
+
+	if !errors.Is(err, ErrOriginRefused) {
+		t.Fatalf("the start answered %v, want %v", err, ErrOriginRefused)
+	}
+	if len(keys) != 0 {
+		t.Errorf("the refused start charged %v, want no counter", keys)
+	}
+}
+
+// TestLoginStart_HoldingNoPasskeySpendsTheBudget proves the other half of the
+// order.
+//
+// Only the password answer routes a person here, so a request from a person who
+// holds none is a client that went its own way. The account read behind that
+// refusal is the work the budget bounds, so the spend stays above it.
+func TestLoginStart_HoldingNoPasskeySpendsTheBudget(t *testing.T) {
+	keys := make(map[string]int)
+
+	log, _ := logger.NewObserved()
+	svc := NewService(Deps{
+		FindSession: func(context.Context, string, string) (Principal, error) {
+			return Principal{SessionID: "session-1", UserID: testUserID, PasswordProved: true}, nil
+		},
+		Account:  func(context.Context, string, string) (string, error) { return "person@example.com", nil },
+		List:     func(context.Context, string, string) ([]Credential, error) { return nil, nil },
+		Origins:  func(context.Context, string) ([]string, error) { return []string{testOrigin}, nil },
+		Ceremony: countingCache{emptyCache: emptyCache{}, keys: keys},
+		Log:      log,
+	})
+
+	_, err := svc.LoginStart(
+		context.Background(), testTenantID, testHost, testOrigin, "a-login-session-token")
+
+	if !errors.Is(err, ErrNoPasskey) {
+		t.Fatalf("the start answered %v, want %v", err, ErrNoPasskey)
+	}
+	if got := keys[challengeKey(testTenantID, testUserID)]; got != 1 {
+		t.Errorf("the refused start spent the challenge budget %d times, want 1", got)
+	}
+}
+
 // TestPrincipalRefusesABlankSessionID proves that no sign-in address keys its
 // ceremony on the tenant alone.
 //
