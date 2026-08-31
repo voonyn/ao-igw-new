@@ -90,6 +90,16 @@ var (
 	// request that reaches it without one is a client that went its own way.
 	ErrNoPasskey = errors.New("the person holds no passkey")
 
+	// ErrFactorAlreadyHeld reports a sign-in enrolment for a person who already
+	// holds a Second Factor, of either kind. That person is challenged, never
+	// enrolled. The finalize gate re-reads the account, so a Factor added in the
+	// middle of a sign-in would meet the challenge step the account already
+	// owes, and a person who holds the password alone would reach a token.
+	//
+	// It is not ErrTooManyPasskeys. That cap counts the devices an account may
+	// hold, and it governs the portal too. This one governs the sign-in alone.
+	ErrFactorAlreadyHeld = errors.New("the account already holds a second factor")
+
 	// ErrCredentialUnknown reports an assertion signed by a credential the
 	// person does not own.
 	//
@@ -260,6 +270,12 @@ type (
 	// transaction.
 	CredentialToucher func(ctx context.Context, tenantID, userID string, credID []byte, record string) error
 
+	// FactorHolder reports whether one person holds any Second Factor: a live
+	// Passkey, or an active TOTP Enrolment. The router composes it from the
+	// repository of each module, so this module reads the Factor it does not own
+	// without importing the module that owns it.
+	FactorHolder func(ctx context.Context, tenantID, userID string) (bool, error)
+
 	// Notifier tells one person that a Passkey was registered on their account.
 	// A send that fails is logged and never refuses the registration: the key
 	// pair is already stored, and the audit trail is the record of it.
@@ -298,6 +314,11 @@ type Deps struct {
 	// A registration start spends the enrolment budget instead. See
 	// spendEnrolment, which says why the two are apart.
 	Budget BudgetSpender
+
+	// HoldsFactor guards the sign-in enrolment step. Nothing on the portal path
+	// reads it: the portal is where a person adds a second kind of Factor beside
+	// the one they already hold.
+	HoldsFactor FactorHolder
 
 	// Notify tells the person a Passkey was registered. A nil value sends
 	// nothing, which is what a deployment with no transport does.

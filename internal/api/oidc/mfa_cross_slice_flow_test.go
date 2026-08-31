@@ -155,6 +155,146 @@ func TestAPasskeyIsNeverATOTPChallenge(t *testing.T) {
 	}
 }
 
+// heldFactorSlug is what both sign-in enrolment routes answer for a person who
+// already holds a Second Factor. One rule reads as one value, so the sign-in
+// front end handles it in one place.
+const heldFactorSlug = "mfa_already_held"
+
+// TestASignInNeverEnrolsBesideAHeldFactor drives both sign-in enrolment starts
+// on a person who already holds a Second Factor, in both directions.
+//
+// This is the bypass the rule closes. The finalize gate re-reads the account on
+// purpose, so a Factor an enrolment route records in the middle of a sign-in
+// meets the challenge step the account owes. A person who holds the password
+// alone would reach a token, and the device that protects the account would
+// never be touched.
+//
+// Both directions run. The two routes carry one rule, and neither module reads
+// the Factor the other owns, so a guard on one of them is half a fix.
+//
+// The refused start must also leave nothing behind. A pending row or a stored
+// ceremony would be the same bypass one call later.
+func TestASignInNeverEnrolsBesideAHeldFactor(t *testing.T) {
+	skipUnlessIntegration(t)
+
+	t.Run("a passkey holder is refused the totp enrolment", func(t *testing.T) {
+		gw := newGateway(t)
+		fx := seedFixture(t, gw)
+		givePasskey(t, gw, fx)
+
+		token, methods := signInToPassword(t, gw, fx)
+		if !slices.Contains(methods, session.StepChallengePasskey) {
+			t.Fatalf("methods is %v, want the passkey challenge among them", methods)
+		}
+
+		refused := gw.refuse(t, enrolStartPath, "{}", token, fiber.StatusConflict)
+		if refused != heldFactorSlug {
+			t.Errorf("slug is %q, want %q", refused, heldFactorSlug)
+		}
+
+		if held := countRows(t, gw, "user_totp", "tenant_id = ? AND user_id = ?",
+			gw.tenantID, fx.userID); held != 0 {
+			t.Errorf("the refused start left %d totp rows behind, want none", held)
+		}
+	})
+
+	t.Run("a totp holder is refused the passkey enrolment", func(t *testing.T) {
+		gw := newGateway(t)
+		fx := seedFixture(t, gw)
+		enrolFactor(t, gw, fx)
+		forgetSpentStep(t, gw, fx)
+
+		token, methods := signInToPassword(t, gw, fx)
+		if !slices.Contains(methods, session.StepChallengeOTP) {
+			t.Fatalf("methods is %v, want the otp challenge among them", methods)
+		}
+
+		// No Origin header is sent, the way the sign-in front end sends none.
+		// The guard runs before the relying party is derived, so the refusal
+		// below is the held Factor and never the origin.
+		refused := gw.refuse(t, enrolPasskeyStartPath, "{}", token, fiber.StatusConflict)
+		if refused != heldFactorSlug {
+			t.Errorf("slug is %q, want %q", refused, heldFactorSlug)
+		}
+
+		if held := countRows(t, gw, "user_webauthn_credentials",
+			"tenant_id = ? AND user_id = ?", gw.tenantID, fx.userID); held != 0 {
+			t.Errorf("the refused start left %d passkey rows behind, want none", held)
+		}
+	})
+}
+
+// TestASignInNeverEnrolsOnAStaleCeremony drives the second half of each bypass:
+// the person starts an enrolment while holding nothing, gains a Factor, and then
+// finishes what the start left behind.
+//
+// The start refused on its own is half a fix. A pending TOTP row has no expiry,
+// and a passkey ceremony lives for its TTL, so each start leaves something an
+// account can still be enrolled with after it gains a Factor. That leftover is
+// the same bypass, one call later.
+func TestASignInNeverEnrolsOnAStaleCeremony(t *testing.T) {
+	skipUnlessIntegration(t)
+
+	t.Run("a pending totp enrolment is not activated beside a new passkey", func(t *testing.T) {
+		gw := newGateway(t)
+		fx := seedFixture(t, gw)
+
+		// The person holds nothing here, so the start is allowed and it mints the
+		// secret the activation below would prove.
+		token, _ := signInToPassword(t, gw, fx)
+		started := gw.enrolStart(t, token)
+		if started.Secret == "" {
+			t.Fatal("the start answered no secret")
+		}
+
+		// The Factor the account gains while the pending row sits there.
+		givePasskey(t, gw, fx)
+
+		refused := gw.refuse(t, enrolActivatePath,
+			fmt.Sprintf(`{"code":%q}`, code(t, started.Secret)), token, fiber.StatusConflict)
+		if refused != heldFactorSlug {
+			t.Errorf("slug is %q, want %q", refused, heldFactorSlug)
+		}
+
+		if held := countRows(t, gw, "user_totp",
+			"tenant_id = ? AND user_id = ? AND activated_at IS NOT NULL",
+			gw.tenantID, fx.userID); held != 0 {
+			t.Errorf("the refused activation left %d active totp rows behind", held)
+		}
+	})
+
+	t.Run("a stale passkey ceremony is not finished beside a new totp factor", func(t *testing.T) {
+		gw := newGateway(t)
+		fx := seedFixture(t, gw)
+
+		rpID, origin := registrableDomain(t, gw), "https://"+gw.domain
+
+		// The person holds nothing here, so the start is allowed and it mints the
+		// challenge the device signs below.
+		token, _ := signInToPassword(t, gw, fx)
+		device := newAuthenticator(t)
+		options := gw.enrolPasskeyStart(t, token, origin)
+
+		// The Factor the account gains while the browser prompt is open.
+		enrolFactor(t, gw, fx)
+
+		var refused struct {
+			Error string `json:"error"`
+		}
+		decode(t, gw.enrolPasskeyFinish(t, token, origin,
+			device.register(t, rpID, origin, options.PublicKey.Challenge)),
+			fiber.StatusConflict, &refused)
+		if refused.Error != heldFactorSlug {
+			t.Errorf("slug is %q, want %q", refused.Error, heldFactorSlug)
+		}
+
+		if held := countRows(t, gw, "user_webauthn_credentials",
+			"tenant_id = ? AND user_id = ?", gw.tenantID, fx.userID); held != 0 {
+			t.Errorf("the refused finish left %d passkey rows behind", held)
+		}
+	})
+}
+
 // givePasskey writes one passkey row for the person, and removes it when the test
 // ends. The fixture cleanup does not reach this table.
 //

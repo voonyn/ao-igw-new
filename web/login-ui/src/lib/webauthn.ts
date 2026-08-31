@@ -108,6 +108,11 @@ export function passkeyMessage(code: unknown): string {
       return "That passkey is no longer registered. Please use another method."
     case "no_passkey":
       return "There is no passkey on this account. Please use another method."
+    // The account already holds a second factor, so this screen offered a step
+    // it must not have. The person answers the challenge they owe, which the
+    // password step names, so the only way on is to start again.
+    case "mfa_already_held":
+      return "Two-step verification is already set up on this account. Please start again."
     // The enrolment refusals. A device that already holds a passkey for this
     // account, and an account that holds the most passkeys allowed, both name a
     // state the person can act on.

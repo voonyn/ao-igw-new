@@ -276,9 +276,13 @@ func (s *Service) principal(ctx context.Context, tenantID, token string) (Princi
 // answer names the step, and the Authenticator sits beside it on the same
 // screen, so a device with no authenticator never dead-ends.
 //
-// It demands the password and nothing more. A registration creates a Factor and
-// destroys none, and the finish below proves the device before any row is
-// written.
+// It demands the password, and it demands that the person holds no Second
+// Factor. refuseHeldFactor says why the second rule is here.
+//
+// The guard runs before registerStart, so a refused start spends no enrolment
+// budget and mints no ceremony. The finish below runs it again, because a Factor
+// the account gains while the browser prompt is open would otherwise be met by
+// the Passkey this finish records.
 //
 // The ceremony keys on the Login Session id, the way the challenge does. A
 // person who opens a second sign-in never answers the ceremony of the first.
@@ -292,8 +296,52 @@ func (s *Service) LoginEnrolStart(
 	if err != nil {
 		return nil, err
 	}
+	if err := s.refuseHeldFactor(ctx, tenantID, who); err != nil {
+		return nil, err
+	}
 
 	return s.registerStart(ctx, tenantID, host, origin, who)
+}
+
+// refuseHeldFactor refuses a sign-in enrolment for a person who already holds a
+// Second Factor.
+//
+// It reads both Factors, the Passkey and the TOTP Enrolment, through the one
+// dependency the router composes from the repository of each module. The rule is
+// one sentence: a sign-in enrols a Second Factor only for a person who holds
+// none. A person who holds one is challenged.
+//
+// Without it the sign-in has a way around the challenge. The finalize gate
+// re-reads the account on purpose, so a Factor this route recorded mid sign-in
+// meets the challenge step the account owes, and a person who holds the password
+// alone reaches a token without touching the device.
+//
+// It is not the cap registerStart checks. That cap counts Passkeys and governs
+// the portal too. This reads both Factors and governs the sign-in alone: the
+// portal is where a person adds a second kind of Factor beside the one they
+// already hold.
+//
+// The TOTP module runs the same guard on its own enrolment addresses. Both are
+// needed: each module owns what an unfinished session may do at its own routes.
+//
+// The refusal is logged here, because this is where it stops. The read behind it
+// is not: the router composes that read and logs its own failure.
+func (s *Service) refuseHeldFactor(ctx context.Context, tenantID string, who Principal) error {
+	held, err := s.deps.HoldsFactor(ctx, tenantID, who.UserID)
+	if err != nil {
+		// Nothing is logged here. The composed read logs its own failure, and it
+		// is the last layer that can say which read of which Factor failed.
+		return fmt.Errorf("read the second factors of user %s: %w", who.UserID, err)
+	}
+	if !held {
+		return nil
+	}
+
+	s.log.Warn("refused a sign-in enrolment for a person who holds a second factor",
+		logger.String("tenant_id", tenantID),
+		logger.String("session_id", who.SessionID),
+		logger.String("user_id", who.UserID))
+	return fmt.Errorf("%w: user %s", ErrFactorAlreadyHeld, who.UserID)
 }
 
 // LoginEnrolFinish stores the proved Passkey and signs the person in.
@@ -310,6 +358,12 @@ func (s *Service) LoginEnrolStart(
 // The device is not named here. The sign-in screen asks for no name, so the
 // registration takes the default, and the person renames it in the portal.
 //
+// The held-Factor guard runs here too, and not on the start alone. The ceremony
+// lives for its TTL, so an account that gains a Factor while the prompt is open
+// reaches this finish owing a challenge. The Passkey this finish records would
+// meet that challenge, which is the bypass the start refuses, one call later and
+// one ceremony wide.
+//
 // A refusal leaves the sign-in alive. The person tries again on the same screen,
 // or enrols an Authenticator instead.
 func (s *Service) LoginEnrolFinish(
@@ -320,6 +374,9 @@ func (s *Service) LoginEnrolFinish(
 
 	who, err := s.principal(ctx, tenantID, token)
 	if err != nil {
+		return "", err
+	}
+	if err := s.refuseHeldFactor(ctx, tenantID, who); err != nil {
 		return "", err
 	}
 

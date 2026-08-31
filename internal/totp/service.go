@@ -28,6 +28,17 @@ var (
 	// person removes the factor they hold before they enrol another.
 	ErrAlreadyEnrolled = errors.New("an active second factor is already enrolled")
 
+	// ErrFactorAlreadyHeld reports a sign-in enrolment for a person who already
+	// holds a Second Factor, of either kind. That person is challenged, never
+	// enrolled. The finalize gate re-reads the account, so a Factor added in the
+	// middle of a sign-in would meet the challenge step the account already
+	// owes, and a person who holds the password alone would reach a token.
+	//
+	// It is not ErrAlreadyEnrolled. That one tells a person in the portal to
+	// remove the Authenticator they hold. This one tells the sign-in front end
+	// that it offered a step the account does not owe.
+	ErrFactorAlreadyHeld = errors.New("the account already holds a second factor")
+
 	// ErrNoPendingEnrolment reports an activation with no pending secret to
 	// prove. A start that was never made, and an enrolment that is already
 	// active, both give it.
@@ -183,6 +194,12 @@ type (
 	// RateLimiter records one hit against key and reports whether the trailing
 	// window is still within limit. cache.Client.AllowInWindow satisfies it.
 	RateLimiter func(ctx context.Context, key string, limit int, window time.Duration) (bool, error)
+
+	// FactorHolder reports whether one person holds any Second Factor: a live
+	// Passkey, or an active TOTP Enrolment. The router composes it from the
+	// repository of each module, so this module reads the Factor it does not own
+	// without importing the module that owns it.
+	FactorHolder func(ctx context.Context, tenantID, userID string) (bool, error)
 )
 
 // Deps is the database side of the service.
@@ -208,6 +225,11 @@ type Deps struct {
 	// Allow counts against one person across every sign-in they open.
 	FailCode CodeFailer
 	Allow    RateLimiter
+
+	// HoldsFactor guards the two sign-in enrolment steps. Nothing on the portal
+	// path reads it: the portal is where a person adds a second kind of Factor
+	// beside the one they already hold.
+	HoldsFactor FactorHolder
 
 	// Cipher seals the shared secret at rest. A nil cipher matches the
 	// development bootstrap, which stores it in the clear, the way the login
@@ -253,10 +275,11 @@ type Activated struct {
 // It records no factor and it does not rotate the session token. Nothing about
 // the account changes until a code proves the secret.
 //
-// A start against an active factor is refused. A start against a pending
-// enrolment mints a fresh secret and replaces it, so a person who abandoned a
-// setup can begin again. A pending row has no expiry: it is scratch state, and
-// the next start overwrites it.
+// A start for a person who already holds a Second Factor is refused, and
+// refuseHeldFactor says why. A start against a pending enrolment mints a fresh
+// secret and replaces it, so a person who abandoned a setup can begin again. A
+// pending row has no expiry: it is scratch state, and the next start overwrites
+// it.
 func (s *Service) Start(ctx context.Context, tenantID, issuer, token string) (Started, error) {
 	s.log.Debug("start a totp enrolment",
 		logger.String("tenant_id", tenantID), logger.RequestID(ctx))
@@ -265,7 +288,46 @@ func (s *Service) Start(ctx context.Context, tenantID, issuer, token string) (St
 	if err != nil {
 		return Started{}, err
 	}
+	if err := s.refuseHeldFactor(ctx, tenantID, who); err != nil {
+		return Started{}, err
+	}
 	return s.start(ctx, tenantID, issuer, who)
+}
+
+// refuseHeldFactor refuses a sign-in enrolment for a person who already holds a
+// Second Factor.
+//
+// It reads both Factors, the Passkey and the TOTP Enrolment, through the one
+// dependency the router composes from the repository of each module. The rule is
+// one sentence: a sign-in enrols a Second Factor only for a person who holds
+// none. A person who holds one is challenged.
+//
+// Without it the sign-in has a way around the challenge. The finalize gate
+// re-reads the account on purpose, so a Factor this route recorded mid sign-in
+// meets the challenge step the account owes, and a person who holds the password
+// alone reaches a token without touching the device.
+//
+// Only the sign-in path runs it. The portal adds a second kind of Factor under
+// an access token, which is the supported way to hold both.
+//
+// The refusal is logged here, because this is where it stops. The read behind it
+// is not: the router composes that read and logs its own failure.
+func (s *Service) refuseHeldFactor(ctx context.Context, tenantID string, who Principal) error {
+	held, err := s.deps.HoldsFactor(ctx, tenantID, who.UserID)
+	if err != nil {
+		// Nothing is logged here. The composed read logs its own failure, and it
+		// is the last layer that can say which read of which Factor failed.
+		return fmt.Errorf("read the second factors of user %s: %w", who.UserID, err)
+	}
+	if !held {
+		return nil
+	}
+
+	s.log.Warn("refused a sign-in enrolment for a person who holds a second factor",
+		logger.String("tenant_id", tenantID),
+		logger.String("session_id", who.SessionID),
+		logger.String("user_id", who.UserID))
+	return fmt.Errorf("%w: user %s", ErrFactorAlreadyHeld, who.UserID)
 }
 
 // start mints the pending enrolment of one person, whichever path asked for it.
@@ -330,6 +392,11 @@ func (s *Service) start(
 // takes the OTP factor, and its token rotates. All four land on one transaction,
 // so a sign-in that reports a factor is a sign-in the database records.
 //
+// The held-Factor guard runs here too, and not on the start alone. A pending row
+// has no expiry, so a secret one sign-in minted is still activatable after the
+// person enrols another Factor. The start refused on its own would leave that
+// leftover row as the way around the challenge.
+//
 // The code and the Recovery Codes never reach a log line.
 func (s *Service) Activate(ctx context.Context, tenantID, token, code string) (Activated, error) {
 	s.log.Debug("activate a totp enrolment",
@@ -337,6 +404,9 @@ func (s *Service) Activate(ctx context.Context, tenantID, token, code string) (A
 
 	who, err := s.principal(ctx, tenantID, token)
 	if err != nil {
+		return Activated{}, err
+	}
+	if err := s.refuseHeldFactor(ctx, tenantID, who); err != nil {
 		return Activated{}, err
 	}
 

@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/gofiber/fiber/v3"
@@ -267,12 +268,11 @@ func TestBothSecondFactorsAreOffered(t *testing.T) {
 	// The Passkey first. Registration runs under an access token, and the token
 	// endpoint refuses a sign-in that owes a Factor, so the person must hold none
 	// while it runs.
-	registerPasskey(t, gw, fx, "https://"+gw.domain)
+	device := registerPasskey(t, gw, fx, "https://"+gw.domain)
 
-	// The TOTP Enrolment beside it. The activation records the Factor on the
-	// Login Session itself, so this sign-in never answers the passkey challenge
-	// it was offered.
-	secret := enrolBeside(t, gw, fx)
+	// The TOTP Enrolment beside it, through the portal. The device answers the
+	// challenge the account now owes, which is what buys the access token.
+	secret := enrolBeside(t, gw, fx, device)
 	forgetSpentStep(t, gw, fx)
 
 	auth := gw.startAuthorization(t, fx.confidential)
@@ -307,25 +307,53 @@ func TestBothSecondFactorsAreOffered(t *testing.T) {
 // enrolBeside enrols a TOTP Second Factor on a person who already holds a
 // Passkey, and answers the shared secret.
 //
+// It runs through the portal, under an access token. The sign-in enrolment
+// routes refuse a person who already holds a Factor, so the portal is the only
+// way to hold both, and it is the way a person really does it.
+//
+// The device answers the passkey challenge first. The token endpoint refuses a
+// sign-in that still owes a Factor, so the access token below exists only after
+// the challenge is met.
+//
 // It cannot use enrolFactor. That helper demands that the password answer names
 // no step, which stops being true the moment the person holds any Factor.
-func enrolBeside(t *testing.T, gw *gateway, fx fixture) string {
+func enrolBeside(t *testing.T, gw *gateway, fx fixture, device *authenticator) string {
 	t.Helper()
+
+	rpID, origin := registrableDomain(t, gw), "https://"+gw.domain
 
 	token, methods := signInToPassword(t, gw, fx)
 	if len(methods) != 1 || methods[0] != session.StepChallengePasskey {
 		t.Fatalf("methods is %v, want %v", methods, []string{session.StepChallengePasskey})
 	}
 
-	started := gw.enrolStart(t, token)
+	options := gw.challengeStart(t, token, origin)
 
-	var activated struct {
+	var signed struct {
 		SessionToken string `json:"sessionToken"`
 	}
-	gw.login(t, enrolActivatePath,
-		fmt.Sprintf(`{"code":%q}`, code(t, started.Secret)), token, &activated)
-	if activated.SessionToken == "" {
-		t.Fatal("the activation answered no session token")
+	decode(t, gw.challengeFinish(t, token, origin,
+		device.assert(t, rpID, origin, options.PublicKey.Challenge)),
+		fiber.StatusOK, &envelope{Data: &signed})
+	if signed.SessionToken == "" {
+		t.Fatal("the challenge answered no session token")
+	}
+
+	forAccount := fx.confidential
+	forAccount.resource = oidc.ResourceAccountAPI
+	held := gw.grant(t, forAccount, signed.SessionToken)
+
+	started := gw.accountEnrolStart(t, held.AccessToken)
+
+	var activated struct {
+		RecoveryCodes []string `json:"recoveryCodes"`
+	}
+	decode(t, gw.account(t, fiber.MethodPost, accountEnrolActivePath,
+		strings.NewReader(fmt.Sprintf(`{"code":%q}`, code(t, started.Secret))),
+		held.AccessToken, fiber.HeaderContentType, fiber.MIMEApplicationJSON),
+		fiber.StatusOK, &envelope{Data: &activated})
+	if len(activated.RecoveryCodes) == 0 {
+		t.Fatal("the activation issued no recovery codes")
 	}
 	return started.Secret
 }

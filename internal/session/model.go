@@ -177,6 +177,16 @@ func (s LoginSession) AuthTime() time.Time {
 	return latest
 }
 
+// IsChallengeStep reports whether one Pending Step is a challenge step.
+//
+// It reads the one list, so a caller outside this package never respells the
+// step names. The sign-in enrolment guard of both Second Factor modules asks
+// this of the steps a person owes: a person the steps name a challenge for is a
+// person who already holds a Factor, and a sign-in never enrols beside one.
+func IsChallengeStep(step string) bool {
+	return slices.Contains(challengeSteps, step)
+}
+
 // meets reports whether this session answered one Pending Step.
 //
 // A challenge step is met by any proved Second Factor. A person who is offered

@@ -78,6 +78,11 @@ export function mfaMessageForError(code: unknown): string {
       return "Too many incorrect codes. Please start again."
     case "rate_limited":
       return "Too many attempts. Please wait a moment and try again."
+    // The account already holds a second factor, so the enrolment screen offered
+    // a step it must not have. The person answers the challenge they owe, which
+    // the password step names, so the only way on is to start again.
+    case "mfa_already_held":
+      return "Two-step verification is already set up on this account. Please start again."
     case "unauthenticated":
     case "session_invalid":
       return "Your session expired. Please start again."

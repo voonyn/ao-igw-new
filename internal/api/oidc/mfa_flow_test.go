@@ -241,9 +241,13 @@ func TestForcedEnrolmentFlow(t *testing.T) {
 	})
 
 	t.Run("a start against an active factor is refused", func(t *testing.T) {
+		// The held-Factor guard answers first here, and it answers a slug of its
+		// own. The person holds a Second Factor, so this sign-in owes a challenge
+		// and never an enrolment. mfa_already_enrolled is the portal's answer,
+		// where a person is told to remove the Authenticator they hold.
 		refused := gw.refuse(t, enrolStartPath, "{}", activated.SessionToken, fiber.StatusConflict)
-		if refused != "mfa_already_enrolled" {
-			t.Errorf("slug is %q, want %q", refused, "mfa_already_enrolled")
+		if refused != heldFactorSlug {
+			t.Errorf("slug is %q, want %q", refused, heldFactorSlug)
 		}
 	})
 

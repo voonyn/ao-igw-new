@@ -3,6 +3,7 @@ package http
 import (
 	"context"
 	"fmt"
+	"slices"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/gofiber/fiber/v3/middleware/healthcheck"
@@ -127,10 +128,21 @@ func Routes(app *fiber.App, cfg *config.Config, bdb *bun.DB, rdb cache.Client, l
 	// the factor a person still owes, and written by the enrolment steps below.
 	factors := totp.NewRepository(bdb, log)
 
+	// What a person still owes after the password. One function answers it, and
+	// it is built here so that every reader takes the same function value. ADR
+	// 0011 fixes that: two copies of an authentication predicate drift, and a
+	// drifted predicate is a security defect.
+	//
+	// Three places read it now. The password answer names the route forward, the
+	// finalize step refuses a session that owes a Factor, and the sign-in
+	// enrolment guard of both Second Factor modules refuses a person the steps
+	// name a challenge for.
+	steps := pendingSteps(user.NewRepository(bdb, log), factors, bdb, log)
+
 	// The login session service serves both stacks. The login UI drives it, and
 	// an RP-initiated logout ends a session through it, so it is built once here
 	// and handed to each stack.
-	sessions := newSessionService(bdb, rdb, cipher, recorder, factors, tx.RunInTx, log)
+	sessions := newSessionService(bdb, rdb, cipher, recorder, steps, tx.RunInTx, log)
 
 	mountOIDCRoutes(app, cfg, bdb, storage, scopes, claims, recorder, cipher, sessions, tenantMW, tx.RunInTx, log)
 
@@ -141,7 +153,8 @@ func Routes(app *fiber.App, cfg *config.Config, bdb *bun.DB, rdb cache.Client, l
 	// The second-factor service serves both stacks. The sign-in drives its two
 	// enrolment steps and its challenge, and the portal drives the same enrolment
 	// under an access token, so one build is handed to each.
-	factorSvc := mountMFA(loginGroup, cfg, bdb, rdb, cipher, factors, recorder, sessions, tx.RunInTx, log)
+	factorSvc := mountMFA(
+		loginGroup, cfg, bdb, rdb, cipher, factors, steps, recorder, sessions, tx.RunInTx, log)
 	// How this deployment sends mail. Both stacks send: the console configures
 	// the templates, and the account stack tells a person that a Factor changed
 	// on their account. One build means one set of settings and one set of
@@ -233,8 +246,8 @@ func mountLogin(
 // drift from these.
 func mountMFA(
 	loginGroup fiber.Router, cfg *config.Config, bdb *bun.DB, rdb cache.Client,
-	cipher *crypto.Cipher, factors *totp.Repository, recorder *audit.Recorder,
-	sessions *session.Service, tx db.TxRunner, log logger.Logger,
+	cipher *crypto.Cipher, factors *totp.Repository, steps session.PendingSteps,
+	recorder *audit.Recorder, sessions *session.Service, tx db.TxRunner, log logger.Logger,
 ) *totp.Service {
 	users := user.NewRepository(bdb, log)
 
@@ -245,6 +258,25 @@ func mountMFA(
 		Credential: users.FindCredential,
 		Log:        log,
 	})
+
+	// A sign-in enrols a Second Factor only for a person who holds none. Each
+	// module refuses its own enrolment start with it, so a person who holds one
+	// Factor cannot answer the challenge they owe by adding the other one.
+	//
+	// It reads the steps and never the two tables. A person the steps name a
+	// challenge for is a person who holds a Factor, so this is the same predicate
+	// the password answer and the finalize gate read. A second pair of reads here
+	// is the drift ADR 0011 refuses.
+	//
+	// The reads inside are logged there and nowhere else, the way pendingSteps
+	// says. This adds no log line of its own.
+	holdsFactor := func(ctx context.Context, tenantID, userID string) (bool, error) {
+		owed, err := steps(ctx, tenantID, userID)
+		if err != nil {
+			return false, err
+		}
+		return slices.ContainsFunc(owed, session.IsChallengeStep), nil
+	}
 
 	svc := totp.NewService(totp.Deps{
 		FindSession: func(ctx context.Context, tenantID, token string) (totp.Principal, error) {
@@ -311,6 +343,11 @@ func mountMFA(
 		FailCode: sessions.FailSecondFactor,
 		Allow:    rdb.AllowInWindow,
 
+		// The held-Factor guard of the two sign-in enrolment steps. The portal
+		// enrolment reads nothing of the kind: it is where a person adds a second
+		// kind of Factor beside the one they hold.
+		HoldsFactor: holdsFactor,
+
 		Cipher: cipher,
 		InTx:   tx,
 		Audit:  recorder,
@@ -343,6 +380,11 @@ func mountMFA(
 	deps.Insert = passkeys.Insert
 	deps.Find = passkeys.FindByCredential
 	deps.Revive = passkeys.Revive
+
+	// The same guard the TOTP enrolment above runs, on the same reads. One rule
+	// stated once, so the two enrolment routes cannot drift apart.
+	deps.HoldsFactor = holdsFactor
+
 	deps.FindSession = func(ctx context.Context, tenantID, token string) (passkey.Principal, error) {
 		// Find, and not Resolve: the module decides what an unfinished session
 		// may do, and it refuses one that proved no password.
@@ -1012,14 +1054,14 @@ func accountActor(c fiber.Ctx) oidc.AccountActor { return oidc.AccountActor(midd
 // See docs/adr/0002-session-storage.md.
 func newSessionService(
 	bdb *bun.DB, rdb cache.Client, cipher *crypto.Cipher, recorder *audit.Recorder,
-	factors *totp.Repository, tx db.TxRunner, log logger.Logger,
+	steps session.PendingSteps, tx db.TxRunner, log logger.Logger,
 ) *session.Service {
 	users := user.NewRepository(bdb, log)
 	sessions := session.NewRepository(bdb, cipher, log)
 
 	return session.NewService(session.Deps{
 		Identity: identityFinder(users),
-		Steps:    pendingSteps(users, factors, bdb, log),
+		Steps:    steps,
 		// The one credential read of the user domain answers the organization
 		// beside the hash. The sign-in needs the hash only.
 		Credential: func(ctx context.Context, tenantID, userID string) (string, error) {

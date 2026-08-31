@@ -61,6 +61,10 @@ func pendingService(t *testing.T, d Deps) (*Service, string, *bool) {
 	d.FindSession = func(context.Context, string, string) (Principal, error) {
 		return Principal{SessionID: guardSessionID, UserID: guardUserID, PasswordProved: true}, nil
 	}
+	// The person holds no Second Factor, which is what the sign-in enrolment
+	// steps demand. These tests are about the guessing budget, and a person the
+	// held-Factor guard refuses never reaches it.
+	d.HoldsFactor = func(context.Context, string, string) (bool, error) { return false, nil }
 	d.Log = logger.New()
 
 	return NewService(d), secret, &found

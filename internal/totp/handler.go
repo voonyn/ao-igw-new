@@ -31,10 +31,18 @@ const bearerPrefix = "Bearer "
 // A budget nobody could read answers mfa_unavailable, not rate_limited. It is
 // the gateway that failed, not the person who guessed too much, so the answer
 // asks them to try again rather than to wait out a window that is not counting.
+//
+// A sign-in enrolment for a person who already holds a Second Factor answers a
+// slug of its own, and not mfa_already_enrolled. The two name different states
+// and ask for different things: one tells a person in the portal to remove the
+// Authenticator they hold, and mfa_already_held tells the sign-in front end it
+// offered a step the account does not owe. The passkey module answers the same
+// slug for the same refusal, so the front end reads one value for one rule.
 func init() {
 	response.Map(ErrPasswordNotProved, fiber.StatusUnauthorized, "unauthenticated", "Unauthorized")
 	response.Map(ErrBadCode, fiber.StatusUnauthorized, "invalid_credentials", "Unauthorized")
 	response.Map(ErrAlreadyEnrolled, fiber.StatusConflict, "mfa_already_enrolled", "Conflict")
+	response.Map(ErrFactorAlreadyHeld, fiber.StatusConflict, "mfa_already_held", "Conflict")
 	response.Map(ErrNoPendingEnrolment, fiber.StatusConflict, "no_pending_enrolment", "Conflict")
 	response.Map(ErrNoActiveFactor, fiber.StatusConflict, "no_active_factor", "Conflict")
 	response.Map(ErrSignInEnded, fiber.StatusUnauthorized, "too_many_codes", "Unauthorized")

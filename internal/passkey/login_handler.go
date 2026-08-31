@@ -25,9 +25,15 @@ const bearerPrefix = "Bearer "
 //
 // A credential of another person answers a slug of its own too. It is the one
 // refusal a person can act on: they picked the wrong device.
+//
+// A person who already holds a Second Factor answers mfa_already_held, which is
+// the slug the TOTP module answers for the same refusal. One rule reads as one
+// value, so the front end handles it in one place: it offered an enrolment step
+// for an account that owes a challenge.
 func init() {
 	response.Map(ErrPasswordNotProved, fiber.StatusUnauthorized, "unauthenticated", "Unauthorized")
 	response.Map(ErrNoPasskey, fiber.StatusConflict, "no_passkey", "Conflict")
+	response.Map(ErrFactorAlreadyHeld, fiber.StatusConflict, "mfa_already_held", "Conflict")
 	response.Map(ErrCredentialUnknown,
 		fiber.StatusUnauthorized, "passkey_unknown_credential", "Unauthorized")
 }
