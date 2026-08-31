@@ -415,8 +415,12 @@ func passkeyCeremony(
 			return webAuthnOrigins(rows, cfg.OIDC.WebAuthnOrigins), nil
 		},
 
-		// The one guessing budget of both Second Factors. A start is what costs
-		// the gateway work, so a start spends it, the way a TOTP submission does.
+		// The one guessing budget of both Second Factors. The sign-in Passkey
+		// challenge spends it, the way a TOTP submission does, so the two Factors
+		// are never countable apart.
+		//
+		// A registration start spends none of it. It answers no challenge, and
+		// the passkey module caps it on a counter of its own.
 		Budget: budget,
 
 		RPIDOverride: cfg.OIDC.WebAuthnRPID,

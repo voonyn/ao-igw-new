@@ -56,6 +56,13 @@ var (
 	// a device they no longer hold and registers again.
 	ErrTooManyPasskeys = errors.New("the person holds the most passkeys allowed")
 
+	// ErrTooManyEnrolments reports a person who started more registrations than
+	// the trailing window allows. They wait, and then they register again.
+	//
+	// It is not ErrTooManyPasskeys. That cap counts the devices an account
+	// holds, and this one counts the starts one person asked for.
+	ErrTooManyEnrolments = errors.New("too many passkey registration starts")
+
 	// ErrDuplicateDevice reports a registration of a credential id that a live
 	// row already holds.
 	//
@@ -121,6 +128,34 @@ func ceremonyKey(tenantID, holder string) string {
 	return fmt.Sprintf("passkey_ceremony:%s:%s", tenantID, holder)
 }
 
+// enrolLimit and enrolWindow cap how many registration starts one person asks
+// for, across every sign-in and every portal tab they open.
+//
+// It is a budget of its own, and it is deliberately not the shared second-factor
+// guessing budget. A start proves nothing and verifies nothing, so it is not a
+// guess. A browser prompt is easy to cancel by accident, and a person who
+// cancelled fifteen of them must still be able to answer a code.
+//
+// The number is larger than the guessing budget for the same reason: a cancelled
+// prompt is an accident, and a wrong code is an attempt. It still bounds the
+// work, which is what the cap is for.
+//
+// ponytail: two constants. Move them into a tenant policy row when a tenant asks
+// for its own numbers.
+const (
+	enrolLimit  = 30
+	enrolWindow = 15 * time.Minute
+)
+
+// enrolKey names the registration-start budget of one person. The tenant id is
+// part of the key, so a person of one tenant never spends the budget of another.
+//
+// It keys on the person and not on the holder, because a person who opens a
+// second sign-in must not buy a second budget with it.
+func enrolKey(tenantID, userID string) string {
+	return fmt.Sprintf("passkey_enrolments:%s:%s", tenantID, userID)
+}
+
 // Principal is what the caller knows about the person one ceremony runs for.
 //
 // It is not the login session type and it is not the user type. This module
@@ -181,7 +216,10 @@ type (
 
 	// BudgetSpender spends one guess of the shared second-factor budget of one
 	// person. It answers the refusal sentinels of the TOTP module, which owns
-	// the budget, so one cap covers both Second Factors.
+	// the budget, so one cap covers every request that answers a challenge.
+	//
+	// A registration start spends no guess here. It answers no challenge, and it
+	// has a budget of its own in spendEnrolment.
 	BudgetSpender func(ctx context.Context, tenantID, userID string) error
 
 	// CredentialFinder reads one row by its credential id, removed rows
@@ -253,9 +291,12 @@ type Deps struct {
 	// token strips the account of a Factor in one request.
 	VerifyPassword PasswordVerifier
 
-	// Budget is the shared second-factor guessing budget. A ceremony start
-	// spends it, because a start is the request that costs work and a valid
-	// session can otherwise ask for challenges without end.
+	// Budget is the shared second-factor guessing budget. The sign-in challenge
+	// spends it, because that request answers a challenge and the two Factors
+	// must not be countable apart.
+	//
+	// A registration start spends the enrolment budget instead. See
+	// spendEnrolment, which says why the two are apart.
 	Budget BudgetSpender
 
 	// Notify tells the person a Passkey was registered. A nil value sends
@@ -267,10 +308,10 @@ type Deps struct {
 	// ceremony could otherwise run.
 	RPIDOverride string
 
-	// Ceremony holds the challenge of one ceremony in flight. It is Redis and
-	// nothing else: no table holds a challenge. See
-	// docs/adr/0002-session-storage.md, which names this the second exception to
-	// the stateless rule.
+	// Ceremony holds the challenge of one ceremony in flight, and the
+	// registration-start budget of one person. It is Redis and nothing else: no
+	// table holds either. See docs/adr/0002-session-storage.md, which names both
+	// as exceptions to the stateless rule.
 	Ceremony cache.Client
 
 	InTx  db.TxRunner
@@ -316,9 +357,15 @@ func NewService(deps Deps) *Service {
 // registerStart mints the registration options of one person and stores the
 // challenge behind them.
 //
-// The budget is spent first, before anything is read. A start is what costs the
-// gateway work, and a person who holds a valid token could otherwise ask for
-// challenges without end.
+// The enrolment budget is spent first, before anything is read. A start is what
+// costs the gateway work, and a person who holds a valid token could otherwise
+// ask for options without end.
+//
+// That budget is the one spendEnrolment owns, and it is not the shared
+// second-factor guessing budget that a challenge spends. A registration start
+// proves nothing, so a person who cancels browser prompts must never spend the
+// budget their next code sign-in reads. LoginStart spends the shared budget,
+// because that request does answer a challenge.
 //
 // The origin is checked before the options are minted. A key pair created under
 // an origin the RP ID does not cover is a Factor no sign-in can answer, so it
@@ -337,7 +384,7 @@ func NewService(deps Deps) *Service {
 func (s *Service) registerStart(
 	ctx context.Context, tenantID, host, origin string, who Principal,
 ) (*protocol.CredentialCreation, error) {
-	if err := s.deps.Budget(ctx, tenantID, who.UserID); err != nil {
+	if err := s.spendEnrolment(ctx, tenantID, who.UserID); err != nil {
 		return nil, err
 	}
 
@@ -697,6 +744,44 @@ func (s *Service) account(ctx context.Context, tenantID, userID string) (account
 		person.credentials = append(person.credentials, one)
 	}
 	return person, nil
+}
+
+// spendEnrolment spends one registration start of the person's trailing-window
+// enrolment budget, and refuses the start when nothing is left.
+//
+// The budget is its own, and it is not the shared second-factor guessing budget
+// in totp.Service.spendGuess. The two are apart on purpose. A guess answers a
+// challenge, and a registration start answers nothing: it mints options and
+// stores a challenge. A person who cancels a browser prompt did not guess, so
+// that cancel must never cost them the code sign-in that reads the other budget.
+//
+// The two Factors stay countable together where it matters. A sign-in Passkey
+// challenge and a TOTP submission both answer a challenge, and both still spend
+// the one shared budget, so an attacker cannot count the Factors apart.
+//
+// A cache failure refuses the start. Redis holds the whole counter, the way it
+// holds the whole challenge, so a start that ran without it would leave the
+// enrolment path unbounded for as long as Redis is down.
+//
+// The refusal is ErrCeremonyUnavailable and not a budget sentinel of its own.
+// The person is told the ceremony could not run, which is what happened, and the
+// log line above names the counter.
+func (s *Service) spendEnrolment(ctx context.Context, tenantID, userID string) error {
+	allowed, err := s.deps.Ceremony.AllowInWindow(
+		ctx, enrolKey(tenantID, userID), enrolLimit, enrolWindow)
+	if err != nil {
+		s.log.Error("read the passkey enrolment budget",
+			logger.String("tenant_id", tenantID),
+			logger.String("user_id", userID), logger.Err(err))
+		return fmt.Errorf("%w: user %s", ErrCeremonyUnavailable, userID)
+	}
+	if allowed {
+		return nil
+	}
+
+	s.log.Warn("refused a passkey registration start over the budget",
+		logger.String("tenant_id", tenantID), logger.String("user_id", userID))
+	return fmt.Errorf("%w: user %s", ErrTooManyEnrolments, userID)
 }
 
 // store writes the challenge of one ceremony, under a short TTL.

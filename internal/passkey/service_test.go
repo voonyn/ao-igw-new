@@ -49,7 +49,8 @@ func (c errCache) Ping(context.Context) error { return c.err }
 func (c errCache) Close() error { return nil }
 
 // emptyCache is a cache that holds nothing. Every read is a miss, which is what
-// an expired challenge and an answered one both look like.
+// an expired challenge and an answered one both look like, and every budget is
+// untouched.
 type emptyCache struct{ errCache }
 
 func (emptyCache) Get(context.Context, string) (string, error) { return "", cache.ErrCacheMiss }
@@ -57,6 +58,27 @@ func (emptyCache) Get(context.Context, string) (string, error) { return "", cach
 func (emptyCache) Set(context.Context, string, string, time.Duration) error { return nil }
 
 func (emptyCache) Del(context.Context, ...string) error { return nil }
+
+func (emptyCache) AllowInWindow(context.Context, string, int, time.Duration) (bool, error) {
+	return true, nil
+}
+
+// budgetOnlyCache allows every budget read and fails every other call. A test
+// that must reach a rule past the enrolment budget uses it, so the failure it
+// names is the one the test is about.
+type budgetOnlyCache struct{ errCache }
+
+func (budgetOnlyCache) AllowInWindow(context.Context, string, int, time.Duration) (bool, error) {
+	return true, nil
+}
+
+// spentCache is a cache whose budget is gone. Every start it answers is over the
+// cap, and the ceremony store behind it answers normally.
+type spentCache struct{ emptyCache }
+
+func (spentCache) AllowInWindow(context.Context, string, int, time.Duration) (bool, error) {
+	return false, nil
+}
 
 // recordingCache is a cache that keeps what it was given, so a test can read
 // what one ceremony stored.
@@ -98,7 +120,7 @@ func newTestService(t *testing.T, ceremony cache.Client) *Service {
 // A ceremony that proceeds without a stored challenge is not a ceremony: the
 // finish would have nothing to compare the answer against.
 func TestRegisterStart_CacheFailureRefusesTheCeremony(t *testing.T) {
-	svc := newTestService(t, errCache{err: errors.New("redis is down")})
+	svc := newTestService(t, budgetOnlyCache{errCache{err: errors.New("redis is down")}})
 
 	who := Principal{UserID: testUserID}
 	_, err := svc.registerStart(context.Background(), testTenantID, testHost, testOrigin, who)
@@ -127,17 +149,15 @@ func TestRegisterFinish_NoChallengeIsRefused(t *testing.T) {
 	}
 }
 
-// TestRegisterStart_BudgetIsSpentFirst proves that a start spends the shared
-// guessing budget before it does anything else.
+// TestRegisterStart_TheEnrolmentBudgetIsSpentFirst proves that a start spends
+// the enrolment budget before it does anything else.
 //
 // A start is the request that costs the gateway work. Without the budget, a
-// valid token asks for challenges without end.
-func TestRegisterStart_BudgetIsSpentFirst(t *testing.T) {
-	spent := errors.New("the budget is spent")
-
+// valid token asks for options without end.
+func TestRegisterStart_TheEnrolmentBudgetIsSpentFirst(t *testing.T) {
 	log, _ := logger.NewObserved()
 	svc := NewService(Deps{
-		Budget: func(context.Context, string, string) error { return spent },
+		Ceremony: spentCache{},
 		// Every other dependency fails the test if it is reached. The budget is
 		// spent before the origin is checked and before a row is read.
 		Origins: func(context.Context, string) ([]string, error) {
@@ -148,14 +168,144 @@ func TestRegisterStart_BudgetIsSpentFirst(t *testing.T) {
 			t.Error("the passkeys were read before the budget was spent")
 			return nil, nil
 		},
+		Budget: func(context.Context, string, string) error {
+			t.Error("the start spent the shared second-factor guessing budget")
+			return nil
+		},
 		Log: log,
 	})
 
 	who := Principal{UserID: testUserID}
 	_, err := svc.registerStart(context.Background(), testTenantID, testHost, testOrigin, who)
 
-	if !errors.Is(err, spent) {
-		t.Errorf("the start answered %v, want %v", err, spent)
+	if !errors.Is(err, ErrTooManyEnrolments) {
+		t.Errorf("the start answered %v, want %v", err, ErrTooManyEnrolments)
+	}
+}
+
+// TestRegisterStart_TheEnrolmentBudgetIsNotTheGuessingBudget proves the split
+// this module exists to keep.
+//
+// A registration start proves nothing and answers no challenge. It spends its
+// own counter and never the shared second-factor guessing budget, so a person
+// who cancels browser prompts all afternoon still answers a code afterwards.
+func TestRegisterStart_TheEnrolmentBudgetIsNotTheGuessingBudget(t *testing.T) {
+	keys := make(map[string]int)
+
+	log, _ := logger.NewObserved()
+	svc := NewService(Deps{
+		Account: func(context.Context, string, string) (string, error) {
+			return "person@example.com", nil
+		},
+		List:    func(context.Context, string, string) ([]Credential, error) { return nil, nil },
+		Origins: func(context.Context, string) ([]string, error) { return []string{testOrigin}, nil },
+		Budget: func(context.Context, string, string) error {
+			t.Error("the start spent the shared second-factor guessing budget")
+			return nil
+		},
+		Ceremony: countingCache{emptyCache: emptyCache{}, keys: keys},
+		Log:      log,
+	})
+
+	who := Principal{UserID: testUserID}
+	if _, err := svc.registerStart(
+		context.Background(), testTenantID, testHost, testOrigin, who,
+	); err != nil {
+		t.Fatalf("the start answered %v, want the options", err)
+	}
+
+	if got := keys[enrolKey(testTenantID, testUserID)]; got != 1 {
+		t.Errorf("the enrolment budget was spent %d times, want 1", got)
+	}
+}
+
+// countingCache counts what each budget key was charged, so a test can name the
+// counter one request spent.
+type countingCache struct {
+	emptyCache
+	keys map[string]int
+}
+
+func (c countingCache) AllowInWindow(
+	_ context.Context, key string, _ int, _ time.Duration,
+) (bool, error) {
+	c.keys[key]++
+	return true, nil
+}
+
+// limitingCache is a trailing-window limiter that counts per key, the way Redis
+// does. One instance backs both budgets, so a test can spend one of them to its
+// cap and read what the other has left.
+type limitingCache struct {
+	emptyCache
+	hits map[string]int
+}
+
+func (c limitingCache) AllowInWindow(
+	_ context.Context, key string, limit int, _ time.Duration,
+) (bool, error) {
+	c.hits[key]++
+	return c.hits[key] <= limit, nil
+}
+
+// TestRegisterStart_TheCapLeavesTheSignInBudgetWhole is the reason the two
+// budgets are apart.
+//
+// A person cancels browser prompts until the enrolment cap refuses them. The
+// second-factor guessing budget is untouched by every one of those starts, so
+// the code sign-in they run next still answers.
+func TestRegisterStart_TheCapLeavesTheSignInBudgetWhole(t *testing.T) {
+	// What the TOTP module spends. The key shape and the limit are copied here,
+	// because this module never imports that one.
+	const guessLimit = 15
+	guessKey := "mfa_attempts:" + testTenantID + ":" + testUserID
+
+	store := limitingCache{hits: make(map[string]int)}
+
+	log, _ := logger.NewObserved()
+	svc := NewService(Deps{
+		Account: func(context.Context, string, string) (string, error) {
+			return "person@example.com", nil
+		},
+		List:    func(context.Context, string, string) ([]Credential, error) { return nil, nil },
+		Origins: func(context.Context, string) ([]string, error) { return []string{testOrigin}, nil },
+		// The shared guessing budget, on the same store and under a key of its
+		// own. A sign-in challenge spends this one.
+		Budget: func(ctx context.Context, _, _ string) error {
+			allowed, err := store.AllowInWindow(ctx, guessKey, guessLimit, time.Minute)
+			if err != nil {
+				return err
+			}
+			if !allowed {
+				return errors.New("the second-factor guessing budget is spent")
+			}
+			return nil
+		},
+		Ceremony: store,
+		Log:      log,
+	})
+
+	ctx := context.Background()
+	who := Principal{UserID: testUserID}
+
+	for i := 0; i < enrolLimit; i++ {
+		if _, err := svc.registerStart(ctx, testTenantID, testHost, testOrigin, who); err != nil {
+			t.Fatalf("start %d answered %v, want the options", i+1, err)
+		}
+	}
+
+	if _, err := svc.registerStart(
+		ctx, testTenantID, testHost, testOrigin, who,
+	); !errors.Is(err, ErrTooManyEnrolments) {
+		t.Fatalf("the start over the cap answered %v, want %v", err, ErrTooManyEnrolments)
+	}
+
+	if got := store.hits[guessKey]; got != 0 {
+		t.Fatalf("the enrolment starts spent the guessing budget %d times, want 0", got)
+	}
+
+	if err := svc.deps.Budget(ctx, testTenantID, testUserID); err != nil {
+		t.Errorf("the sign-in challenge answered %v, want the budget", err)
 	}
 }
 

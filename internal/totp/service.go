@@ -589,6 +589,11 @@ func (s *Service) spend(
 // the last one of that sign-in, so the budget counts every wrong code plus at
 // most one right code per sign-in.
 //
+// Only a request that answers a challenge spends it: a TOTP submission and a
+// passkey sign-in challenge. An enrolment start spends the separate budget in
+// passkey.Service.spendEnrolment, so a cancelled browser prompt never costs a
+// person the guesses their next code sign-in needs. See SpendGuess below.
+//
 // A cache failure refuses the submission. Redis is only a cache elsewhere in
 // this gateway, and here it is the whole budget: a failure that let the guess
 // through would leave the guessing unbounded for as long as Redis is down. The
@@ -619,10 +624,15 @@ func (s *Service) spendGuess(ctx context.Context, tenantID string, who Principal
 
 // SpendGuess spends one guess of the shared second-factor budget of one person.
 //
-// The budget is one budget for every Second Factor, so a passkey ceremony start
-// spends it here too. A second copy of the key, the limit and the window is how
-// the two Factors would drift into two budgets, and an attacker would then hold
-// the sum of both.
+// The budget is one budget for every request that answers a challenge, so a
+// passkey sign-in challenge spends it here too. A second copy of the key, the
+// limit and the window is how the two Factors would drift into two budgets, and
+// an attacker would then hold the sum of both.
+//
+// A passkey registration start spends passkey.Service.spendEnrolment instead,
+// and that is a budget of its own. A start answers no challenge and proves
+// nothing, so a cancelled browser prompt must not cost a person the code sign-in
+// that reads this budget.
 //
 // It answers ErrTooManyAttempts and ErrBudgetUnavailable, which the mapper
 // already knows. The caller names no login session, so no session id reaches the

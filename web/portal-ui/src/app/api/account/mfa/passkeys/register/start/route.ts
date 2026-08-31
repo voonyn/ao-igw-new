@@ -27,8 +27,10 @@ export const dynamic = "force-dynamic"
 // check would refuse, and the library compares the origin the device signed
 // against the same list.
 //
-// The gateway spends the shared second-factor guessing budget here, so a start
-// can answer `rate_limited`.
+// The gateway spends the enrolment budget here, so a start can answer
+// `rate_limited`. That budget is a counter of its own, and not the second-factor
+// guessing budget a code sign-in reads, so cancelled prompts on this screen never
+// cost the person their next sign-in.
 export async function POST(req: NextRequest) {
   return forwardToAccountAPI(req, "/mfa/passkeys/register/start", {
     method: "POST",
