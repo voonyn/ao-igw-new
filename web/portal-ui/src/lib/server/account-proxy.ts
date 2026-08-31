@@ -12,9 +12,16 @@ import { resolveAccessToken } from "./token"
 // resolve the token, forward the call, re-seal a rotated session — so they do it
 // here once instead of once each.
 //
-// A 200 answers the gateway envelope's `data` half, which is what the view
-// renders. Every other status passes the gateway's slug and status straight
-// through, so the view branches on the slug and never on a message.
+// Every successful status answers the gateway envelope's `data` half, at the
+// gateway's own status: the passkey registration finish answers 201, and the
+// browser reads the row at 201. Every other status passes the gateway's slug
+// and status straight through, so the view branches on the slug and never on a
+// message.
+//
+// The gateway has no route that answers 204 — `response.NoContent` writes 200
+// with a null `data`. A route that answered a real 204 would need its own
+// branch here, because a body on a null-body status is a response the platform
+// refuses to build.
 //
 // The portal session cookie is SameSite=Lax, so a cross-site POST cannot carry
 // it — these routes are CSRF-safe without a separate token.
@@ -50,12 +57,12 @@ export async function forwardToAccountAPI(
       cache: "no-store",
     })
 
-    if (res.status === 200) {
+    if (res.ok) {
       // The gateway answers this deployment's one envelope,
       // `{code, status, message, data}`. Anything else on the wire is a shape
       // the view cannot render, so it degrades to an empty object.
       const body = await res.json().catch(() => null)
-      return await withRotation(NextResponse.json(body?.data ?? {}), rotated, next)
+      return await withRotation(NextResponse.json(body?.data ?? {}, { status: res.status }), rotated, next)
     }
     const data = await res.json().catch(() => ({ error: "server_error" }))
     return await withRotation(NextResponse.json(data, { status: res.status }), rotated, next)
