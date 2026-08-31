@@ -306,10 +306,11 @@ func (s *Service) LoginEnrolStart(
 // refuseHeldFactor refuses a sign-in enrolment for a person who already holds a
 // Second Factor.
 //
-// It reads both Factors, the Passkey and the TOTP Enrolment, through the one
-// dependency the router composes from the repository of each module. The rule is
-// one sentence: a sign-in enrols a Second Factor only for a person who holds
-// none. A person who holds one is challenged.
+// It reads the pending steps of the account, through one closure the router
+// builds once, and never the two Factor tables. A person the steps name a
+// challenge for is a person who holds a Factor. The rule is one sentence: a
+// sign-in enrols a Second Factor only for a person who holds none. A person who
+// holds one is challenged.
 //
 // Without it the sign-in has a way around the challenge. The finalize gate
 // re-reads the account on purpose, so a Factor this route recorded mid sign-in
@@ -321,8 +322,14 @@ func (s *Service) LoginEnrolStart(
 // portal is where a person adds a second kind of Factor beside the one they
 // already hold.
 //
-// The TOTP module runs the same guard on its own enrolment addresses. Both are
-// needed: each module owns what an unfinished session may do at its own routes.
+// The TOTP module runs the same guard on its own enrolment addresses, and the
+// body there is a copy of this one. Both are needed: each module owns what an
+// unfinished session may do at its own routes.
+//
+// The two copies stay, and they cannot drift into a bypass, because the rule is
+// not written here. The predicate is the one closure the router builds, and
+// these lines only read the bool it answers, log the refusal, and wrap a
+// sentinel. ADR 0011 records that decision.
 //
 // The refusal is logged here, because this is where it stops. The read behind it
 // is not: the router composes that read and logs its own failure.

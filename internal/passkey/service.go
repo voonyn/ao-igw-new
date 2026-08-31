@@ -271,9 +271,10 @@ type (
 	CredentialToucher func(ctx context.Context, tenantID, userID string, credID []byte, record string) error
 
 	// FactorHolder reports whether one person holds any Second Factor: a live
-	// Passkey, or an active TOTP Enrolment. The router composes it from the
-	// repository of each module, so this module reads the Factor it does not own
-	// without importing the module that owns it.
+	// Passkey, or an active TOTP Enrolment. The router builds it once, over the
+	// pending steps of the account and never the two Factor tables, so this
+	// module reads the Factor it does not own without importing the module that
+	// owns it. ADR 0011 says why one function answers this for every reader.
 	FactorHolder func(ctx context.Context, tenantID, userID string) (bool, error)
 
 	// Notifier tells one person that a Passkey was registered on their account.
@@ -315,9 +316,9 @@ type Deps struct {
 	// spendEnrolment, which says why the two are apart.
 	Budget BudgetSpender
 
-	// HoldsFactor guards the sign-in enrolment step. Nothing on the portal path
-	// reads it: the portal is where a person adds a second kind of Factor beside
-	// the one they already hold.
+	// HoldsFactor guards the two sign-in enrolment steps. Nothing on the portal
+	// path reads it: the portal is where a person adds a second kind of Factor
+	// beside the one they already hold.
 	HoldsFactor FactorHolder
 
 	// Notify tells the person a Passkey was registered. A nil value sends

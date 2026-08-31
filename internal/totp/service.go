@@ -196,9 +196,10 @@ type (
 	RateLimiter func(ctx context.Context, key string, limit int, window time.Duration) (bool, error)
 
 	// FactorHolder reports whether one person holds any Second Factor: a live
-	// Passkey, or an active TOTP Enrolment. The router composes it from the
-	// repository of each module, so this module reads the Factor it does not own
-	// without importing the module that owns it.
+	// Passkey, or an active TOTP Enrolment. The router builds it once, over the
+	// pending steps of the account and never the two Factor tables, so this
+	// module reads the Factor it does not own without importing the module that
+	// owns it. ADR 0011 says why one function answers this for every reader.
 	FactorHolder func(ctx context.Context, tenantID, userID string) (bool, error)
 )
 
@@ -297,10 +298,11 @@ func (s *Service) Start(ctx context.Context, tenantID, issuer, token string) (St
 // refuseHeldFactor refuses a sign-in enrolment for a person who already holds a
 // Second Factor.
 //
-// It reads both Factors, the Passkey and the TOTP Enrolment, through the one
-// dependency the router composes from the repository of each module. The rule is
-// one sentence: a sign-in enrols a Second Factor only for a person who holds
-// none. A person who holds one is challenged.
+// It reads the pending steps of the account, through one closure the router
+// builds once, and never the two Factor tables. A person the steps name a
+// challenge for is a person who holds a Factor. The rule is one sentence: a
+// sign-in enrols a Second Factor only for a person who holds none. A person who
+// holds one is challenged.
 //
 // Without it the sign-in has a way around the challenge. The finalize gate
 // re-reads the account on purpose, so a Factor this route recorded mid sign-in

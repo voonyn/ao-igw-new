@@ -207,3 +207,60 @@ func TestAccountActivateCountsNoSession(t *testing.T) {
 		t.Errorf("error is %v, want %v", err, ErrBadCode)
 	}
 }
+
+// TestSignInEnrolmentRefusesAHeldFactor proves that both sign-in enrolment
+// addresses of this module refuse a person who already holds a Second Factor.
+//
+// The person here holds a Passkey. This module never reads that table. The
+// router answers HoldsFactor from the pending steps of the account, and a person
+// the steps name a challenge for is a person who holds a Factor, so the true
+// below is what the router answers for a Passkey holder. See refuseHeldFactor.
+//
+// Both addresses are driven. A start refused on its own is not the guard: a
+// pending row has no expiry, so the activation would carry the same bypass one
+// call later. The sentinel is what the handler maps to mfa_already_held.
+func TestSignInEnrolmentRefusesAHeldFactor(t *testing.T) {
+	read := false
+	svc := NewService(Deps{
+		FindSession: func(context.Context, string, string) (Principal, error) {
+			return Principal{SessionID: guardSessionID, UserID: guardUserID, PasswordProved: true}, nil
+		},
+		HoldsFactor: func(context.Context, string, string) (bool, error) { return true, nil },
+		Find: func(context.Context, string, string) (Enrolment, error) {
+			read = true
+			return Enrolment{}, nil
+		},
+		Log: logger.New(),
+	})
+
+	tests := []struct {
+		name string
+		call func() error
+	}{
+		{
+			name: "the start",
+			call: func() error {
+				_, err := svc.Start(t.Context(), guardTenantID, "gateway.test", guardToken)
+				return err
+			},
+		},
+		{
+			name: "the activation",
+			call: func() error {
+				_, err := svc.Activate(t.Context(), guardTenantID, guardToken, "000000")
+				return err
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := tc.call(); !errors.Is(err, ErrFactorAlreadyHeld) {
+				t.Errorf("the address answered %v, want %v", err, ErrFactorAlreadyHeld)
+			}
+			if read {
+				t.Error("read the enrolment after the guard refused")
+			}
+		})
+	}
+}

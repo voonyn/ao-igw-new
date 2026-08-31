@@ -71,6 +71,12 @@ poll answers three fixed states with no room to name a step still owed.
 - The enrolment guard reads the steps and never the two Factor tables. A person the
   steps name a challenge for is a person who holds a Factor, so a second pair of
   reads would be the drift this decision refuses.
+- The guard body is written twice, once in each Second Factor module, and it stays
+  that way. This decision single-sources the predicate, and the router hands the one
+  closure to both. What each copy holds is a read of that answer, a warning line, and
+  a sentinel, so neither copy can drift into a bypass. Each module also owns what an
+  unfinished Login Session may do at its own routes, which is why the guard is called
+  from both modules and not from the router.
 - The challenge endpoints refuse a Login Session that has not proved a password. A
   session exists from the identifier step onward and already names a person, so
   without that guard anyone who knows an identifier could enrol a Factor on that
