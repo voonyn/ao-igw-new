@@ -125,3 +125,80 @@ func TestLoginStart_TheCapLeavesTheCodeBudgetWhole(t *testing.T) {
 		}
 	}
 }
+
+// TestPrincipalRefusesABlankSessionID proves that no sign-in address keys its
+// ceremony on the tenant alone.
+//
+// Every address here keys on Principal.holder(). holder() answers the user id
+// when the session id is blank, which is what the Portal wants and what a
+// sign-in must never reach. The guard in principal is what keeps a sign-in off
+// that fallback, so a projection that ever dropped the session id refuses
+// instead of sharing one ceremony between two sign-ins of one person.
+//
+// All four addresses are driven. The guard is one function, and each address is
+// a separate door into it.
+func TestPrincipalRefusesABlankSessionID(t *testing.T) {
+	log, _ := logger.NewObserved()
+	svc := NewService(Deps{
+		FindSession: func(context.Context, string, string) (Principal, error) {
+			return Principal{UserID: testUserID, PasswordProved: true}, nil
+		},
+		Log: log,
+	})
+
+	const answer = `{"id":"aaaa","rawId":"aaaa","type":"public-key"}`
+
+	tests := []struct {
+		name string
+		call func() error
+	}{
+		{"the challenge start", func() error {
+			_, err := svc.LoginStart(t.Context(), testTenantID, testHost, testOrigin, "a-token")
+			return err
+		}},
+		{"the challenge finish", func() error {
+			_, err := svc.LoginFinish(
+				t.Context(), testTenantID, testHost, testOrigin, "a-token", []byte(answer))
+			return err
+		}},
+		{"the enrolment start", func() error {
+			_, err := svc.LoginEnrolStart(t.Context(), testTenantID, testHost, testOrigin, "a-token")
+			return err
+		}},
+		{"the enrolment finish", func() error {
+			_, err := svc.LoginEnrolFinish(
+				t.Context(), testTenantID, testHost, testOrigin, "a-token", []byte(answer))
+			return err
+		}},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := tc.call(); !errors.Is(err, ErrPasswordNotProved) {
+				t.Errorf("the address answered %v, want %v", err, ErrPasswordNotProved)
+			}
+		})
+	}
+}
+
+// TestHolderNeverKeysOnTheTenantAlone proves the other half: holder() answers a
+// name for every principal the guard above lets through, and for the Portal
+// principal that carries no session at all.
+func TestHolderNeverKeysOnTheTenantAlone(t *testing.T) {
+	tests := []struct {
+		name string
+		who  Principal
+		want string
+	}{
+		{"a sign-in keys on the session", Principal{SessionID: "session-1", UserID: testUserID}, "session-1"},
+		{"the portal keys on the person", Principal{UserID: testUserID}, testUserID},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.who.holder(); got != tc.want {
+				t.Errorf("holder answered %q, want %q", got, tc.want)
+			}
+		})
+	}
+}

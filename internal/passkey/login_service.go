@@ -99,7 +99,7 @@ func (s *Service) LoginStart(
 		return nil, fmt.Errorf("%w: user %s", ErrCeremonyUnavailable, who.UserID)
 	}
 
-	if err := s.store(ctx, tenantID, who.SessionID, ceremony); err != nil {
+	if err := s.store(ctx, tenantID, who.holder(), ceremony); err != nil {
 		return nil, err
 	}
 
@@ -148,7 +148,7 @@ func (s *Service) LoginFinish(
 		return "", err
 	}
 
-	ceremony, err := s.consume(ctx, tenantID, who.SessionID, who)
+	ceremony, err := s.consume(ctx, tenantID, who.holder(), who)
 	if err != nil {
 		return "", err
 	}
@@ -256,6 +256,11 @@ func (s *Service) refuse(
 // A session that names nobody is refused too. It cannot have proved a password,
 // because the password step is what binds the person.
 //
+// A session that names no session id is refused as well. Every address behind
+// this guard keys its ceremony on holder(), and a blank session id there falls
+// back to the person. The fallback is what the Portal wants and what a sign-in
+// must never reach: two sign-ins of one person would share one ceremony.
+//
 // The TOTP module runs the same guard on its own addresses. Both are needed:
 // each module owns what an unfinished session may do at its own routes.
 func (s *Service) principal(ctx context.Context, tenantID, token string) (Principal, error) {
@@ -263,7 +268,7 @@ func (s *Service) principal(ctx context.Context, tenantID, token string) (Princi
 	if err != nil {
 		return Principal{}, err
 	}
-	if !who.PasswordProved || who.UserID == "" {
+	if !who.PasswordProved || who.UserID == "" || who.SessionID == "" {
 		s.log.Warn("refused a passkey ceremony on a session that proved no password",
 			logger.String("tenant_id", tenantID),
 			logger.String("session_id", who.SessionID))
