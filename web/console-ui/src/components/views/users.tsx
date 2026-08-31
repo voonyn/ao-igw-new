@@ -332,12 +332,14 @@ export function UserDetailPage({
               </Btn>
             )}
           </SectionCard>
-          {/* Gated on `canWrite` because the gateway gates BOTH calls on the
-              same write role: a viewer who was shown the list would only
-              receive a 403. Revoking one device is the narrow answer to "I lost
-              my laptop" — every other factor that person holds survives it,
-              which is what tells it apart from the reset above. */}
-          {canWrite && <UserPasskeysCard user={user} onChanged={onChanged} />}
+          {/* Rendered for every administrator, the way the two cards above are.
+              The gateway gates the list on the read role — the same role that
+              answered the account record beside it — and gates the revoke alone
+              on the write role, so `canWrite` gates the row button and not the
+              card. Revoking one device is the narrow answer to "I lost my
+              laptop" — every other factor that person holds survives it, which
+              is what tells it apart from the reset above. */}
+          <UserPasskeysCard user={user} canWrite={canWrite} onChanged={onChanged} />
           {accessCard}
         </div>
       )}
@@ -380,8 +382,12 @@ export function UserDetailPage({
  *
  * The list is bounded — ten per person — so it answers whole and carries no
  * pager, the way the memberships read does.
+ *
+ * Every administrator reads the list, so the card renders for all of them,
+ * empty state included. `canWrite` gates the revoke button alone, because the
+ * gateway gates the revoke alone on the write role.
  */
-function UserPasskeysCard({ user, onChanged }: { user: User; onChanged?: () => Promise<void> }) {
+function UserPasskeysCard({ user, canWrite, onChanged }: { user: User; canWrite: boolean; onChanged?: () => Promise<void> }) {
   const { A, dataVersion } = useConsole();
   const [state, setState] = useState<{ phase: "loading" } | { phase: "ready"; rows: Passkey[] } | { phase: "error"; why: string }>({
     phase: "loading",
@@ -459,10 +465,12 @@ function UserPasskeysCard({ user, onChanged }: { user: User; onChanged?: () => P
                 <span style={{ fontSize: 12, color: "var(--muted)" }}>
                   Added <Ts value={row.createdAt} /> · Last used <Ts value={row.lastUsedAt} empty="Never" />
                 </span>
-                <Btn className="btn sm danger-ghost" pending={busy} onClick={() => void revoke(row)}>
-                  <Icon name="ban" size={13} />
-                  Revoke
-                </Btn>
+                {canWrite && (
+                  <Btn className="btn sm danger-ghost" pending={busy} onClick={() => void revoke(row)}>
+                    <Icon name="ban" size={13} />
+                    Revoke
+                  </Btn>
+                )}
               </span>
             }
           />

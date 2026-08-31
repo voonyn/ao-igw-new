@@ -24,9 +24,21 @@ const testOperatorID = "33333333-3333-3333-3333-333333333333"
 var refused = errors.New("forbidden")
 
 // adminService builds the console service over the three parts each test wants
-// to control, and records what reached the trail.
+// to control, and records what reached the trail. One Authorizer stands for
+// both gates, which is what a test that names one operator wants.
 func adminService(
 	t *testing.T, authorize Authorizer,
+	list CredentialLister, remove CredentialRemover,
+) (*AdminService, *[]audit.Event) {
+	t.Helper()
+	return adminServiceGated(t, authorize, authorize, list, remove)
+}
+
+// adminServiceGated builds the same service with the two gates apart, for the
+// tests that read as one operator and are refused the revoke as that same
+// operator.
+func adminServiceGated(
+	t *testing.T, read, write Authorizer,
 	list CredentialLister, remove CredentialRemover,
 ) (*AdminService, *[]audit.Event) {
 	t.Helper()
@@ -34,10 +46,11 @@ func adminService(
 	log, _ := logger.NewObserved()
 	written := make([]audit.Event, 0, 1)
 	svc := NewAdminService(AdminDeps{
-		Authorize: authorize,
-		List:      list,
-		Delete:    remove,
-		InTx:      func(ctx context.Context, run func(context.Context) error) error { return run(ctx) },
+		AuthorizeRead:  read,
+		AuthorizeWrite: write,
+		List:           list,
+		Delete:         remove,
+		InTx:           func(ctx context.Context, run func(context.Context) error) error { return run(ctx) },
 		Audit: audit.NewRecorder(func(_ context.Context, event audit.Event) error {
 			written = append(written, event)
 			return nil
@@ -222,6 +235,54 @@ func TestAdminRevoke_AnIDNoRowHoldsIsNotFound(t *testing.T) {
 		context.Background(), testTenantID, Principal{UserID: testOperatorID}, testUserID, "AQID")
 	if !errors.Is(err, ErrNotFound) {
 		t.Errorf("the revoke answered %v, want %v", err, ErrNotFound)
+	}
+	if len(*written) != 0 {
+		t.Errorf("the trail records %d events, want none", len(*written))
+	}
+}
+
+// TestAdminList_AnOperatorRefusedTheRevokeStillReadsTheList proves the two gates
+// are apart.
+//
+// An operator who holds ORG_USER_MANAGER in one organization reads the account
+// record of somebody in another organization, so they read the devices on that
+// account too. The support call is about a lost device, and the name and the
+// last-used date are the answer.
+func TestAdminList_AnOperatorRefusedTheRevokeStillReadsTheList(t *testing.T) {
+	svc, _ := adminServiceGated(t, allow, deny,
+		func(context.Context, string, string) ([]Credential, error) {
+			return []Credential{{
+				TenantID:     testTenantID,
+				CredentialID: []byte{1, 2, 3},
+				UserID:       testUserID,
+				Name:         "Work laptop",
+				CreatedAt:    time.Now().UTC(),
+			}}, nil
+		}, nil)
+
+	rows, err := svc.List(context.Background(), testTenantID, Principal{UserID: testOperatorID}, testUserID)
+	if err != nil {
+		t.Fatalf("the list answered %v, want the passkeys of that person", err)
+	}
+	if len(rows) != 1 || rows[0].Name != "Work laptop" {
+		t.Errorf("the list answered %v, want the one device that person holds", rows)
+	}
+}
+
+// TestAdminRevoke_AnOperatorWhoOnlyReadsIsRefusedTheRevoke is the other half of
+// the rule above. The read gate admitted that operator, and the write gate is
+// the one the removal runs.
+func TestAdminRevoke_AnOperatorWhoOnlyReadsIsRefusedTheRevoke(t *testing.T) {
+	svc, written := adminServiceGated(t, allow, deny, nil,
+		func(context.Context, string, string, []byte) error {
+			t.Error("an operator refused the write reached the removal")
+			return nil
+		})
+
+	err := svc.Revoke(
+		context.Background(), testTenantID, Principal{UserID: testOperatorID}, testUserID, "AQID")
+	if !errors.Is(err, refused) {
+		t.Errorf("the revoke answered %v, want the refusal of the user domain", err)
 	}
 	if len(*written) != 0 {
 		t.Errorf("the trail records %d events, want none", len(*written))

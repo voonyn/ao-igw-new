@@ -776,11 +776,19 @@ func mountAdmin(
 	// A Factor belongs to whoever holds the device, so the ceremony runs on the
 	// portal alone and no ceremony dependency is wired.
 	passkeys := passkey.NewRepository(bdb, log)
+	//
+	// Two gates and not one. The list runs the read gate every other card of
+	// that screen runs, so an operator who reads the account record reads the
+	// devices on it. The revoke runs the write gate, which narrows to the
+	// organization of the account.
 	passkeyAdminSvc := passkey.NewAdminService(passkey.AdminDeps{
-		Authorize: func(ctx context.Context, tenantID, actorID, userID string) error {
+		AuthorizeRead: func(ctx context.Context, tenantID, actorID, _ string) error {
+			return svc.AuthorizeRead(ctx, user.Actor{TenantID: tenantID, UserID: actorID})
+		},
+		AuthorizeWrite: func(ctx context.Context, tenantID, actorID, userID string) error {
 			return svc.AuthorizeWrite(ctx,
 				user.Actor{TenantID: tenantID, UserID: actorID}, userID,
-				"manage the passkeys of a user")
+				"revoke a passkey of a user")
 		},
 		List:   passkeys.List,
 		Delete: passkeys.Delete,

@@ -115,7 +115,7 @@ home never shuts that person out of a Factor that works.
 
 52. As a security reviewer, I want a challenge consumed once, so that a captured answer cannot be replayed.
 53. As a security reviewer, I want a challenge to expire, so that an old one cannot be answered tomorrow.
-54. As a security reviewer, I want a ceremony start to spend the shared guessing budget, so that a flood of challenges is bounded.
+54. As a security reviewer, I want a sign-in challenge start to spend the shared guessing budget and an enrolment start to spend a budget of its own, so that a flood of challenges is bounded and a cancelled prompt does not spend the budget a code sign-in reads.
 55. As a security reviewer, I want a failed assertion to leave the sign-in alive, so that a hostile page cannot end a person's session for them.
 56. As a security reviewer, I want a Passkey bound to its domain, so that a phishing site cannot use it.
 57. As a security reviewer, I want a revoked Passkey to stop working at once, so that a revoke is not advisory.
@@ -129,6 +129,12 @@ home never shuts that person out of a Factor that works.
 - A Passkey is a Second Factor only. The person types a password first, in every case.
   Passwordless sign-in and usernameless sign-in are out of scope.
 - A Passkey satisfies the MFA Requirement, exactly as a TOTP Enrolment does.
+- The two Console routes run two gates. The **list** runs the read gate of the user
+  domain, the one that already answered that administrator the user list and the account
+  record, so an administrator of one organization reads the devices of a person in
+  another and answers their lost-device call. The **revoke** runs the write gate, which
+  narrows to the organization of the account. Story 39 names the revoke, and this is
+  what it narrows.
 
 ### Modules
 
@@ -170,9 +176,13 @@ This is the part the code constrains hardest. Read it before anything else.
 
 ### Abuse limits
 
-- A ceremony **start** spends the existing shared guessing budget, keyed by tenant and
-  person, exactly as a TOTP submission does. A start is the request that costs work, and
-  a valid session can otherwise ask for challenges without end.
+- A ceremony **start** spends a budget keyed by tenant and person. A start is the
+  request that costs work, and a valid session can otherwise ask for challenges without
+  end. There are two budgets, and they are separate keys. A **sign-in** challenge start
+  spends the shared guessing budget, exactly as a TOTP submission does. An **enrolment**
+  start spends the enrolment budget of its own, because a start answers no challenge and
+  proves nothing: a person who cancels a browser prompt must not spend the budget their
+  next code sign-in reads.
 - A **failed assertion does not** count against the per-session wrong-answer count. A
   signature is not a guessable value, and a hostile page that could burn those five
   failures would hold a free way to end a person's sign-in.
@@ -223,9 +233,9 @@ This is the part the code constrains hardest. Read it before anything else.
 - A cache failure refuses the ceremony. A ceremony that proceeds without a stored
   challenge is not a ceremony.
 - A challenge is consumed once. The finish step deletes the key before it verifies.
-- **This is a second exception to the stateless rule, beside the Guessing Budget.**
-  CLAUDE.md names one exception today, and ADR 0002 records the storage design. Both
-  must be updated to name two. Do not leave the reasoning in a code comment alone.
+- **This is a third exception to the stateless rule, beside the Guessing Budget and the
+  enrolment budget.** CLAUDE.md and ADR 0002 both name three. Do not leave the reasoning
+  in a code comment alone.
 
 ### API contracts
 

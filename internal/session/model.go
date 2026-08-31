@@ -208,7 +208,7 @@ func IsChallengeStep(step string) bool {
 // The password answers no challenge step, and neither does a Wallet presentation.
 // Only a name this list carries counts. See docs/adr/0012-passkey-amr-value.md.
 func (s LoginSession) meets(step string) bool {
-	if !slices.Contains(challengeSteps, step) {
+	if !IsChallengeStep(step) {
 		return false
 	}
 	for _, factor := range challengeSteps {

@@ -16,11 +16,11 @@ import (
 // Two of the three ceremony steps therefore have no console counterpart. This
 // file holds the whole administrative surface, and it is a read and a revoke.
 
-// Authorizer refuses an operator who may not manage this person.
+// Authorizer refuses an operator who may not run this call on this person.
 //
-// It is the gate of the user domain, handed over as a function value. This
-// module imports neither the user domain nor the login session domain, so the
-// router composes the crossing, the way it composes the second-factor reset.
+// It is a gate of the user domain, handed over as a function value. This module
+// imports neither the user domain nor the login session domain, so the router
+// composes the crossing, the way it composes the second-factor reset.
 type Authorizer func(ctx context.Context, tenantID, actorID, userID string) error
 
 // AdminDeps is the console side of the module: the same two repository calls the
@@ -30,10 +30,15 @@ type Authorizer func(ctx context.Context, tenantID, actorID, userID string) erro
 // the three belongs to a read or a revoke, and a console that held them could
 // run a registration.
 type AdminDeps struct {
-	// Authorize decides the request. It runs before the read and before the
-	// write, so a member without the role never learns whether the person holds
-	// a Passkey at all.
-	Authorize Authorizer
+	// AuthorizeRead decides the list. It is the read gate of the user domain,
+	// the one the account record and the two-factor state of the same screen
+	// already ran, so an operator who reads the account reads the devices on it.
+	AuthorizeRead Authorizer
+
+	// AuthorizeWrite decides the revoke. It is the narrower gate, and it takes
+	// the organization of the account into account, so an operator who reads the
+	// list is still refused the removal of a device.
+	AuthorizeWrite Authorizer
 
 	List   CredentialLister
 	Delete CredentialRemover
@@ -55,8 +60,12 @@ func NewAdminService(deps AdminDeps) *AdminService {
 	return &AdminService{deps: deps, log: deps.Log}
 }
 
-// List answers the live Passkeys of one person to an operator who may manage
-// them.
+// List answers the live Passkeys of one person to an operator who administers
+// this tenant.
+//
+// It runs the read gate and not the write gate. An operator who reads the
+// account record of that person answers their support call about a lost device,
+// and the device name and the last-used date are what name the device.
 //
 // It is one bounded whole list. A person holds at most ten Passkeys, so nothing
 // here pages. A person who holds none reads an empty list, which is the normal
@@ -69,7 +78,7 @@ func (s *AdminService) List(
 		logger.String("user_id", who.UserID),
 		logger.String("target_user_id", userID), logger.RequestID(ctx))
 
-	if err := s.deps.Authorize(ctx, tenantID, who.UserID, userID); err != nil {
+	if err := s.deps.AuthorizeRead(ctx, tenantID, who.UserID, userID); err != nil {
 		return nil, err
 	}
 
@@ -104,7 +113,7 @@ func (s *AdminService) Revoke(
 		logger.String("user_id", who.UserID),
 		logger.String("target_user_id", userID), logger.RequestID(ctx))
 
-	if err := s.deps.Authorize(ctx, tenantID, who.UserID, userID); err != nil {
+	if err := s.deps.AuthorizeWrite(ctx, tenantID, who.UserID, userID); err != nil {
 		return err
 	}
 

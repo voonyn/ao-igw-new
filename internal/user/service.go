@@ -919,15 +919,34 @@ func displayName(row User) string {
 	return row.Username
 }
 
+// AuthorizeRead refuses a person who administers nothing in this tenant. It is
+// `admitted` with the rights dropped, for a caller that wanted the gate alone.
+//
+// It is the gate List runs, so it admits every holder of the four administrative
+// roles and narrows to no organization. The console Passkey list runs it: an
+// operator who reads the account record of somebody in another organization
+// reads the devices of that account beside it.
+//
+// It reads no account row, so it confirms no id. A caller that lists by an id
+// nobody holds answers an empty list and not a miss, the way a list of a tenant
+// with no rows does. Find reads the row itself, on top of this gate.
+//
+// AuthorizeWrite is the narrower gate. The Passkey revoke runs that one.
+func (s *Service) AuthorizeRead(ctx context.Context, a Actor) error {
+	_, err := s.admitted(ctx, a)
+	return err
+}
+
 // AuthorizeWrite refuses an operator who may not manage this person. It is
 // `writable` with the row dropped, for a caller that wanted the gate alone.
 //
-// The console Passkey routes run it. They live in the passkey module, which
-// imports neither this domain nor the login session domain, so the router hands
-// it this check the way it hands that module every other crossing.
+// The console Passkey revoke runs it. That route lives in the passkey module,
+// which imports neither this domain nor the login session domain, so the router
+// hands it this check the way it hands that module every other crossing.
 //
-// A member without the role is refused on the read as firmly as on the revoke,
-// so they never learn whether the person holds a Passkey at all.
+// It narrows to the organization of the account. The read beside it does not,
+// so a member refused here still reads the list, exactly as they read the
+// account record.
 func (s *Service) AuthorizeWrite(ctx context.Context, a Actor, userID, what string) error {
 	_, err := s.writable(ctx, a, userID, what)
 	return err

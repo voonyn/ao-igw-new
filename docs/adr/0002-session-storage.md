@@ -51,5 +51,5 @@ prove nothing.
 - A Redis flush costs latency, not correctness. Traffic falls through to the database
   and Redis refills.
 - Every session write pays two round trips. This is accepted.
-- Redis must never hold data that is absent from the database, except the two values
+- Redis must never hold data that is absent from the database, except the three values
   named above.

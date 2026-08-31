@@ -651,9 +651,14 @@ export interface Passkey {
  * ceremony runs in the portal under that person's own token — no privilege here
  * enrolls a factor for somebody else.
  *
- * `list` is optional, not throwing: both calls sit behind the same role gate, so
- * a refusal is a routine outcome the view names rather than an Error it sniffs.
- * The list is bounded (ten per person) and answers whole, so it carries no pager. */
+ * The two calls sit behind two gates. `list` runs the read gate — the one that
+ * answered the user list and the account record — so every administrator reads
+ * it. `revoke` runs the write gate, which narrows to the organization of the
+ * account.
+ *
+ * `list` is optional, not throwing: a refusal is a routine outcome the view
+ * names rather than an Error it sniffs. The list is bounded (ten per person) and
+ * answers whole, so it carries no pager. */
 export const passkeysApi = {
   list: (userId: string) => getOptional<Passkey[]>(`/api/admin/users/${encodeURIComponent(userId)}/passkeys`),
   revoke: (userId: string, id: string) =>

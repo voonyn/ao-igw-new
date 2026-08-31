@@ -104,6 +104,50 @@ func TestAdminFindReportsAMiss(t *testing.T) {
 	}
 }
 
+// TestAuthorizeReadAdmitsAnAdministratorOfAnotherOrganization proves the two
+// exported gates are apart.
+//
+// A person who holds ORG_USER_MANAGER in one organization reads the account
+// record of somebody in another organization today, so the read gate admits
+// them. The console Passkey list runs this gate for that reason.
+func TestAuthorizeReadAdmitsAnAdministratorOfAnotherOrganization(t *testing.T) {
+	svc := adminService(t, adminDeps{
+		memberships: []organization.Membership{{OrgID: otherOrgID, Roles: []string{organization.RoleOrgUserManager}}},
+		rows: []User{{ID: testUserID, TenantID: testTenantID, OrgID: testOrgID,
+			Username: "ada", UserType: TypeHuman, State: StateActive}},
+	})
+
+	if err := svc.AuthorizeRead(context.Background(), admin); err != nil {
+		t.Fatalf("the read gate answered %v, want the administrator admitted", err)
+	}
+}
+
+// TestAuthorizeWriteRefusesAnAdministratorOfAnotherOrganization is the other
+// half. The same person the read gate admitted is refused the write, because the
+// write gate narrows to the organization of the account.
+func TestAuthorizeWriteRefusesAnAdministratorOfAnotherOrganization(t *testing.T) {
+	svc := adminService(t, adminDeps{
+		memberships: []organization.Membership{{OrgID: otherOrgID, Roles: []string{organization.RoleOrgUserManager}}},
+		rows: []User{{ID: testUserID, TenantID: testTenantID, OrgID: testOrgID,
+			Username: "ada", UserType: TypeHuman, State: StateActive}},
+	})
+
+	err := svc.AuthorizeWrite(context.Background(), admin, testUserID, "revoke a passkey of a user")
+	if !errors.Is(err, ErrForbidden) {
+		t.Fatalf("the write gate answered %v, want ErrForbidden", err)
+	}
+}
+
+// TestAuthorizeReadRefusesAPersonWithoutAdminRole proves the read gate is a gate.
+// A person who administers nothing is refused the list as well as the revoke.
+func TestAuthorizeReadRefusesAPersonWithoutAdminRole(t *testing.T) {
+	svc := adminService(t, adminDeps{})
+
+	if err := svc.AuthorizeRead(context.Background(), admin); !errors.Is(err, ErrNoAdminRole) {
+		t.Fatalf("the read gate answered %v, want ErrNoAdminRole", err)
+	}
+}
+
 // createBody is the body a create carries in the tests below.
 func createBody() CreateBody {
 	return CreateBody{
