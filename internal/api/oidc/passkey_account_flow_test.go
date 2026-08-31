@@ -79,6 +79,11 @@ func TestAccountPasskeyFlow(t *testing.T) {
 		// A Passkey binds to one domain. A credential created here would be a
 		// Factor no sign-in of this tenant could ever answer, so it is refused
 		// before a key pair exists.
+		//
+		// This is the same refusal a misconfigured deployment reads. The portal
+		// BFF names its own origin on the start, so a deployment that lists no
+		// portal origin in AO_WEBAUTHN_ORIGINS is refused here, with the slug
+		// that names the deployment, and no device prompt opens.
 		var refused struct {
 			Error string `json:"error"`
 		}
@@ -92,10 +97,11 @@ func TestAccountPasskeyFlow(t *testing.T) {
 	})
 
 	t.Run("a request with no origin still runs the ceremony", func(t *testing.T) {
-		// The Portal BFF forwards this call server to server, so no browser
-		// origin reaches the route. The finish still compares the origin the
+		// A caller that names no origin is not refused. The login BFF is one:
+		// it runs at the verified host that resolved the request, which the
+		// covered list already holds. The finish still compares the origin the
 		// device signed against the origins the RP ID covers, which is where the
-		// rule is enforced.
+		// rule is enforced for every caller.
 		var options registrationOptions
 		answer := gw.account(t, fiber.MethodPost, accountPasskeyStartPath, nil, held.AccessToken)
 		decode(t, answer, fiber.StatusOK, &envelope{Data: &options})

@@ -322,7 +322,10 @@ func NewService(deps Deps) *Service {
 //
 // The origin is checked before the options are minted. A key pair created under
 // an origin the RP ID does not cover is a Factor no sign-in can answer, so it
-// must never be created.
+// must never be created. The check reads the origin the caller names, and the
+// portal BFF names its own, so a deployment that covers no portal origin is
+// refused here rather than at the finish. relying names the caller that sends
+// none, and says why an empty value still runs.
 //
 // The exclude list names every Passkey the person already holds, so a device
 // that already registered tells the person so instead of creating a second key
@@ -566,10 +569,17 @@ func (s *Service) claim(
 // answer. Dropping those origins is what stops one being created: the library
 // then refuses the finish, and the check below refuses the start.
 //
-// The caller's own origin is checked when the request names one. A browser sends
-// it, and both BFFs call server to server with none, so an empty value is not a
-// refusal: the finish still compares the origin the device signed against the
-// list kept here.
+// The caller's own origin is checked when the request names one. Both BFFs call
+// server to server, so no browser header arrives, and each one decides what to
+// name. The portal BFF names its own origin on the registration start, which is
+// the origin the browser will run that ceremony at, so a deployment that covers
+// no portal origin is refused before a key pair exists. The login BFF names
+// none: it runs at the verified host that resolved this request, and that host
+// is already one of the origins above, so the check would only repeat it.
+//
+// An empty value is therefore not a refusal. The finish still compares the
+// origin the device signed against the list kept here, which is where the rule
+// is enforced for every caller.
 func (s *Service) relying(
 	ctx context.Context, tenantID, host, origin string,
 ) (*webauthn.WebAuthn, string, error) {

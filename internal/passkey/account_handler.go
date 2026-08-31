@@ -148,11 +148,13 @@ func (h *AccountHandler) remove(c fiber.Ctx) error {
 	return response.NoContent(c)
 }
 
-// origin reads the origin the browser calls from.
+// origin reads the origin this ceremony runs at.
 //
-// Every browser sends the header on a POST, so a request without one is not the
-// browser this ceremony is for. The service decides what to do with an empty
-// value, because the rule is a rule of the ceremony and not of the transport.
+// A browser sends the header itself. A BFF calls server to server and sends
+// none, unless it names the origin its own browser will run the ceremony at,
+// which the portal does on the registration start. The service decides what to
+// do with an empty value, because the rule is a rule of the ceremony and not of
+// the transport.
 func origin(c fiber.Ctx) string { return c.Get(fiber.HeaderOrigin) }
 
 // principal reads the person behind one bearer request: the account holder on

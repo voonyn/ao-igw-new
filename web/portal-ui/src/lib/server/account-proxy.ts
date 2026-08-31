@@ -18,10 +18,16 @@ import { resolveAccessToken } from "./token"
 //
 // The portal session cookie is SameSite=Lax, so a cross-site POST cannot carry
 // it — these routes are CSRF-safe without a separate token.
+//
+// `origin` names the origin the gateway must treat this call as coming from.
+// The call is server to server, so no browser `Origin` reaches here, and a
+// route that needs the gateway to check one names it. Only the passkey
+// registration start does: it is the one call the gateway must refuse before a
+// device creates a key pair.
 export async function forwardToAccountAPI(
   req: NextRequest,
   path: string,
-  init?: { method?: string; body?: unknown },
+  init?: { method?: string; body?: unknown; origin?: string },
 ): Promise<NextResponse> {
   const session = await openSession(req.cookies.get(PORTAL_SESSION_COOKIE)?.value)
   const { accessToken, session: next, rotated } = await resolveAccessToken(session)
@@ -38,6 +44,7 @@ export async function forwardToAccountAPI(
         Authorization: `Bearer ${accessToken}`,
         Accept: "application/json",
         ...(init?.body === undefined ? {} : { "Content-Type": "application/json" }),
+        ...(init?.origin === undefined ? {} : { Origin: init.origin }),
       },
       body: init?.body === undefined ? undefined : JSON.stringify(init.body),
       cache: "no-store",
