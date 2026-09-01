@@ -822,16 +822,22 @@ func mountAdmin(
 		// The package imports neither the user domain nor the login session
 		// domain, so the crossing is a function value and the miss is translated
 		// here into the sentinel that package declares.
+		//
+		// OrgOf reads a person in any state. An administrator deactivates a
+		// person and then removes their Identity Link, and a read that filtered
+		// the state would answer 404 for the one account the offboarding is
+		// about. CanSignIn below keeps the state filter, because it asks the
+		// other question.
 		UserOrg: func(ctx context.Context, tenantID, userID string) (string, error) {
-			row, err := users.FindByID(ctx, tenantID, userID)
-			if errors.Is(err, user.ErrNotFound) {
+			orgID, err := users.OrgOf(ctx, tenantID, userID)
+			if errors.Is(err, user.ErrNoSuchUser) {
 				return "", fmt.Errorf("%w: tenant %s, user %s",
 					identityprovider.ErrUserNotFound, tenantID, userID)
 			}
 			if err != nil {
 				return "", err
 			}
-			return row.OrgID, nil
+			return orgID, nil
 		},
 		TenantRoles: tenants.MemberRoles,
 		Memberships: orgs.ListMemberships,

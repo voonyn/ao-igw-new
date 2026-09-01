@@ -451,3 +451,48 @@ func TestHoldsIdentifier(t *testing.T) {
 		t.Error("another tenant reads the identifier as held, want the tenant scope kept")
 	}
 }
+
+// TestOrgOf covers the read the Identity Link routes make before they name the
+// rights of the caller. It answers a person in any state, so an administrator
+// can remove the link of somebody they deactivated first.
+//
+// A soft-deleted person and a machine account both answer a miss, and so does a
+// person of another tenant.
+func TestOrgOf(t *testing.T) {
+	repo, ctx := testRepo(t)
+
+	orgID, err := repo.OrgOf(ctx, testTenantID, testUserID)
+	if err != nil {
+		t.Fatalf("read the organization of the active person: %v", err)
+	}
+	if orgID != testOrgID {
+		t.Errorf("the organization is %q, want %q", orgID, testOrgID)
+	}
+
+	// The case the routes were broken for. The account is deactivated, and the
+	// read must still name the organization the audit row carries.
+	if err := repo.SetState(ctx, testTenantID, lockedUserID, StateInactive); err != nil {
+		t.Fatalf("deactivate the person: %v", err)
+	}
+	orgID, err = repo.OrgOf(ctx, testTenantID, lockedUserID)
+	if err != nil {
+		t.Fatalf("read the organization of the deactivated person: %v", err)
+	}
+	if orgID != testOrgID {
+		t.Errorf("the organization is %q, want %q", orgID, testOrgID)
+	}
+
+	for name, id := range map[string]string{
+		"a soft-deleted person": deletedUserID,
+		"a machine account":     machineUserID,
+		"an unknown id":         "no-such-user",
+	} {
+		if _, err := repo.OrgOf(ctx, testTenantID, id); !errors.Is(err, ErrNoSuchUser) {
+			t.Errorf("reading the organization of %s gives %v, want ErrNoSuchUser", name, err)
+		}
+	}
+
+	if _, err := repo.OrgOf(ctx, "other-tenant", testUserID); !errors.Is(err, ErrNoSuchUser) {
+		t.Errorf("reading the organization through another tenant gives %v, want ErrNoSuchUser", err)
+	}
+}

@@ -355,6 +355,43 @@ func (r *Repository) Read(ctx context.Context, tenantID, userID string) (User, e
 	return row, nil
 }
 
+// OrgOf reads the organization one person of a tenant belongs to. It answers an
+// id and never a row, so no caller of it reads a column it did not ask for.
+//
+// It filters neither the state nor the lock, because the question is where the
+// person sits and not who can sign in. The Identity Link routes read it: an
+// administrator removes the link of a person they deactivated first, and the
+// offboarding would otherwise need the account turned back on.
+//
+// The soft delete still filters, and the account type still filters. A machine
+// account holds no user_humans row and names nobody here. A miss returns
+// ErrNoSuchUser.
+func (r *Repository) OrgOf(ctx context.Context, tenantID, userID string) (string, error) {
+	r.log.Debug("read the organization of the person",
+		logger.String("tenant_id", tenantID), logger.String("user_id", userID), logger.RequestID(ctx))
+
+	var orgID string
+	err := db.Conn(ctx, r.db).NewSelect().
+		Model((*User)(nil)).
+		ColumnExpr("u.org_id").
+		Join("JOIN user_humans AS h ON h.user_id = u.id AND h.tenant_id = u.tenant_id").
+		Where("u.tenant_id = ?", tenantID).
+		Where("u.id = ?", userID).
+		Scan(ctx, &orgID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", fmt.Errorf("%w: %s", ErrNoSuchUser, userID)
+	}
+	if err != nil {
+		return "", fmt.Errorf("read the organization of user %s of tenant %s: %w",
+			userID, tenantID, err)
+	}
+
+	r.log.Debug("read the organization of the person",
+		logger.String("tenant_id", tenantID), logger.String("user_id", userID),
+		logger.String("org_id", orgID), logger.RequestID(ctx))
+	return orgID, nil
+}
+
 // Insert writes one new account. It runs on the caller's transaction.
 //
 // A username another live account of the tenant holds returns
