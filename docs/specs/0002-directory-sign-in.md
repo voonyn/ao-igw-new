@@ -362,7 +362,7 @@ Admin routes, on the shared admin group beside `authpolicy`:
 Every answer uses the one envelope. Every error carries a slug. New slugs:
 `directory_unavailable`, `directory_disabled`, `provider_ambiguous`,
 `domain_already_claimed`, `last_local_owner`, `last_identity_link`,
-`password_not_local`, `directory_no_entry`.
+`password_not_local`, `directory_no_entry`, `directory_misconfigured`.
 
 `directory_no_entry` is the portal re-proof only, and it answers 409. A person whom
 no single directory entry proves holds a broken account: no live active Identity
@@ -370,6 +370,15 @@ Link, more than one, a search that matched none, or a search that matched two. T
 state stays until somebody edits the links or the directory, so the answer never
 tells the person to try again. The sign-in keeps `invalid_credentials` for the same
 states, because the password step must not say which people a tenant holds.
+
+`directory_misconfigured` is the sign-in only, and it answers 409. Two states reach
+it, and both are configuration faults of the first bind: the provider names no
+organization to create people in, and the directory entry carries no username. The
+bind proved the password, so it is not a credential failure, and only an
+administrator or somebody with the directory can mend it, so the answer never tells
+the person to try again. The slug discloses no more than `directory_unavailable`
+already does. It names a fault of the configuration, and never which people a tenant
+holds.
 
 The login routes gain nothing. `/login/identifier` and `/login/password` keep their
 request and their answer, which is the point.
@@ -426,6 +435,9 @@ the fake instead of the wire behaviour that carries every real defect.
   the existing suite never had.
 - A directory that does not answer: `directory_unavailable`, no budget spent, and a
   `login.failed` row present.
+- The two configuration faults of the first bind, a provider that names no
+  organization and an entry that carries no username: `directory_misconfigured` and
+  never `directory_unavailable`, with a `login.failed` row that names the reason.
 - The budget: the cap, the refusal on a Redis error, and the Guessing Budget untouched.
 - An inactive provider and a soft-deleted provider both refuse, with the same slug an
   unknown identifier gets.

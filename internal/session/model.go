@@ -142,15 +142,39 @@ var ErrBadCredentials = errors.New("identifier or password is wrong")
 // The audit trail tells the two apart, because it is read by an operator.
 var ErrDirectoryDisabled = errors.New("the identity provider is disabled")
 
-// ErrDirectoryUnavailable reports a directory that did not answer: a dial
-// failure, a timeout, a TLS failure, or a failed bind of the service credential.
-// A bind budget nobody could read answers it too.
+// ErrDirectoryUnavailable reports a directory that could not prove the person
+// for a moment: a dial failure, a timeout, a TLS failure, or a failed bind of
+// the service credential. A bind budget nobody could read answers it too, and so
+// does a broken read of the provider row.
 //
-// None of those is a credential failure, so the answer says so. It discloses
-// that the identifier is served by a directory, and that is paid for on purpose:
-// the state is transient, and the person needs to call the right helpdesk. See
-// docs/specs/0002-directory-sign-in.md.
+// A first bind that created nobody reaches it as well, such as a username
+// another person of the tenant already holds. That one is a write of this
+// gateway and not an answer of the directory, and a later try can carry it.
+//
+// Every state here is transient, and none is a credential failure, so the answer
+// says so. It discloses that the identifier is served by a directory, and that
+// is paid for on purpose: the person needs to call the right helpdesk. A
+// permanent configuration fault must not borrow it, and answers
+// ErrDirectoryMisconfigured instead. See docs/specs/0002-directory-sign-in.md.
 var ErrDirectoryUnavailable = errors.New("the directory did not answer")
+
+// ErrDirectoryMisconfigured reports a directory that cannot create the person
+// this sign-in proved. The provider names no organization to create people in,
+// or the directory entry carries no username.
+//
+// Both are permanent. Nothing the person does makes the next try work, and only
+// an administrator of the tenant or somebody with the directory can mend them,
+// so the answer must never read as a directory that is down for a moment.
+//
+// It is not a credential failure either. The bind proved the password, and only
+// the write that follows it failed.
+//
+// It carries a slug of its own, and that discloses no more than the answer above
+// already does. The state is a fault of the configuration, and it says nothing
+// about which people the tenant holds. The three deliberate refusals of
+// identityprovider.ErrDirectory are the ones that would, and they stay on
+// ErrDirectoryUnavailable.
+var ErrDirectoryMisconfigured = errors.New("the directory cannot create the person")
 
 // ErrTooManyBinds reports an identifier that spent its whole bind budget. The
 // person waits out the window, and the directory is not dialled.

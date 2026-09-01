@@ -46,6 +46,17 @@ func init() {
 	response.Map(ErrDirectoryUnavailable, fiber.StatusServiceUnavailable,
 		"directory_unavailable", "Service Unavailable")
 
+	// A directory that cannot create the person is permanent. The state stays
+	// until an administrator names an organization or somebody gives the entry a
+	// username, so the answer is 409 and not the 503 that reads as a directory
+	// down for a moment. The message never tells the person to try again,
+	// because no try of theirs can work.
+	//
+	// The slug says no more than the one above already does. It names a fault of
+	// the configuration, and never which people the tenant holds.
+	response.Map(ErrDirectoryMisconfigured, fiber.StatusConflict, "directory_misconfigured",
+		"Your organization's directory is not set up for sign-in. Ask an administrator to correct it.")
+
 	// This one carries its own slug. A person who owes a factor proved their
 	// password, so the sign-in resumes at the step they skipped instead of
 	// starting again, and only a slug of its own tells the login UI that.

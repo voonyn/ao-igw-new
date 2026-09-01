@@ -54,6 +54,12 @@ export function messageForError(code: unknown): string {
       return "Please sign in again to continue."
     case "insufficient_factors":
       return "Additional verification is required."
+    // The password was proved, and the directory cannot create the account it
+    // proved: the provider names no organization, or the entry carries no
+    // username. Only an administrator can mend it, so the copy never says "try
+    // again". The default below does, and it is what this case exists to avoid.
+    case "directory_misconfigured":
+      return "Your organization's directory is not set up for sign-in. Please ask an administrator to correct it."
     default:
       return "Something went wrong. Please try again."
   }

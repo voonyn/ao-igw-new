@@ -1326,6 +1326,26 @@ func accountDirectoryError(err error) error {
 // matched twice answer alike, because which of the three happened says which
 // people a directory holds.
 //
+// Two configuration faults of the first bind answer ErrDirectoryMisconfigured: a
+// provider that names no organization to create people in, and a directory entry
+// that carries no username. Both are permanent, so neither may borrow the answer
+// that tells the person to try again. A slug that names a configuration fault
+// discloses nothing further: the answer already says that the identifier is
+// served by a directory, and the fault says nothing about which people the
+// tenant holds.
+//
+// Both states are reached after a bind that proved the password, so a caller at
+// a misconfigured provider reads a correct password off the answer. That oracle
+// is not new and it is not widened here. The three deliberate refusals below sit
+// behind the same bind and already carry it, at the same fidelity, on the 503.
+// A provider in this state creates nobody, so nothing the oracle names can sign
+// in until an administrator mends the configuration.
+//
+// The three deliberate refusals of identityprovider.ErrDirectory are not among
+// them: the offboarded person, the entry another link names, and the account the
+// tenant already holds. Each one would say which people a tenant holds, so each
+// keeps the answer below. Ticket 12 and ticket 15 settled it.
+//
 // Everything the switch does not name answers ErrDirectoryUnavailable: a dial
 // failure, a timeout, a TLS failure, a failed bind of the service credential, a
 // budget nobody could read, a broken read of the provider row, and a first bind
@@ -1343,6 +1363,9 @@ func directoryError(err error) error {
 		return session.ErrDirectoryDisabled
 	case errors.Is(err, identityprovider.ErrTooManyBinds):
 		return session.ErrTooManyBinds
+	case errors.Is(err, identityprovider.ErrNoOrganization),
+		errors.Is(err, identityprovider.ErrNoUsername):
+		return session.ErrDirectoryMisconfigured
 	default:
 		return session.ErrDirectoryUnavailable
 	}

@@ -69,9 +69,10 @@ type CredentialFinder func(ctx context.Context, tenantID, userID string) (string
 type ProviderResolver func(ctx context.Context, tenantID, identifier, userID string) (string, error)
 
 // Binder proves one password against the directory a login session names, and
-// answers the person the sign-in carries on as. It answers one of four sentinels
+// answers the person the sign-in carries on as. It answers one of five sentinels
 // of this package when the directory refused: ErrBadCredentials,
-// ErrDirectoryDisabled, ErrDirectoryUnavailable, or ErrTooManyBinds.
+// ErrDirectoryDisabled, ErrDirectoryUnavailable, ErrDirectoryMisconfigured, or
+// ErrTooManyBinds.
 //
 // userID is the person the login session already names, and it is empty when the
 // identifier named nobody. The answer names that same person when the session
@@ -87,7 +88,7 @@ type ProviderResolver func(ctx context.Context, tenantID, identifier, userID str
 // The router composes it, because it reads the provider row, spends the bind
 // budget, dials the directory, and writes the person the first bind creates, and
 // those live in a domain this one must not import. It maps that domain's
-// sentinels onto these four, so the password step reads one vocabulary.
+// sentinels onto these five, so the password step reads one vocabulary.
 type Binder func(
 	ctx context.Context, tenantID, idpID, userID, identifier, password string,
 ) (Identity, error)
@@ -340,6 +341,8 @@ func (s *Service) prove(ctx context.Context, live LoginSession, password string)
 		return Identity{}, s.refuse(ctx, live, "directory_disabled", err, ErrDirectoryDisabled)
 	case errors.Is(err, ErrDirectoryUnavailable):
 		return Identity{}, s.refuse(ctx, live, "directory_unavailable", err, ErrDirectoryUnavailable)
+	case errors.Is(err, ErrDirectoryMisconfigured):
+		return Identity{}, s.refuse(ctx, live, "directory_misconfigured", err, ErrDirectoryMisconfigured)
 	case errors.Is(err, ErrTooManyBinds):
 		return Identity{}, s.refuse(ctx, live, "too_many_binds", err, ErrTooManyBinds)
 	case err != nil:

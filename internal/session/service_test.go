@@ -1337,6 +1337,37 @@ func TestVerifyPassword_FirstBindThatCreatesNobody(t *testing.T) {
 	}
 }
 
+// TestVerifyPassword_DirectoryMisconfigured covers the two configuration faults
+// of a first bind: a provider that names no organization to create people in,
+// and a directory entry that carries no username.
+//
+// Both are permanent, and only an administrator or somebody with the directory
+// can mend them. The answer therefore carries a slug of its own, and never the
+// one that tells the person to try again. The password was proved, so it must
+// not read as a wrong password either.
+func TestVerifyPassword_DirectoryMisconfigured(t *testing.T) {
+	svc, st := firstBindService(t, refusedBind(ErrDirectoryMisconfigured))
+	opened := signedInAgainst(t, svc)
+
+	_, _, err := svc.VerifyPassword(
+		context.Background(), "tenant-1", opened.Token, "the-directory-password")
+	if !errors.Is(err, ErrDirectoryMisconfigured) {
+		t.Fatalf("err = %v, want ErrDirectoryMisconfigured", err)
+	}
+	if errors.Is(err, ErrDirectoryUnavailable) {
+		t.Fatal("a misconfigured directory reads as a directory that did not answer")
+	}
+	if errors.Is(err, ErrBadCredentials) {
+		t.Fatal("a misconfigured directory reads as a wrong password")
+	}
+	if st.saved.Authenticated() {
+		t.Error("the refused sign-in upgraded the login session")
+	}
+	if !strings.Contains(refusal(t, st), `"reason":"directory_misconfigured"`) {
+		t.Errorf("the trail recorded %q, want the configuration reason", st.events[0].Metadata)
+	}
+}
+
 // TestDirectoryRefusalsAnswerOneSlug proves on the wire that a disabled
 // directory, a spent bind budget, and a wrong password cannot be told apart.
 //

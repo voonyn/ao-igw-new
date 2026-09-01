@@ -31,6 +31,17 @@ var ErrWrongPassword = errors.New("the directory refused the password")
 // ErrDirectory reports that the directory did not answer: a dial failure, a
 // timeout, a TLS failure, or a bind failure of the service credential. None of
 // those is a credential failure, and the caller answers directory_unavailable.
+//
+// Three permanent refusals of provision.go reuse it, and that is deliberate: the
+// offboarded person an Identity Link names, a bind whose entry another link of
+// the same provider names, and a first bind for an identifier the tenant already
+// holds. Each one is proved and refused, and a slug of its own would say which
+// people a tenant holds, which the sign-in must not. Ticket 12 and ticket 15
+// settled it.
+//
+// The two configuration faults of the first bind are not among them. They carry
+// ErrNoOrganization and ErrNoUsername, and the caller answers a slug that says
+// the state is permanent.
 var ErrDirectory = errors.New("the directory did not answer")
 
 // ErrDisabled reports a provider that is inactive or soft deleted. The two

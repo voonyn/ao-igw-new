@@ -30,6 +30,22 @@ func TestDirectoryError(t *testing.T) {
 		{"a directory that did not answer", identityprovider.ErrDirectory, session.ErrDirectoryUnavailable},
 		{"a budget nobody could read", identityprovider.ErrBindUnavailable, session.ErrDirectoryUnavailable},
 		{"a broken read of the row", errors.New("the database is down"), session.ErrDirectoryUnavailable},
+		{
+			"a provider that names no organization",
+			identityprovider.ErrNoOrganization, session.ErrDirectoryMisconfigured,
+		},
+		{
+			"an entry that carries no username",
+			identityprovider.ErrNoUsername, session.ErrDirectoryMisconfigured,
+		},
+		// The three deliberate refusals of provision.go carry ErrDirectory, and
+		// they keep the answer above. Each one is proved and refused, and a slug
+		// of its own would say which people a tenant holds.
+		{
+			"a person an identity link names who cannot sign in",
+			fmt.Errorf("%w: tenant t-1, user u-1", identityprovider.ErrDirectory),
+			session.ErrDirectoryUnavailable,
+		},
 	}
 
 	for _, c := range cases {
@@ -50,6 +66,18 @@ func TestDirectoryError(t *testing.T) {
 			}
 			if !errors.Is(got, c.want) {
 				t.Fatalf("directoryError = %v, want %v", got, c.want)
+			}
+			// A configuration fault is permanent. It must borrow neither the
+			// answer that tells the person to try again nor the one that tells
+			// them the password was wrong, because no try of theirs can work
+			// and the password they typed was proved.
+			if c.want == session.ErrDirectoryMisconfigured {
+				if errors.Is(got, session.ErrDirectoryUnavailable) {
+					t.Error("a misconfigured directory reads as a directory outage")
+				}
+				if errors.Is(got, session.ErrBadCredentials) {
+					t.Error("a misconfigured directory reads as a wrong password")
+				}
 			}
 		})
 	}
