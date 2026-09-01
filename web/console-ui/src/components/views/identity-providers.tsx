@@ -401,11 +401,7 @@ function ProviderForm({
     // saved yet. A stored provider is named in the path, which is how the test
     // runs without retyping a write-only bind password.
     setResult(null);
-    // The domains are dropped. The test dials, binds, and searches, and it
-    // reads no domain — but the gateway validates the whole body, so a claim
-    // typed in the box would let a connection test be refused by the last-owner
-    // guard rail. That refusal belongs to the save.
-    await runTest(() => identityProvidersApi.test({ ...body(), domains: [] }, provider?.id).then(setResult), {
+    await runTest(() => identityProvidersApi.test(body(), provider?.id).then(setResult), {
       after: async () => {},
     });
   }

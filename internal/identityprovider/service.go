@@ -483,12 +483,15 @@ func (s *Service) Unlink(ctx context.Context, a Actor, userID, idpID string) err
 	return nil
 }
 
-// checkBody runs the rules a validate tag cannot carry: the transport of every
+// checkShape runs the rules a validate tag cannot carry: the transport of every
 // server string, and the two organizations the row names.
 //
 // The plaintext confirmation is a tag, because the answer names the field the
 // console must tick. See Body.ConfirmPlaintext.
-func (s *Service) checkBody(ctx context.Context, a Actor, body Body) error {
+//
+// A connection test stops here. It dials, binds and searches, and it reads no
+// domain, so the last-owner rail below belongs to the save alone.
+func (s *Service) checkShape(ctx context.Context, a Actor, body Body) error {
 	if err := checkServers(body.Mode, body.Servers); err != nil {
 		return err
 	}
@@ -502,6 +505,15 @@ func (s *Service) checkBody(ctx context.Context, a Actor, body Body) error {
 			}
 			return s.fail(a, "read the organization", err)
 		}
+	}
+	return nil
+}
+
+// checkBody runs every rule of one write: the shape above, and the domain claim
+// the write stores.
+func (s *Service) checkBody(ctx context.Context, a Actor, body Body) error {
+	if err := s.checkShape(ctx, a, body); err != nil {
+		return err
 	}
 	return s.keepsALocalOwner(ctx, a, body)
 }

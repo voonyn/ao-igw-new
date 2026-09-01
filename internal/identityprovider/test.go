@@ -164,7 +164,7 @@ func (s *Service) testable(ctx context.Context, a Actor, idpID string, body *Bod
 		if !held.CanWrite(body.OrgID) {
 			return Provider{}, s.refuse(a, "", "test an identity provider")
 		}
-		if err := s.checkBody(ctx, a, *body); err != nil {
+		if err := s.checkShape(ctx, a, *body); err != nil {
 			return Provider{}, err
 		}
 		return body.apply(Provider{TenantID: a.TenantID, OrgID: body.OrgID}), nil
@@ -183,7 +183,7 @@ func (s *Service) testable(ctx context.Context, a Actor, idpID string, body *Bod
 	if body.OrgID != stored.OrgID {
 		return Provider{}, fmt.Errorf("%w: provider %s", ErrLevelFixed, idpID)
 	}
-	if err := s.checkBody(ctx, a, *body); err != nil {
+	if err := s.checkShape(ctx, a, *body); err != nil {
 		return Provider{}, err
 	}
 	return body.apply(stored), nil

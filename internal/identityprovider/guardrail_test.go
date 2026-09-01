@@ -11,6 +11,7 @@ import (
 	"github.com/gofiber/fiber/v3"
 
 	"alphaomega/identitygateway/internal/api/http/response"
+	"alphaomega/identitygateway/internal/organization"
 	"alphaomega/identitygateway/internal/tenant"
 )
 
@@ -238,5 +239,60 @@ func TestErrLastLinkMaps(t *testing.T) {
 	}
 	if body.Error != "last_identity_link" {
 		t.Errorf("the answer carries the slug %q, want last_identity_link", body.Error)
+	}
+}
+
+// TestTheRailRunsOnTheSaveAndNotOnTheConnectionTest covers one body against both
+// paths. The claim takes the last local owner, so the save is refused. The test
+// dials, binds and searches, and it reads no domain, so it runs.
+func TestTheRailRunsOnTheSaveAndNotOnTheConnectionTest(t *testing.T) {
+	write := body()
+	write.Mode, write.Servers = ModePlain, []string{"ldap://" + closedPort(t)}
+	write.ConfirmPlaintext = true
+
+	svc := testService(t, deps{
+		tenantRoles: ownerRoles(),
+		localOwners: []tenant.LocalOwner{claimedOwner},
+	})
+	if _, err := svc.Create(context.Background(), admin, write); !errors.Is(err, tenant.ErrLastLocalOwner) {
+		t.Fatalf("Create err = %v, want tenant.ErrLastLocalOwner", err)
+	}
+
+	svc = testService(t, deps{
+		tenantRoles: ownerRoles(),
+		localOwners: []tenant.LocalOwner{claimedOwner},
+	})
+	got, err := svc.Test(context.Background(), admin, "", &write)
+	if err != nil {
+		t.Fatalf("Test: %v", err)
+	}
+	if got.OK || got.Stage != StageDial {
+		t.Fatalf("Test = %+v, want a failure at %s", got, StageDial)
+	}
+}
+
+// TestTheConnectionTestStillChecksTheTransport covers what the split keeps. The
+// body names a server whose scheme the mode does not carry, so the test is
+// refused before it dials.
+func TestTheConnectionTestStillChecksTheTransport(t *testing.T) {
+	write := body()
+	write.Mode, write.Servers = ModeLDAPS, []string{"ldap://dc1.corp.example:389"}
+
+	svc := testService(t, deps{tenantRoles: ownerRoles()})
+	if _, err := svc.Test(context.Background(), admin, "", &write); !errors.Is(err, ErrServerScheme) {
+		t.Fatalf("Test err = %v, want ErrServerScheme", err)
+	}
+}
+
+// TestTheConnectionTestStillChecksTheOrganizations covers the other rule the
+// split keeps. The body names a default organization the tenant does not hold.
+func TestTheConnectionTestStillChecksTheOrganizations(t *testing.T) {
+	write := body()
+	write.Mode, write.Servers = ModePlain, []string{"ldap://" + closedPort(t)}
+	write.ConfirmPlaintext, write.DefaultOrgID = true, "no-such-org"
+
+	svc := testService(t, deps{tenantRoles: ownerRoles()})
+	if _, err := svc.Test(context.Background(), admin, "", &write); !errors.Is(err, organization.ErrNotFound) {
+		t.Fatalf("Test err = %v, want organization.ErrNotFound", err)
 	}
 }
