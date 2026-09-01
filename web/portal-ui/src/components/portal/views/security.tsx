@@ -85,6 +85,14 @@ export function SecurityView({ A }: { A: Actions }) {
   // Which change the password prompt is running, or null while it is closed.
   const [mfaManage, setMfaManage] = useState<ManageMode | null>(null);
   const [pwModal, setPwModal] = useState(false);
+  // Whether the caller holds a local password. A person their organization's
+  // directory owns holds none: the directory holds the credential and the rules
+  // that govern it, so the change is hidden instead of shown and refused.
+  //
+  // null means "not read yet", and it renders the change. A failed read says
+  // nothing about the account, and hiding a control a person does hold is the
+  // worse of the two mistakes.
+  const [pwLocal, setPwLocal] = useState<boolean | null>(null);
   // Change-password form — wired to the self-service account API via the BFF
   // route (/api/account/password → gateway /api/v1/account/password).
   const [pwCurrent, setPwCurrent] = useState('');
@@ -123,6 +131,11 @@ export function SecurityView({ A }: { A: Actions }) {
       const code = data && data.error;
       if (res.status === 401 && code === 'invalid_credentials') {
         setPwError('Current password is incorrect.');
+      } else if (code === 'password_not_local') {
+        // The account is owned by a directory. The card hides the change, so this
+        // arrives only when the account changed under an open screen. Hide it now.
+        setPwLocal(false);
+        closePwModal();
       } else if (res.status === 400 && code === 'weak_password') {
         setPwError('That password is too weak or has appeared in a data breach. Choose a stronger one.');
       } else if ((res.status === 400 || res.status === 422) && code === 'invalid_input') {
@@ -263,6 +276,20 @@ export function SecurityView({ A }: { A: Actions }) {
 
   useEffect(function () { void (async function () { await loadMfa(); })(); }, [loadMfa]);
 
+  // loadPasswordState reads which credential the caller holds. It runs once, and
+  // a failed read leaves the state null, which renders the change.
+  useEffect(function () {
+    void (async function () {
+      try {
+        const res = await fetch('/api/account/password', { headers: { Accept: 'application/json' } });
+        const data = await res.json().catch(function () { return {}; });
+        if (res.status === 200) setPwLocal(Boolean(data.local));
+      } catch {
+        // Leave the state null. The card then offers the change, as it does today.
+      }
+    })();
+  }, []);
+
   // The same derivation the Home dashboard rings, fed from the data this view
   // already loads plus the one activity page above — identical inputs, so the two
   // rings cannot report different numbers for the same account. A section that is
@@ -319,14 +346,26 @@ export function SecurityView({ A }: { A: Actions }) {
         {/* Password */}
         <div className="card card-pad">
           <span className="sect-title"><Icon name="lock" size={13} sw={2} />Password</span>
-          <div className="lrow" style={{ paddingTop: 6, borderBottom: 'none' }}>
-            <span className="licon good"><Icon name="lock" size={18} sw={2} /></span>
-            <div className="lmain">
-              <div className="lttl">Password set <span className="badge green" style={{ marginLeft: 4 }}>{sec.passwordStrength}</span></div>
-              <div className="lsub">Last changed {sec.passwordAgeDays} days ago</div>
+          {pwLocal === false ? (
+            <div className="lrow" style={{ paddingTop: 6, borderBottom: 'none' }}>
+              <span className="licon"><Icon name="lock" size={18} sw={2} /></span>
+              <div className="lmain">
+                <div className="lttl">Managed by your organization</div>
+                <div className="lsub">Your password lives in your organization&rsquo;s directory. Change it there.</div>
+              </div>
             </div>
-          </div>
-          <button type="button" className="btn ghost" style={{ width: '100%', marginTop: 4 }} onClick={function () { setPwModal(true); }}>Change password</button>
+          ) : (
+            <>
+              <div className="lrow" style={{ paddingTop: 6, borderBottom: 'none' }}>
+                <span className="licon good"><Icon name="lock" size={18} sw={2} /></span>
+                <div className="lmain">
+                  <div className="lttl">Password set <span className="badge green" style={{ marginLeft: 4 }}>{sec.passwordStrength}</span></div>
+                  <div className="lsub">Last changed {sec.passwordAgeDays} days ago</div>
+                </div>
+              </div>
+              <button type="button" className="btn ghost" style={{ width: '100%', marginTop: 4 }} onClick={function () { setPwModal(true); }}>Change password</button>
+            </>
+          )}
         </div>
 
         {/* Recovery */}

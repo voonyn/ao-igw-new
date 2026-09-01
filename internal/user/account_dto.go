@@ -37,3 +37,15 @@ type PasswordBody struct {
 	CurrentPassword string `json:"currentPassword" validate:"required,max=72"`
 	NewPassword     string `json:"newPassword" validate:"required,max=72"`
 }
+
+// PasswordStateView says whether the person holds a local password.
+//
+// The portal reads it to decide whether to offer the password change. A person
+// the Directory owns holds no local password: the directory holds the credential
+// and the rules that govern it, so the control is hidden rather than shown and
+// refused.
+//
+// It carries no hash and no policy. The answer says one thing and nothing more.
+type PasswordStateView struct {
+	Local bool `json:"local"`
+}

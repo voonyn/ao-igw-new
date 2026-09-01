@@ -10,6 +10,7 @@ import (
 
 	"alphaomega/identitygateway/internal/audit"
 	"alphaomega/identitygateway/internal/platform/logger"
+	"alphaomega/identitygateway/internal/user"
 )
 
 // The two destructive portal addresses, proved with no database.
@@ -241,5 +242,49 @@ func TestNeitherChangeLogsThePasswordOrACode(t *testing.T) {
 				t.Errorf("the log line %q carries a credential", line)
 			}
 		}
+	}
+}
+
+// TestAccountRemoveTakesTheBindOfAPersonTheDirectoryOwns proves the seam the
+// router composes: the disable of a Second Factor is proved by the real user
+// domain, and a person who holds no local password hash re-proves with a bind.
+//
+// The service under test is the one the portal calls, and the proof it takes is
+// the whole user.AccountService, so the two halves are measured together. A
+// bcrypt compare on an empty hash would refuse here, which is what would close
+// this route to every person the Directory owns.
+//
+// See docs/specs/0002-directory-sign-in.md.
+func TestAccountRemoveTakesTheBindOfAPersonTheDirectoryOwns(t *testing.T) {
+	log := logger.New()
+	bound := ""
+
+	account := user.NewAccountService(user.AccountDeps{
+		// A person the Directory owns. The stored hash is empty, always.
+		Credential: func(_ context.Context, tenantID, userID string) (user.User, error) {
+			return user.User{ID: userID, TenantID: tenantID, PasswordHash: ""}, nil
+		},
+		ProveDirectory: func(_ context.Context, _, userID, plain string) error {
+			bound = userID + ":" + plain
+			return nil
+		},
+		Log: log,
+	})
+
+	svc, calls := manageService(active(), nil, nil)
+	svc.deps.VerifyPassword = func(ctx context.Context, tenantID, userID, plain string) error {
+		calls.proved = true
+		return account.VerifyPassword(ctx,
+			user.Actor{TenantID: tenantID, UserID: userID}, plain)
+	}
+
+	if err := svc.AccountRemove(t.Context(), statusTenantID, manager(), "the-directory-password"); err != nil {
+		t.Fatalf("AccountRemove: %v", err)
+	}
+	if want := statusUserID + ":the-directory-password"; bound != want {
+		t.Errorf("the directory was asked %q, want %q", bound, want)
+	}
+	if !calls.cleared {
+		t.Error("the factor was not cleared")
 	}
 }

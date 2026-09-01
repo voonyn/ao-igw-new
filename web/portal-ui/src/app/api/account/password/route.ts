@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
 
+import { forwardToAccountAPI } from "@/lib/server/account-proxy"
 import { getOidcConfig } from "@/lib/server/oidc-config"
 import { cookieOptions, openSession, PORTAL_SESSION_COOKIE, sealSession, type SessionTokens } from "@/lib/server/secure-cookie"
 import { sidFromIdToken } from "@/lib/server/session-sid"
@@ -8,6 +9,16 @@ import { resolveAccessToken } from "@/lib/server/token"
 // Route reads the server-held token and calls the gateway on Node.
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
+
+// GET /api/account/password — BFF proxy for the credential state of the caller.
+//
+// Answers `{ local }`. A person the directory owns holds no local password, so
+// the Security view hides the change rather than showing a control that always
+// refuses. The gateway sends no hash and no policy here, so nothing on this
+// answer is a credential.
+export async function GET(req: NextRequest) {
+  return forwardToAccountAPI(req, "/password")
+}
 
 // POST /api/account/password — BFF proxy for self-service password change.
 //

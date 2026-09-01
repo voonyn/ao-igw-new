@@ -315,6 +315,15 @@ function PolicyForm({ pol, scope, onReload }: { pol: AuthPolicy; scope: string; 
         <div className="sect-title" style={{ marginBottom: 14 }}>
           Password
         </div>
+        {/* These rules reach a local password only. A person an identity provider
+            owns holds no local password, so the directory owns the rules and the
+            change. Saying so here stops an administrator from tightening a screen
+            that governs nobody they had in mind. */}
+        <div style={{ fontSize: 12.5, color: "var(--muted)", marginBottom: 14 }}>
+          These rules govern local passwords only. They do not apply to a person an identity
+          provider owns: that person signs in against the directory, holds no password here,
+          and changes it in the directory. The directory owns those rules.
+        </div>
         {pwNumFields.map((f) => numField(f.key, f.label, f.hint))}
 
         <div style={{ marginBottom: 14 }}>

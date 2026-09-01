@@ -52,6 +52,7 @@ test("every gateway slug maps to a message of its own", function () {
     "passkey_duplicate",
     "passkey_not_found",
     "invalid_credentials",
+    "directory_unavailable",
     "mfa_unavailable",
     "rate_limited",
     "invalid_input",
@@ -78,6 +79,15 @@ test("a refused passkey is not read as a lost session", function () {
 // would send a person to the sign-in screen over one mistyped password.
 test("a wrong password is not read as a lost session", function () {
   assert.match(passkeyMessage(401, "invalid_credentials"), /password/i)
+})
+
+// A person their organization's directory owns re-proves the removal with a bind.
+// A directory that did not answer is not a wrong password, and a message that
+// said it was would send that person hunting for a password that is right.
+test("a directory that did not answer is not read as a wrong password", function () {
+  const message = passkeyMessage(503, "directory_unavailable")
+  assert.match(message, /directory/i)
+  assert.doesNotMatch(message, /incorrect/i)
 })
 
 test("a status with no slug still maps", function () {

@@ -18,6 +18,21 @@ import (
 // a tenant holds, or which of them can still sign in.
 var ErrBadPassword = errors.New("current password is wrong")
 
+// ErrPasswordNotLocal reports a password change on an account the Directory
+// owns. Such an account holds no local password hash, and the directory holds
+// the rules, so nothing this gateway writes would reach the credential.
+//
+// The portal reads the same fact from PasswordLocal and hides the control, so a
+// person meets this refusal only when the account changed under an open screen.
+var ErrPasswordNotLocal = errors.New("the password of the account is not local")
+
+// ErrDirectoryUnavailable reports a directory that could not answer a re-proof.
+//
+// It is not a wrong password, and it must never read as one. A person whose
+// directory is off, unreachable, or over its bind budget is told to try again,
+// and never that the password they typed is wrong.
+var ErrDirectoryUnavailable = errors.New("the directory did not answer")
+
 // The reads and writes the self-service half of this domain composes its answers
 // from. Each one is a function value, so the logic is testable without a
 // database.
@@ -44,6 +59,15 @@ type (
 	// keeps this domain from importing the policy domain.
 	PasswordChecker func(ctx context.Context, tenantID, orgID, plain string) error
 
+	// DirectoryProver proves one password against the Directory that owns a
+	// person. identityprovider.Service.ProveOwner has this shape, once the
+	// composition root reads the username the bind searches on.
+	//
+	// It answers nil on a match, ErrDirectoryUnavailable when no directory could
+	// answer, and any other error for a refusal. The password never reaches a
+	// log line of this domain.
+	DirectoryProver func(ctx context.Context, tenantID, userID, plain string) error
+
 	// SessionRevoker ends every login session of one person except the one
 	// named, and the grants those sessions fanned out to.
 	// session.AccountService.RevokeOthers has this shape, once the router
@@ -59,6 +83,10 @@ type AccountDeps struct {
 	SetPassword   PasswordWriter
 	CheckPassword PasswordChecker
 	RevokeOthers  SessionRevoker
+
+	// ProveDirectory is the re-proof of a person the Directory owns. It runs
+	// wherever the stored hash is empty, which is what such a person holds.
+	ProveDirectory DirectoryProver
 
 	InTx  db.TxRunner
 	Audit *audit.Recorder
@@ -142,7 +170,16 @@ func (s *AccountService) ChangePassword(
 	if err != nil {
 		return s.readCredential(a, err)
 	}
-	if err := s.checkPassword(a, row.PasswordHash, body.CurrentPassword); err != nil {
+	// The Directory owns the credential and the rules that govern it, so there is
+	// no local password to replace and no policy of this gateway that applies.
+	// The refusal comes before the proof, because a person who cannot change a
+	// password here must not be asked to prove one first.
+	if row.PasswordHash == "" {
+		s.log.Warn("refused a password change on an account the directory owns",
+			logger.String("tenant_id", a.TenantID), logger.String("user_id", a.UserID))
+		return fmt.Errorf("%w: tenant %s, user %s", ErrPasswordNotLocal, a.TenantID, a.UserID)
+	}
+	if err := s.checkPassword(ctx, a, row.PasswordHash, body.CurrentPassword); err != nil {
 		return err
 	}
 
@@ -196,7 +233,25 @@ func (s *AccountService) VerifyPassword(ctx context.Context, a Actor, plain stri
 	if err != nil {
 		return s.readCredential(a, err)
 	}
-	return s.checkPassword(a, row.PasswordHash, plain)
+	return s.checkPassword(ctx, a, row.PasswordHash, plain)
+}
+
+// PasswordLocal reports whether the person who made the request holds a local
+// password.
+//
+// The portal reads it and hides the password change for a person the Directory
+// owns, rather than showing a control that always refuses. It answers a boolean
+// and never the hash, so no caller of it handles a credential.
+func (s *AccountService) PasswordLocal(ctx context.Context, a Actor) (bool, error) {
+	s.log.Debug("read whether the password of the account is local",
+		logger.String("tenant_id", a.TenantID), logger.String("user_id", a.UserID),
+		logger.RequestID(ctx))
+
+	row, err := s.deps.Credential(ctx, a.TenantID, a.UserID)
+	if err != nil {
+		return false, s.readCredential(a, err)
+	}
+	return row.PasswordHash != "", nil
 }
 
 // readCredential answers a failed credential read.
@@ -211,14 +266,23 @@ func (s *AccountService) readCredential(a Actor, err error) error {
 	return s.fail(a.TenantID, a.UserID, "read the credential", err)
 }
 
-// checkPassword proves plain against the hash the account holds now.
+// checkPassword proves plain against the credential the account holds now.
+//
+// An empty hash is not a broken hash. A person the Directory owns holds no local
+// password, so an empty hash is what such a person stores, and the bind proves
+// them. Without this branch the empty value reaches bcrypt, trips
+// ErrMalformedHash, and writes an error line that says the stored hash cannot be
+// read when nothing is wrong with it.
 //
 // A stored hash that cannot be parsed is a defect of the credential, not a wrong
 // password. The caller reads the same refusal either way, and the log is where
 // the two are told apart.
 //
 // The password never reaches a log line.
-func (s *AccountService) checkPassword(a Actor, hash, plain string) error {
+func (s *AccountService) checkPassword(ctx context.Context, a Actor, hash, plain string) error {
+	if hash == "" {
+		return s.proveDirectory(ctx, a, plain)
+	}
 	if err := crypto.VerifyPassword(hash, plain); err != nil {
 		if errors.Is(err, crypto.ErrMalformedHash) {
 			s.log.Error("the stored password hash of the account cannot be read",
@@ -228,6 +292,32 @@ func (s *AccountService) checkPassword(a Actor, hash, plain string) error {
 		return s.refuse(a, "the current password is wrong")
 	}
 	return nil
+}
+
+// proveDirectory re-proves a person the Directory owns, with the bind that signs
+// them in.
+//
+// The rule is one rule: prove the credential that signs you in. A person the
+// Directory owns holds no local password, so a bcrypt compare here would refuse
+// every one of them, and the destructive portal routes would be closed to them
+// for ever.
+//
+// A directory that could not answer travels back as itself, so the answer says
+// service unavailable and never a wrong password. Every other failure reads as a
+// refused password, which is what a wrong bind is.
+//
+// The password never reaches a log line, and the directory layer already logged
+// whatever it saw.
+func (s *AccountService) proveDirectory(ctx context.Context, a Actor, plain string) error {
+	err := s.deps.ProveDirectory(ctx, a.TenantID, a.UserID, plain)
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, ErrDirectoryUnavailable):
+		return err
+	default:
+		return s.refuse(a, "the directory refused the password")
+	}
 }
 
 // refuse answers one refused password proof. The reason names the log line and

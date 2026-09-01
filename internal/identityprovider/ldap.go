@@ -265,6 +265,47 @@ func (s *Service) Prove(
 	return s.Bind(ctx, row, identifier, password)
 }
 
+// ProveOwner proves one password against the directory that owns a person, and
+// answers nil when the directory accepted it.
+//
+// The portal re-proof takes it. A person the directory owns holds no local
+// password hash, so the three destructive portal routes prove the credential
+// that signs the person in, which is the bind. One rule serves everybody.
+//
+// The person owns the identifier this binds with. It is the username the first
+// bind wrote from the directory, so the search that runs here is the search the
+// sign-in runs.
+//
+// A person who holds no live active link, and a person who holds more than one,
+// both answer ErrNoEntry. Neither names a single directory to prove against, and
+// the second is the same refusal the search itself makes on two matched entries.
+//
+// The typed password reaches Prove and nothing else. No log line of this method
+// carries it.
+func (s *Service) ProveOwner(
+	ctx context.Context, tenantID, userID, identifier, password string,
+) error {
+	s.log.Debug("prove a password against the directory that owns the person",
+		logger.String("tenant_id", tenantID), logger.String("user_id", userID),
+		logger.RequestID(ctx))
+
+	idpIDs, err := s.deps.Linked(ctx, tenantID, userID)
+	if err != nil {
+		s.log.Error("read the identity links of the person",
+			logger.String("tenant_id", tenantID),
+			logger.String("user_id", userID), logger.Err(err))
+		return err
+	}
+	if len(idpIDs) != 1 {
+		s.log.Warn("refused a re-proof that no single directory owns",
+			logger.String("tenant_id", tenantID), logger.String("user_id", userID))
+		return fmt.Errorf("%w: tenant %s, user %s", ErrNoEntry, tenantID, userID)
+	}
+
+	_, err = s.Prove(ctx, tenantID, idpIDs[0], identifier, password)
+	return err
+}
+
 // spendBind spends one bind of the identifier's trailing-window budget, and
 // refuses the sign-in when nothing is left.
 //

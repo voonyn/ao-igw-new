@@ -78,6 +78,12 @@ export function passkeyMessage(status: number, code: unknown): string {
   // The wrong password on a removal. It arrives as a 401 and does not mean the
   // portal session ended, which is why it is read before the status.
   if (code === "invalid_credentials") return "Current password is incorrect."
+  // A person their organization's directory owns re-proves with a bind, so a
+  // directory that did not answer refuses the removal. It is never a wrong
+  // password, and it must not read as one.
+  if (code === "directory_unavailable") {
+    return "Your organization's directory did not respond. Please try again in a moment."
+  }
   if (code === "mfa_unavailable") return "Two-step verification is unavailable right now. Please try again in a moment."
   // One helper serves the add, the rename and the removal, and each dialog caps
   // its own field in the browser. A gateway that still refuses the body means

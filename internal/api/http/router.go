@@ -254,11 +254,14 @@ func mountMFA(
 	users := user.NewRepository(bdb, log)
 
 	// The password check the two destructive portal addresses demand. It reads
-	// the stored credential of one person and nothing else, so it is built with
-	// that one dependency.
+	// the stored credential of one person, and it re-proves a person the
+	// Directory owns with the bind that signs them in. Such a person holds no
+	// local password hash, so a build without the re-proof would close both
+	// addresses to every one of them.
 	passwords := user.NewAccountService(user.AccountDeps{
-		Credential: users.FindCredential,
-		Log:        log,
+		Credential:     users.FindCredential,
+		ProveDirectory: directoryReProof(bdb, rdb, cipher, users, log),
+		Log:            log,
 	})
 
 	// A sign-in enrols a Second Factor only for a person who holds none. Each
@@ -920,11 +923,13 @@ func mountAccount(
 	// the bulk revoke above: the write, the revoke, and the audit event land on
 	// one transaction, and the transaction runner joins the one already open.
 	users := user.NewRepository(bdb, log)
+
 	accountSvc := user.NewAccountService(user.AccountDeps{
-		UpdateProfile: users.UpdateProfile,
-		Credential:    users.FindCredential,
-		SetPassword:   users.SetPassword,
-		CheckPassword: policySvc.Enforce,
+		UpdateProfile:  users.UpdateProfile,
+		Credential:     users.FindCredential,
+		SetPassword:    users.SetPassword,
+		CheckPassword:  policySvc.Enforce,
+		ProveDirectory: directoryReProof(bdb, rdb, cipher, users, log),
 		RevokeOthers: func(ctx context.Context, a user.Actor, exceptID string) error {
 			_, err := sessionSvc.RevokeOthers(ctx, session.Actor(a), exceptID)
 			return err
@@ -1211,6 +1216,82 @@ func newSessionService(
 // whose person could not be written, such as a username another person of the
 // tenant already holds. None of them is a credential failure, and the sign-in
 // must not carry on as if the password had been proved.
+// directoryReProof composes the re-proof of a person the Directory owns: the
+// bind the four portal routes run wherever the stored password hash is empty.
+//
+// Two mounts build a user.AccountService. mountAccount serves the password
+// change and the Passkey removal, and mountMFA serves the TOTP disable and the
+// recovery-code regeneration. Both take this one composition, because a re-proof
+// that ran on one of them and panicked on the other is exactly the drift two
+// builds invite.
+//
+// The provider service carries the three reads a re-proof takes and nothing
+// else: the provider row, the links of the person, and the bind budget. The
+// budget lives in Redis alone, and a cache failure refuses the re-proof instead
+// of leaving an outbound call into a customer network unmetered. See CLAUDE.md.
+//
+// The bind searches on the username the first bind wrote from the directory, so
+// the entry it proves is the entry the sign-in proves. A person who holds none
+// is refused here, and no search runs on an empty identifier.
+//
+// The typed password reaches ProveOwner and nothing else.
+func directoryReProof(
+	bdb *bun.DB, rdb cache.Client, cipher *crypto.Cipher,
+	users *user.Repository, log logger.Logger,
+) user.DirectoryProver {
+	idps := identityprovider.NewRepository(bdb, cipher, log)
+	prover := identityprovider.NewService(identityprovider.Deps{
+		Find:   idps.FindByID,
+		Linked: idps.LinkedProviders,
+		Allow:  rdb.AllowInWindow,
+		Log:    log,
+	})
+
+	return func(ctx context.Context, tenantID, userID, plain string) error {
+		person, err := users.FindByID(ctx, tenantID, userID)
+		if err != nil {
+			// The read stops here, so it is logged here. Without this the user
+			// domain would read a database failure as a refused password and
+			// write a line that blames the directory for it.
+			log.Error("read the person of a directory re-proof",
+				logger.String("tenant_id", tenantID),
+				logger.String("user_id", userID), logger.Err(err))
+			return user.ErrDirectoryUnavailable
+		}
+		if person.Username == "" {
+			log.Warn("refused a directory re-proof of a person who holds no username",
+				logger.String("tenant_id", tenantID), logger.String("user_id", userID))
+			return user.ErrDirectoryUnavailable
+		}
+		return accountDirectoryError(
+			prover.ProveOwner(ctx, tenantID, userID, person.Username, plain))
+	}
+}
+
+// accountDirectoryError turns one outcome of a portal re-proof bind into the
+// sentinel the user domain answers with.
+//
+// A password the directory refused is the one credential failure. Everything
+// else — a directory that is switched off, no single directory that owns the
+// person, an entry the search did not match, a spent bind budget, a budget
+// nobody could read, a dial that never returned — says that the directory could
+// not prove the person, and they are told to try again.
+//
+// The sign-in collapses those states into one refusal, because the password step
+// must not say which people a tenant holds. The portal has nothing to hide: the
+// caller already proved who they are with an access token, and a refusal that
+// read as a wrong password would send them hunting for a password that is right.
+func accountDirectoryError(err error) error {
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, identityprovider.ErrWrongPassword):
+		return user.ErrBadPassword
+	default:
+		return user.ErrDirectoryUnavailable
+	}
+}
+
 func directoryError(err error) error {
 	switch {
 	case err == nil:

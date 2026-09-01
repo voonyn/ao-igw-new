@@ -171,6 +171,12 @@ export function MfaManageModal({
 // before the status, because a 401 here does not mean the portal session ended.
 function manageMessage(status: number, code: unknown): string {
   if (code === "invalid_credentials") return "Current password is incorrect.";
+  // A person their organization's directory owns re-proves with a bind, so a
+  // directory that did not answer refuses the change. It is never a wrong
+  // password, and it must not read as one.
+  if (code === "directory_unavailable") {
+    return "Your organization's directory did not respond. Please try again in a moment.";
+  }
   if (code === "no_active_factor") return "Two-step verification is already off for this account.";
   if (code === "invalid_input") return "Enter your current password.";
   if (status === 401) return "Your session is no longer valid.";

@@ -1,0 +1,215 @@
+package user
+
+import (
+	"context"
+	"errors"
+	"testing"
+
+	"go.uber.org/zap/zapcore"
+
+	"alphaomega/identitygateway/internal/audit"
+	"alphaomega/identitygateway/internal/platform/crypto"
+	"alphaomega/identitygateway/internal/platform/logger"
+)
+
+// The portal re-proof of a person the Directory owns.
+//
+// Such a person holds no local password hash. Four portal routes ask them for a
+// password: the TOTP disable, the recovery-code regeneration, the Passkey
+// removal, and the password change. The first three prove the credential through
+// VerifyPassword, and the fourth refuses outright, because there is no local
+// password to replace.
+//
+// The empty hash never reaches bcrypt. It would trip crypto.ErrMalformedHash and
+// write an error line that says the stored hash cannot be read, which is a false
+// alarm on every attempt. Each test below reads the log to prove that no such
+// line was written.
+
+// directoryDeps is what one re-proof test varies.
+type directoryDeps struct {
+	// hash is the stored password of the account. An empty hash is what a person
+	// the Directory owns holds.
+	hash string
+	// proveErr is what the directory answers.
+	proveErr error
+}
+
+// What one re-proof test observed.
+var (
+	provedPasswords []string
+	provedUsers     []string
+)
+
+// directoryService builds an account service whose credential read answers the
+// hash the test names, and whose bind answers the error the test names.
+func directoryService(t *testing.T, d directoryDeps) *AccountService {
+	t.Helper()
+	var log logger.Logger
+	log, logs = logger.NewObserved()
+	events, rolledBack = nil, false
+	writtenHashes, revokedExcepts = nil, nil
+	provedPasswords, provedUsers = nil, nil
+
+	record := func(_ context.Context, e audit.Event) error {
+		events = append(events, e)
+		return nil
+	}
+
+	return NewAccountService(AccountDeps{
+		Credential: func(_ context.Context, tenantID, userID string) (User, error) {
+			return User{ID: userID, TenantID: tenantID, OrgID: testOrgID, PasswordHash: d.hash}, nil
+		},
+		SetPassword: func(_ context.Context, _, _, hash string) error {
+			writtenHashes = append(writtenHashes, hash)
+			return nil
+		},
+		CheckPassword: func(context.Context, string, string, string) error { return nil },
+		RevokeOthers: func(_ context.Context, _ Actor, exceptID string) error {
+			revokedExcepts = append(revokedExcepts, exceptID)
+			return nil
+		},
+		ProveDirectory: func(_ context.Context, _, userID, plain string) error {
+			provedUsers = append(provedUsers, userID)
+			provedPasswords = append(provedPasswords, plain)
+			return d.proveErr
+		},
+		InTx: func(ctx context.Context, fn func(context.Context) error) error {
+			if err := fn(ctx); err != nil {
+				rolledBack = true
+				return err
+			}
+			return nil
+		},
+		Audit: audit.NewRecorder(record, log),
+		Log:   log,
+	})
+}
+
+// localHash is the stored password of a person the local compare signs in.
+func localHash(t *testing.T) string {
+	t.Helper()
+	hash, err := crypto.HashPassword(currentPassword)
+	if err != nil {
+		t.Fatalf("hash the current password: %v", err)
+	}
+	return hash
+}
+
+// noErrorLine fails the test when the service wrote an error line. An empty hash
+// is what a person the Directory owns stores, so it is never a defect.
+func noErrorLine(t *testing.T) {
+	t.Helper()
+	if got := logs.FilterLevelExact(zapcore.ErrorLevel).Len(); got != 0 {
+		for _, entry := range logs.All() {
+			t.Logf("%s: %s", entry.Level, entry.Message)
+		}
+		t.Errorf("the service wrote %d error lines, want 0", got)
+	}
+}
+
+// TestVerifyPasswordBindsForAPersonTheDirectoryOwns proves the re-proof the
+// three destructive portal routes run. A person with no stored hash is proved by
+// the bind, with the password they typed, and the answer holds.
+func TestVerifyPasswordBindsForAPersonTheDirectoryOwns(t *testing.T) {
+	svc := directoryService(t, directoryDeps{})
+
+	if err := svc.VerifyPassword(t.Context(), person, currentPassword); err != nil {
+		t.Fatalf("VerifyPassword: %v", err)
+	}
+
+	if len(provedPasswords) != 1 || provedPasswords[0] != currentPassword {
+		t.Errorf("the directory proved %d passwords, want the one the person typed", len(provedPasswords))
+	}
+	if len(provedUsers) != 1 || provedUsers[0] != testUserID {
+		t.Errorf("the directory proved %v, want user %s", provedUsers, testUserID)
+	}
+	noErrorLine(t)
+}
+
+// TestVerifyPasswordRefusesAWrongDirectoryPassword proves that a bind the
+// directory refused answers the one sentinel a wrong password answers.
+func TestVerifyPasswordRefusesAWrongDirectoryPassword(t *testing.T) {
+	svc := directoryService(t, directoryDeps{proveErr: ErrBadPassword})
+
+	err := svc.VerifyPassword(t.Context(), person, "the-wrong-one")
+	if !errors.Is(err, ErrBadPassword) {
+		t.Fatalf("VerifyPassword answered %v, want %v", err, ErrBadPassword)
+	}
+	noErrorLine(t)
+}
+
+// TestVerifyPasswordAnswersADirectoryOutageAsItself proves the rule a person
+// depends on: a directory that could not answer never reads as a wrong password.
+// The person is told to try again, and not to hunt for a password that is right.
+func TestVerifyPasswordAnswersADirectoryOutageAsItself(t *testing.T) {
+	svc := directoryService(t, directoryDeps{proveErr: ErrDirectoryUnavailable})
+
+	err := svc.VerifyPassword(t.Context(), person, currentPassword)
+	if !errors.Is(err, ErrDirectoryUnavailable) {
+		t.Fatalf("VerifyPassword answered %v, want %v", err, ErrDirectoryUnavailable)
+	}
+	if errors.Is(err, ErrBadPassword) {
+		t.Error("a directory outage answered a wrong password, want the outage")
+	}
+}
+
+// TestVerifyPasswordKeepsTheLocalCompare proves that nothing changed for a
+// person who holds a local password. The bcrypt compare runs, and no bind does.
+func TestVerifyPasswordKeepsTheLocalCompare(t *testing.T) {
+	svc := directoryService(t, directoryDeps{hash: localHash(t)})
+
+	if err := svc.VerifyPassword(t.Context(), person, currentPassword); err != nil {
+		t.Fatalf("VerifyPassword: %v", err)
+	}
+	if len(provedPasswords) != 0 {
+		t.Errorf("the directory was asked %d times, want 0 for a local password", len(provedPasswords))
+	}
+
+	if err := svc.VerifyPassword(t.Context(), person, "the-wrong-one"); !errors.Is(err, ErrBadPassword) {
+		t.Errorf("a wrong local password answered %v, want %v", err, ErrBadPassword)
+	}
+}
+
+// TestChangePasswordRefusesAPersonTheDirectoryOwns proves the fourth portal
+// route. There is no local password to replace, so the change refuses before it
+// asks for a proof, writes nothing, and asks no directory.
+func TestChangePasswordRefusesAPersonTheDirectoryOwns(t *testing.T) {
+	svc := directoryService(t, directoryDeps{})
+
+	err := svc.ChangePassword(t.Context(), person, passwordBody(), "a-session-id")
+	if !errors.Is(err, ErrPasswordNotLocal) {
+		t.Fatalf("ChangePassword answered %v, want %v", err, ErrPasswordNotLocal)
+	}
+	if len(writtenHashes) != 0 {
+		t.Errorf("the service wrote %d hashes, want 0", len(writtenHashes))
+	}
+	if len(provedPasswords) != 0 {
+		t.Errorf("the directory was asked %d times, want 0", len(provedPasswords))
+	}
+	if len(events) != 0 {
+		t.Errorf("the service recorded %d events, want 0", len(events))
+	}
+	noErrorLine(t)
+}
+
+// TestPasswordLocalSaysWhichCredentialThePersonHolds proves the read the portal
+// takes to hide the password change. It answers a boolean and never the hash.
+func TestPasswordLocalSaysWhichCredentialThePersonHolds(t *testing.T) {
+	owned := directoryService(t, directoryDeps{})
+	local, err := owned.PasswordLocal(t.Context(), person)
+	if err != nil {
+		t.Fatalf("PasswordLocal: %v", err)
+	}
+	if local {
+		t.Error("a person the Directory owns reads a local password, want none")
+	}
+
+	held := directoryService(t, directoryDeps{hash: localHash(t)})
+	local, err = held.PasswordLocal(t.Context(), person)
+	if err != nil {
+		t.Fatalf("PasswordLocal: %v", err)
+	}
+	if !local {
+		t.Error("a person who holds a local password reads none, want one")
+	}
+}

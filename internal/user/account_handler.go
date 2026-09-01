@@ -14,6 +14,17 @@ import (
 func init() {
 	response.Map(ErrBadPassword, fiber.StatusUnauthorized, "invalid_credentials",
 		"The current password is wrong.")
+
+	// A password the Directory owns cannot be changed here. The portal hides the
+	// control, so this refusal reaches a person only when the account changed
+	// under an open screen.
+	response.Map(ErrPasswordNotLocal, fiber.StatusConflict, "password_not_local",
+		"Your password is managed by your organization's directory. Change it there.")
+
+	// A directory that could not answer is not a wrong password. The person is
+	// told to try again, and never that the password they typed is wrong.
+	response.Map(ErrDirectoryUnavailable, fiber.StatusServiceUnavailable,
+		"directory_unavailable", "Service Unavailable")
 }
 
 // AccountHandler serves the self-service account API. It binds the request,
@@ -39,8 +50,18 @@ func NewAccountHandler(svc *AccountService) *AccountHandler {
 // sid from the ID token it holds and sends it, so the device the person is using
 // survives the change and every other one ends.
 func AccountRoutes(router fiber.Router, h *AccountHandler) {
+	router.Get("/password", h.passwordState)
 	router.Post("/profile", h.updateProfile)
 	router.Post("/password", h.changePassword)
+}
+
+// passwordState says whether the person the token names holds a local password.
+func (h *AccountHandler) passwordState(c fiber.Ctx) error {
+	local, err := h.svc.PasswordLocal(c.Context(), actorFrom(c))
+	if err != nil {
+		return response.Fail(c, err)
+	}
+	return response.OK(c, PasswordStateView{Local: local})
 }
 
 // updateProfile writes the identity fields of the person the token names.
