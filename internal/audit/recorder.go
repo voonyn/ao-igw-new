@@ -112,6 +112,11 @@ const (
 	ActionNotificationTestSent        Action = "notification.test_sent"
 	ActionNotificationTemplateUpdated Action = "notification.template_updated"
 	ActionNotificationTemplateReset   Action = "notification.template_reset"
+
+	ActionIdpCreated  Action = "idp.created"
+	ActionIdpUpdated  Action = "idp.updated"
+	ActionIdpDeleted  Action = "idp.deleted"
+	ActionIdpUnlinked Action = "idp.unlinked"
 )
 
 // EntityOrganization names an organization in the entity_type column.
@@ -175,6 +180,12 @@ const EntityNotificationSettings = "notification_settings"
 // names and it does not change. The level the override belongs to is in the
 // metadata.
 const EntityNotificationTemplate = "notification_template"
+
+// EntityIdentityProvider names one Identity Provider in the entity_type column.
+// The entity id is the provider row, and an unlink is recorded against the
+// provider too: the link is hard deleted, so the trail is the only record that
+// the person was ever tied to that directory. The person is in the metadata.
+const EntityIdentityProvider = "identity_provider"
 
 // The two values the result column holds.
 const (
@@ -243,6 +254,11 @@ var actionResults = map[Action]string{
 	ActionNotificationTestSent:        ResultSuccess,
 	ActionNotificationTemplateUpdated: ResultSuccess,
 	ActionNotificationTemplateReset:   ResultSuccess,
+
+	ActionIdpCreated:  ResultSuccess,
+	ActionIdpUpdated:  ResultSuccess,
+	ActionIdpDeleted:  ResultSuccess,
+	ActionIdpUnlinked: ResultSuccess,
 
 	// A recovery code redeemed is a success: the person signed in with a factor
 	// they hold. The failure it is often read beside is ActionLoginFailed.

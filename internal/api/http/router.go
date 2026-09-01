@@ -2,6 +2,7 @@ package http
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 
@@ -17,6 +18,7 @@ import (
 	"alphaomega/identitygateway/internal/audit"
 	"alphaomega/identitygateway/internal/authpolicy"
 	"alphaomega/identitygateway/internal/di"
+	"alphaomega/identitygateway/internal/identityprovider"
 	"alphaomega/identitygateway/internal/notification"
 	"alphaomega/identitygateway/internal/oidc"
 	"alphaomega/identitygateway/internal/organization"
@@ -790,6 +792,46 @@ func mountAdmin(
 		Log:    log,
 	})
 
+	// The directories a tenant registers, the domains each one claims, and the
+	// Identity Link that ties one directory account to one person. The repository
+	// holds the cipher, so the bind password is sealed at rest and no layer above
+	// it ever holds the ciphertext.
+	idps := identityprovider.NewRepository(bdb, cipher, log)
+	idpSvc := identityprovider.NewService(identityprovider.Deps{
+		List:    idps.List,
+		Find:    idps.FindByID,
+		Insert:  idps.Insert,
+		Update:  idps.Update,
+		Delete:  idps.Delete,
+		Domains: idps.Domains,
+		Claim:   idps.Claim,
+
+		Links:      idps.Links,
+		DeleteLink: idps.DeleteLink,
+
+		Org: orgs.FindByID,
+		// The package imports neither the user domain nor the login session
+		// domain, so the crossing is a function value and the miss is translated
+		// here into the sentinel that package declares.
+		UserOrg: func(ctx context.Context, tenantID, userID string) (string, error) {
+			row, err := users.FindByID(ctx, tenantID, userID)
+			if errors.Is(err, user.ErrNotFound) {
+				return "", fmt.Errorf("%w: tenant %s, user %s",
+					identityprovider.ErrUserNotFound, tenantID, userID)
+			}
+			if err != nil {
+				return "", err
+			}
+			return row.OrgID, nil
+		},
+		TenantRoles: tenants.MemberRoles,
+		Memberships: orgs.ListMemberships,
+
+		InTx:  tx,
+		Audit: recorder,
+		Log:   log,
+	})
+
 	group := app.Group(adminPrefix, tenantMW, bearer)
 	tenant.AdminRoutes(group, tenant.NewAdminHandler(tenantSvc, tenantActor))
 	oidc.AdminRoutes(group, oidc.NewAdminHandler(providerSvc, providerActor))
@@ -804,6 +846,7 @@ func mountAdmin(
 	session.GrantRoutes(group, session.NewGrantHandler(grantSvc))
 	authpolicy.AdminRoutes(group, authpolicy.NewHandler(policySvc))
 	notification.AdminRoutes(group, notification.NewHandler(notificationSvc))
+	identityprovider.AdminRoutes(group, identityprovider.NewHandler(idpSvc))
 	audit.AdminRoutes(group, audit.NewHandler(auditSvc, auditActor),
 		middlewares.Paginate(audit.SortKeys...))
 }

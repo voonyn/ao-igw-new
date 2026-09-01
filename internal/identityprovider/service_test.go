@@ -1,0 +1,448 @@
+package identityprovider
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strings"
+	"testing"
+
+	"go.uber.org/zap/zaptest/observer"
+
+	"alphaomega/identitygateway/internal/audit"
+	"alphaomega/identitygateway/internal/organization"
+	"alphaomega/identitygateway/internal/platform/logger"
+	"alphaomega/identitygateway/internal/tenant"
+)
+
+// admin is the person every service test acts as.
+var admin = Actor{TenantID: testTenantID, UserID: testUserID, IP: "203.0.113.7", UserAgent: "a-browser"}
+
+// theSecret is the bind password every test writes. No answer and no log line is
+// allowed to carry it.
+const theSecret = "a-directory-secret"
+
+// body is a valid LDAPS write. Each test changes the one field it is about.
+func body() Body {
+	secret := theSecret
+	return Body{
+		OrgID: testOrgID, Name: "Head office", State: StateActive,
+		Mode: ModeLDAPS, Servers: []string{"ldaps://dc1.corp.example:636"}, TimeoutSeconds: 5,
+		BindDN: "cn=svc,dc=corp,dc=example", BindPassword: &secret,
+		BaseDN: "dc=corp,dc=example", UserObjectClasses: []string{"inetOrgPerson"},
+		UserFilters: []string{"uid"},
+		AttrID:      "objectGUID", AttrUsername: "sAMAccountName", AttrEmail: "mail",
+		Domains: []string{"Corp.Example"},
+	}
+}
+
+// storedProvider is the row the fake repository answers reads with. It carries
+// the opened bind password, the way the repository hands it up.
+func storedProvider(orgID string) Provider {
+	return Provider{
+		ID: tenantIdpID, TenantID: testTenantID, OrgID: orgID, Name: "Head office",
+		Type: TypeLDAP, State: StateActive, Mode: ModeLDAPS,
+		Servers: []string{"ldaps://dc1.corp.example:636"}, TimeoutMS: 5000,
+		BindDN: "cn=svc,dc=corp,dc=example", BindPassword: theSecret,
+		BaseDN: "dc=corp,dc=example", UserObjectClasses: []string{"inetOrgPerson"},
+		UserFilters: []string{"uid"}, AttrID: "objectGUID",
+		AttrUsername: "sAMAccountName", AttrEmail: "mail",
+	}
+}
+
+// TestListRefusesPersonWithoutAdminRole refuses a person who administers
+// nothing. The bearer guard admits any token minted for the admin resource, so
+// the roles decide here.
+func TestListRefusesPersonWithoutAdminRole(t *testing.T) {
+	svc := testService(t, deps{})
+
+	if _, err := svc.List(context.Background(), admin); !errors.Is(err, ErrNotAdmin) {
+		t.Fatalf("err = %v, want ErrNotAdmin", err)
+	}
+}
+
+// TestNoAnswerCarriesTheBindPassword proves the credential is write-only. The
+// repository opens it for the sign-in bind, and every view drops it.
+func TestNoAnswerCarriesTheBindPassword(t *testing.T) {
+	svc := testService(t, deps{
+		tenantRoles: []string{tenant.RoleIAMOwner},
+		rows:        []Provider{storedProvider(testOrgID)},
+	})
+
+	view, err := svc.Find(context.Background(), admin, tenantIdpID)
+	if err != nil {
+		t.Fatalf("Find: %v", err)
+	}
+	if strings.Contains(fmt.Sprintf("%+v", view), theSecret) {
+		t.Fatalf("the view reads %+v, want no bind password in it", view)
+	}
+	if !view.BindPasswordSet {
+		t.Errorf("the view reports no stored credential, want the flag set")
+	}
+
+	views, err := svc.List(context.Background(), admin)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if strings.Contains(fmt.Sprintf("%+v", views), theSecret) {
+		t.Fatalf("the list reads %+v, want no bind password in it", views)
+	}
+}
+
+// TestNoLogLineCarriesTheBindPassword walks every line a full write wrote. A
+// credential never reaches a log line, at any level.
+func TestNoLogLineCarriesTheBindPassword(t *testing.T) {
+	svc := testService(t, deps{
+		tenantRoles: []string{tenant.RoleIAMOwner},
+		rows:        []Provider{storedProvider(testOrgID)},
+	})
+	ctx := context.Background()
+
+	if _, err := svc.Create(ctx, admin, body()); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if _, err := svc.Update(ctx, admin, tenantIdpID, body()); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	if _, err := svc.Find(ctx, admin, tenantIdpID); err != nil {
+		t.Fatalf("Find: %v", err)
+	}
+
+	for _, line := range logs.All() {
+		if strings.Contains(fmt.Sprintf("%s %v", line.Message, line.ContextMap()), theSecret) {
+			t.Fatalf("a log line reads %q, want no bind password in it", line.Message)
+		}
+	}
+	for _, event := range events {
+		if strings.Contains(fmt.Sprintf("%+v", event), theSecret) {
+			t.Fatalf("an audit row reads %+v, want no bind password in it", event)
+		}
+	}
+}
+
+// TestCreateRefusesATenantWideProviderFromAnOrgOwner covers the level gate. A
+// tenant-wide provider serves every organization, so a tenant manager writes it.
+func TestCreateRefusesATenantWideProviderFromAnOrgOwner(t *testing.T) {
+	svc := testService(t, deps{
+		memberships: []organization.Membership{{OrgID: testOrgID, Roles: []string{organization.RoleOrgOwner}}},
+	})
+
+	write := body()
+	write.OrgID, write.DefaultOrgID = "", testOrgID
+	if _, err := svc.Create(context.Background(), admin, write); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("err = %v, want ErrForbidden", err)
+	}
+	if len(written) != 0 {
+		t.Errorf("the refused create wrote %+v, want nothing", written)
+	}
+}
+
+// TestCreateClaimsTheDomainsAndRecordsTheEvent covers one whole create: the row,
+// the lowercased claims, and the audit event on the same transaction.
+func TestCreateClaimsTheDomainsAndRecordsTheEvent(t *testing.T) {
+	svc := testService(t, deps{
+		memberships: []organization.Membership{{OrgID: testOrgID, Roles: []string{organization.RoleOrgOwner}}},
+	})
+
+	view, err := svc.Create(context.Background(), admin, body())
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if len(written) != 1 || written[0].OrgID != testOrgID || written[0].Type != TypeLDAP {
+		t.Fatalf("the create wrote %+v, want one LDAP row of %s", written, testOrgID)
+	}
+	if written[0].BindPassword != theSecret {
+		t.Errorf("the row carries %q, want the credential the body sent", written[0].BindPassword)
+	}
+	if len(claimed) != 1 || claimed[0] != "corp.example" {
+		t.Errorf("the create claimed %v, want the lowercased domain", claimed)
+	}
+	if len(events) != 1 || events[0].Action != string(audit.ActionIdpCreated) {
+		t.Fatalf("the create recorded %+v, want one idp.created", events)
+	}
+	if view.TimeoutSeconds != 5 || len(view.Domains) != 1 {
+		t.Errorf("the view reads %+v, want the timeout and the claim it wrote", view)
+	}
+}
+
+// TestCreateRefusesAServerThatDoesNotMatchTheTransport covers the scheme check.
+// The egress precedent of this repo checks no scheme at all, so this one is
+// written out and proved.
+func TestCreateRefusesAServerThatDoesNotMatchTheTransport(t *testing.T) {
+	cases := []struct {
+		name   string
+		mode   int
+		server string
+		valid  bool
+	}{
+		{"LDAPS over its own scheme", ModeLDAPS, "ldaps://dc1.corp.example:636", true},
+		{"LDAPS over the plaintext scheme", ModeLDAPS, "ldap://dc1.corp.example:389", false},
+		{"StartTLS over the plaintext scheme", ModeStartTLS, "ldap://dc1.corp.example:389", true},
+		{"StartTLS over the LDAPS scheme", ModeStartTLS, "ldaps://dc1.corp.example:636", false},
+		{"a plain bind", ModePlain, "ldap://dc1.corp.example:389", true},
+		{"a scheme nobody dials", ModeLDAPS, "https://dc1.corp.example", false},
+	}
+
+	for _, c := range cases {
+		svc := testService(t, deps{tenantRoles: []string{tenant.RoleIAMOwner}})
+		write := body()
+		write.Mode, write.Servers, write.ConfirmPlaintext = c.mode, []string{c.server}, true
+
+		_, err := svc.Create(context.Background(), admin, write)
+		if c.valid && err != nil {
+			t.Errorf("%s reads %v, want a valid write", c.name, err)
+		}
+		if !c.valid && !errors.Is(err, ErrServerScheme) {
+			t.Errorf("%s reads %v, want ErrServerScheme", c.name, err)
+		}
+	}
+}
+
+// TestCreateLeavesNothingBehindWhenADomainIsClaimed covers the refusal and the
+// rollback. The row and the claim land on one transaction, so a refused claim
+// takes the provider with it.
+func TestCreateLeavesNothingBehindWhenADomainIsClaimed(t *testing.T) {
+	svc := testService(t, deps{
+		tenantRoles: []string{tenant.RoleIAMOwner},
+		claimTaken:  true,
+	})
+
+	_, err := svc.Create(context.Background(), admin, body())
+	if !errors.Is(err, ErrDomainClaimed) {
+		t.Fatalf("err = %v, want ErrDomainClaimed", err)
+	}
+	if !rolledBack || len(written) != 0 {
+		t.Errorf("the refused create left %+v behind, want the transaction rolled back", written)
+	}
+}
+
+// TestUpdateKeepsTheStoredCredentialWhenTheBodyOmitsIt covers the write-only
+// rule: absent keeps, empty clears, and a value replaces.
+func TestUpdateKeepsTheStoredCredentialWhenTheBodyOmitsIt(t *testing.T) {
+	cases := []struct {
+		name string
+		sent *string
+		want string
+	}{
+		{"an absent field keeps the stored credential", nil, theSecret},
+		{"an empty string clears it", ptr(""), ""},
+		{"a value replaces it", ptr("a-new-secret"), "a-new-secret"},
+	}
+
+	for _, c := range cases {
+		svc := testService(t, deps{
+			tenantRoles: []string{tenant.RoleIAMOwner},
+			rows:        []Provider{storedProvider(testOrgID)},
+		})
+
+		write := body()
+		write.BindPassword = c.sent
+		if _, err := svc.Update(context.Background(), admin, tenantIdpID, write); err != nil {
+			t.Fatalf("%s: Update: %v", c.name, err)
+		}
+		if len(updated) != 1 || updated[0].BindPassword != c.want {
+			t.Errorf("%s wrote %q, want %q", c.name, updated[0].BindPassword, c.want)
+		}
+	}
+}
+
+// TestUpdateRefusesAMoveBetweenLevels covers the fixed level. A provider that
+// moved would relocate every person the next bind creates.
+func TestUpdateRefusesAMoveBetweenLevels(t *testing.T) {
+	svc := testService(t, deps{
+		tenantRoles: []string{tenant.RoleIAMOwner},
+		rows:        []Provider{storedProvider(testOrgID)},
+	})
+
+	write := body()
+	write.OrgID, write.DefaultOrgID = "", testOrgID
+	if _, err := svc.Update(context.Background(), admin, tenantIdpID, write); !errors.Is(err, ErrLevelFixed) {
+		t.Fatalf("err = %v, want ErrLevelFixed", err)
+	}
+	if len(updated) != 0 {
+		t.Errorf("the refused update wrote %+v, want nothing", updated)
+	}
+}
+
+// TestDeleteRecordsTheEvent covers the soft delete and the trail beside it.
+func TestDeleteRecordsTheEvent(t *testing.T) {
+	svc := testService(t, deps{
+		tenantRoles: []string{tenant.RoleIAMOwner},
+		rows:        []Provider{storedProvider(testOrgID)},
+	})
+
+	if err := svc.Delete(context.Background(), admin, tenantIdpID); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if len(deleted) != 1 || deleted[0] != tenantIdpID {
+		t.Fatalf("the delete removed %v, want %s", deleted, tenantIdpID)
+	}
+	if len(events) != 1 || events[0].Action != string(audit.ActionIdpDeleted) {
+		t.Errorf("the delete recorded %+v, want one idp.deleted", events)
+	}
+}
+
+// TestFindReportsAMiss answers ErrNotFound for an id nobody holds, which is what
+// a soft-deleted provider reads as.
+func TestFindReportsAMiss(t *testing.T) {
+	svc := testService(t, deps{tenantRoles: []string{tenant.RoleIAMOwner}})
+
+	if _, err := svc.Find(context.Background(), admin, deadIdpID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("err = %v, want ErrNotFound", err)
+	}
+}
+
+// TestUnlinkRecordsTheEventAndNamesThePerson covers the unlink. The link is hard
+// deleted, so the audit row is the only record that the tie ever existed.
+func TestUnlinkRecordsTheEventAndNamesThePerson(t *testing.T) {
+	svc := testService(t, deps{
+		tenantRoles: []string{tenant.RoleIAMOwner},
+		userOrg:     testOrgID,
+		links:       []Link{{TenantID: testTenantID, IdpID: tenantIdpID, ExternalID: "a-stable-guid", UserID: personID}},
+	})
+
+	if err := svc.Unlink(context.Background(), admin, personID, tenantIdpID); err != nil {
+		t.Fatalf("Unlink: %v", err)
+	}
+	if len(unlinked) != 1 || unlinked[0] != personID {
+		t.Fatalf("the unlink removed %v, want the link of %s", unlinked, personID)
+	}
+	if len(events) != 1 || events[0].Action != string(audit.ActionIdpUnlinked) {
+		t.Fatalf("the unlink recorded %+v, want one idp.unlinked", events)
+	}
+	if !strings.Contains(events[0].Metadata, personID) {
+		t.Errorf("the event reads %s, want the person named in the metadata", events[0].Metadata)
+	}
+}
+
+// TestUnlinkRefusesAnOrgOwnerOfAnotherOrganization covers the write gate of the
+// unlink. The organization of the person decides, not the one of the provider.
+func TestUnlinkRefusesAnOrgOwnerOfAnotherOrganization(t *testing.T) {
+	svc := testService(t, deps{
+		memberships: []organization.Membership{{OrgID: otherOrgID, Roles: []string{organization.RoleOrgOwner}}},
+		userOrg:     testOrgID,
+	})
+
+	err := svc.Unlink(context.Background(), admin, personID, tenantIdpID)
+	if !errors.Is(err, ErrForbidden) {
+		t.Fatalf("err = %v, want ErrForbidden", err)
+	}
+	if len(unlinked) != 0 {
+		t.Errorf("the refused unlink removed %v, want nothing", unlinked)
+	}
+}
+
+// TestLinksReportAMissingPerson covers the tenant scope of the link routes. A
+// person the tenant does not hold answers a miss, never an empty list.
+func TestLinksReportAMissingPerson(t *testing.T) {
+	svc := testService(t, deps{tenantRoles: []string{tenant.RoleIAMOwner}})
+
+	if _, err := svc.Links(context.Background(), admin, personID); !errors.Is(err, ErrUserNotFound) {
+		t.Fatalf("err = %v, want ErrUserNotFound", err)
+	}
+}
+
+// What the fake repository answers with.
+type deps struct {
+	tenantRoles []string
+	memberships []organization.Membership
+	rows        []Provider
+	links       []Link
+	userOrg     string
+	claimTaken  bool
+}
+
+// What the writes of one test did. testService clears them, and the tests of one
+// package run one after another, so each test reads its own writes.
+var (
+	written    []Provider
+	updated    []Provider
+	deleted    []string
+	claimed    []string
+	unlinked   []string
+	events     []audit.Event
+	rolledBack bool
+	logs       *observer.ObservedLogs
+)
+
+func testService(t *testing.T, d deps) *Service {
+	t.Helper()
+	var log logger.Logger
+	log, logs = logger.NewObserved()
+	written, updated, deleted, claimed, unlinked, events, rolledBack = nil, nil, nil, nil, nil, nil, false
+
+	countWrites := func() int {
+		return len(written) + len(updated) + len(deleted) + len(claimed) + len(unlinked)
+	}
+
+	return NewService(Deps{
+		Insert: func(_ context.Context, row Provider) error {
+			written = append(written, row)
+			return nil
+		},
+		Update: func(_ context.Context, row Provider) error {
+			updated = append(updated, row)
+			return nil
+		},
+		Delete: func(_ context.Context, _, idpID string) error {
+			deleted = append(deleted, idpID)
+			return nil
+		},
+		Claim: func(_ context.Context, _, _ string, domains []string) error {
+			if d.claimTaken {
+				return fmt.Errorf("%w: corp.example", ErrDomainClaimed)
+			}
+			claimed = append(claimed, domains...)
+			return nil
+		},
+		DeleteLink: func(_ context.Context, _, _, userID string) error {
+			unlinked = append(unlinked, userID)
+			return nil
+		},
+		// The unit of work either commits whole or leaves nothing behind, so a
+		// failed step clears what the earlier steps wrote.
+		InTx: func(ctx context.Context, fn func(context.Context) error) error {
+			before := countWrites()
+			err := fn(ctx)
+			if err != nil && countWrites() != before {
+				written, updated, deleted, claimed, unlinked = nil, nil, nil, nil, nil
+				rolledBack = true
+			}
+			return err
+		},
+		Audit: audit.NewRecorder(func(_ context.Context, e audit.Event) error {
+			events = append(events, e)
+			return nil
+		}, log),
+		List: func(context.Context, string) ([]Provider, error) { return d.rows, nil },
+		Find: func(_ context.Context, _, idpID string) (Provider, error) {
+			for _, row := range d.rows {
+				if row.ID == idpID {
+					return row, nil
+				}
+			}
+			return Provider{}, ErrNotFound
+		},
+		Domains: func(context.Context, string, []string) ([]Domain, error) { return nil, nil },
+		Links:   func(context.Context, string, string) ([]Link, error) { return d.links, nil },
+		Org: func(_ context.Context, _, orgID string) (organization.Organization, error) {
+			if orgID == testOrgID || orgID == otherOrgID {
+				return organization.Organization{ID: orgID, TenantID: testTenantID}, nil
+			}
+			return organization.Organization{}, organization.ErrNotFound
+		},
+		UserOrg: func(context.Context, string, string) (string, error) {
+			if d.userOrg == "" {
+				return "", ErrUserNotFound
+			}
+			return d.userOrg, nil
+		},
+		TenantRoles: func(context.Context, string, string) ([]string, error) { return d.tenantRoles, nil },
+		Memberships: func(context.Context, string, string) ([]organization.Membership, error) {
+			return d.memberships, nil
+		},
+		Log: log,
+	})
+}
+
+func ptr[T any](v T) *T { return &v }
