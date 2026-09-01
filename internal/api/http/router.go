@@ -827,6 +827,11 @@ func mountAdmin(
 		TenantRoles: tenants.MemberRoles,
 		Memberships: orgs.ListMemberships,
 
+		// The budget of the connection test. It is an outbound call into a
+		// customer network that any console user of the tenant drives, so the
+		// counter lives in Redis alone and a cache failure refuses the test.
+		Allow: rdb.AllowInWindow,
+
 		InTx:  tx,
 		Audit: recorder,
 		Log:   log,

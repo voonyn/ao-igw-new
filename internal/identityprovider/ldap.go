@@ -44,6 +44,16 @@ const (
 	portLDAPS = "636"
 )
 
+// The stages of one connection, in the order they run. A connection test names
+// the stage that failed, so an administrator reads which value of the form is
+// wrong instead of one message that covers four of them.
+const (
+	StageDial   = "dial"
+	StageTLS    = "tls"
+	StageBind   = "bind"
+	StageSearch = "search"
+)
+
 // Identity is one directory account, read by the attribute names the provider
 // row carries.
 //
@@ -94,7 +104,7 @@ func (s *Service) Bind(ctx context.Context, p Provider, identifier, password str
 		return Identity{}, fmt.Errorf("%w: provider %s carries no user filter", ErrDirectory, p.ID)
 	}
 
-	conn, err := dial(ctx, p)
+	conn, _, err := dial(ctx, p)
 	if err != nil {
 		return Identity{}, s.unavailable(p, "dial the directory", err)
 	}
@@ -161,9 +171,10 @@ func search(conn *ldap.Conn, p Provider, identifier string) (*ldap.Entry, error)
 	return res.Entries[0], nil
 }
 
-// dial opens one connection to the first server that answers. The column holds a
-// list because a directory runs on several controllers, so the list is tried in
-// order and the last failure is the answer.
+// dial opens one connection to the first server that answers, and names the
+// stage that failed when none of them did. The column holds a list because a
+// directory runs on several controllers, so the list is tried in order and the
+// last failure is the answer.
 //
 // One deadline covers the whole list, because timeout_ms bounds the request and
 // not one server. Ceiling: a first server that accepts the connection and then
@@ -171,9 +182,9 @@ func search(conn *ldap.Conn, p Provider, identifier string) (*ldap.Entry, error)
 // with no time left. A refused server and an unreachable server both fail at
 // once, which is the common failure, and the failover works there. A budget for
 // each server is the upgrade, and it needs a second column to stay bounded.
-func dial(ctx context.Context, p Provider) (*ldap.Conn, error) {
+func dial(ctx context.Context, p Provider) (*ldap.Conn, string, error) {
 	if len(p.Servers) == 0 {
-		return nil, errors.New("the provider names no server")
+		return nil, StageDial, errors.New("the provider names no server")
 	}
 
 	timeout := time.Duration(p.TimeoutMS) * time.Millisecond
@@ -185,63 +196,71 @@ func dial(ctx context.Context, p Provider) (*ldap.Conn, error) {
 		deadline = held
 	}
 
+	stage := StageDial
 	var err error
 	for _, server := range p.Servers {
 		var conn *ldap.Conn
-		if conn, err = dialOne(ctx, p, server, deadline); err == nil {
-			return conn, nil
+		if conn, stage, err = dialOne(ctx, p, server, deadline); err == nil {
+			return conn, "", nil
 		}
 	}
-	return nil, err
+	return nil, stage, err
 }
 
-// dialOne opens one connection to one server string, and runs StartTLS when the
-// transport asks for it.
-func dialOne(ctx context.Context, p Provider, server string, deadline time.Time) (*ldap.Conn, error) {
+// dialOne opens one connection to one server string, runs the handshake the
+// transport asks for, and names the stage that failed.
+//
+// The socket is opened in the clear for every transport, and TLS is a step of
+// its own after it. LDAPS wraps the socket at once and StartTLS wraps it after
+// the LDAP hello, so a certificate a client refuses reads as a TLS failure on
+// both, and never as a directory that is down.
+func dialOne(ctx context.Context, p Provider, server string, deadline time.Time) (*ldap.Conn, string, error) {
 	addr, host, err := address(p.Mode, server)
 	if err != nil {
-		return nil, err
+		return nil, StageDial, err
 	}
 
-	dialer := &net.Dialer{Deadline: deadline}
-	var raw net.Conn
-	if p.Mode == ModeLDAPS {
-		cfg, err := tlsConfig(p, host)
-		if err != nil {
-			return nil, err
-		}
-		if raw, err = (&tls.Dialer{NetDialer: dialer, Config: cfg}).DialContext(ctx, "tcp", addr); err != nil {
-			return nil, fmt.Errorf("dial %s: %w", addr, err)
-		}
-	} else {
-		if raw, err = dialer.DialContext(ctx, "tcp", addr); err != nil {
-			return nil, fmt.Errorf("dial %s: %w", addr, err)
+	// The TLS of the row is read before the socket opens, so a root_ca that
+	// holds no valid PEM refuses without dialling anything.
+	var cfg *tls.Config
+	if p.Mode != ModePlain {
+		if cfg, err = tlsConfig(p, host); err != nil {
+			return nil, StageTLS, err
 		}
 	}
 
-	// One deadline on the socket bounds the whole exchange. The search and both
-	// binds fail the moment it passes, so a directory that stops answering
-	// halfway never hangs the request.
+	raw, err := (&net.Dialer{Deadline: deadline}).DialContext(ctx, "tcp", addr)
+	if err != nil {
+		return nil, StageDial, fmt.Errorf("dial %s: %w", addr, err)
+	}
+
+	// One deadline on the socket bounds the whole exchange. The handshake, the
+	// search and both binds fail the moment it passes, so a directory that stops
+	// answering halfway never hangs the request.
 	if err := raw.SetDeadline(deadline); err != nil {
 		raw.Close()
-		return nil, err
+		return nil, StageDial, err
+	}
+
+	if p.Mode == ModeLDAPS {
+		secure := tls.Client(raw, cfg)
+		if err := secure.HandshakeContext(ctx); err != nil {
+			raw.Close()
+			return nil, StageTLS, fmt.Errorf("handshake with %s: %w", addr, err)
+		}
+		raw = secure
 	}
 
 	conn := ldap.NewConn(raw, p.Mode == ModeLDAPS)
 	conn.Start()
 
 	if p.Mode == ModeStartTLS {
-		cfg, err := tlsConfig(p, host)
-		if err != nil {
-			conn.Close()
-			return nil, err
-		}
 		if err := conn.StartTLS(cfg); err != nil {
 			conn.Close()
-			return nil, fmt.Errorf("start TLS with %s: %w", addr, err)
+			return nil, StageTLS, fmt.Errorf("start TLS with %s: %w", addr, err)
 		}
 	}
-	return conn, nil
+	return conn, "", nil
 }
 
 // address answers the address one server string dials, and the host name the
@@ -320,6 +339,20 @@ func searchFilter(p Provider, identifier string) string {
 	}
 	if match := join("|", matches); match != "" {
 		parts = append(parts, match)
+	}
+	return join("&", parts)
+}
+
+// classFilter names every object class the row requires, and no identifier:
+//
+//	(&(objectClass=person)(objectClass=user))
+//
+// The connection test searches with it. A test counts the people the base holds
+// and proves nothing about one of them, so it names nobody.
+func classFilter(p Provider) string {
+	parts := make([]string, 0, len(p.UserObjectClasses))
+	for _, class := range p.UserObjectClasses {
+		parts = append(parts, fmt.Sprintf("(objectClass=%s)", ldap.EscapeFilter(class)))
 	}
 	return join("&", parts)
 }

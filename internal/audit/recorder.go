@@ -117,6 +117,7 @@ const (
 	ActionIdpUpdated  Action = "idp.updated"
 	ActionIdpDeleted  Action = "idp.deleted"
 	ActionIdpUnlinked Action = "idp.unlinked"
+	ActionIdpTested   Action = "idp.tested"
 )
 
 // EntityOrganization names an organization in the entity_type column.
@@ -260,6 +261,11 @@ var actionResults = map[Action]string{
 	ActionIdpDeleted:  ResultSuccess,
 	ActionIdpUnlinked: ResultSuccess,
 
+	// The test ran. Which stage of it failed is a metadata key, because the
+	// result column of one action is fixed and a failed dial is still a test
+	// an administrator drove.
+	ActionIdpTested: ResultSuccess,
+
 	// A recovery code redeemed is a success: the person signed in with a factor
 	// they hold. The failure it is often read beside is ActionLoginFailed.
 	ActionMFAEnrolled:                 ResultSuccess,
@@ -296,6 +302,15 @@ var allowedMetadata = map[string]bool{
 	// a public handle that every assertion sends in the clear, and it is never
 	// the public key blob beside it.
 	"credential_id": true,
+	// The stage of one connection test: the dial, the TLS handshake, the service
+	// bind, or the search. It names a step of the exchange, never a value the
+	// step carried.
+	"stage": true,
+	// The servers one connection test dialled. A test of a configuration nobody
+	// saved yet names no stored row, so without this key the trail records that
+	// somebody drove an outbound call and never records where it went. It holds
+	// the host list an administrator typed, and never a credential.
+	"servers": true,
 }
 
 // Entry is what a caller knows about the action it just took. Metadata holds

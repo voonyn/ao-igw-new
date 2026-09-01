@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"go.uber.org/zap/zaptest/observer"
 
@@ -350,6 +351,11 @@ type deps struct {
 	links       []Link
 	userOrg     string
 	claimTaken  bool
+
+	// The connection test budget. A test that sets neither field runs with a
+	// budget that allows everything.
+	budgetSpent  bool
+	budgetBroken bool
 }
 
 // What the writes of one test did. testService clears them, and the tests of one
@@ -436,6 +442,12 @@ func testService(t *testing.T, d deps) *Service {
 				return "", ErrUserNotFound
 			}
 			return d.userOrg, nil
+		},
+		Allow: func(context.Context, string, int, time.Duration) (bool, error) {
+			if d.budgetBroken {
+				return false, errors.New("the cache is down")
+			}
+			return !d.budgetSpent, nil
 		},
 		TenantRoles: func(context.Context, string, string) ([]string, error) { return d.tenantRoles, nil },
 		Memberships: func(context.Context, string, string) ([]organization.Membership, error) {

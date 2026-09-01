@@ -30,6 +30,14 @@ func init() {
 		"An identity provider stays at the level it was created at.")
 	response.Map(ErrServerScheme, fiber.StatusUnprocessableEntity, "invalid_input",
 		"A server does not match the transport. LDAPS takes ldaps://, and the other two take ldap://.")
+
+	// A spent budget answers rate_limited, which is the slug both other budgets
+	// of this gateway answer with. A budget nobody could read answers a slug of
+	// its own, because the two ask the administrator for different things: one
+	// to wait, and one to call an operator.
+	response.Map(ErrTooManyTests, fiber.StatusTooManyRequests, "rate_limited", "Too Many Requests")
+	response.Map(ErrTestUnavailable, fiber.StatusServiceUnavailable, "test_unavailable",
+		"The connection test cannot run at the moment.")
 }
 
 // Handler serves the identity providers of a tenant to the console. It binds the
@@ -62,6 +70,12 @@ func AdminRoutes(router fiber.Router, h *Handler) {
 	router.Get("/identity-providers/:id", h.find)
 	router.Put("/identity-providers/:id", h.update)
 	router.Delete("/identity-providers/:id", h.remove)
+
+	// Two paths reach one connection test. The path with an id tests a stored
+	// provider, and the path without one tests a configuration nobody saved yet,
+	// so an administrator checks a directory before the first save.
+	router.Post("/identity-providers/test", h.test)
+	router.Post("/identity-providers/:id/test", h.test)
 
 	router.Get("/users/:id/identity-links", h.links)
 	router.Delete("/users/:id/identity-links/:linkId", h.unlink)
@@ -114,6 +128,33 @@ func (h *Handler) remove(c fiber.Ctx) error {
 		return response.Fail(c, err)
 	}
 	return response.NoContent(c)
+}
+
+// test dials the directory of one provider and answers which stage failed.
+//
+// The body is the form the console has on screen, so a test runs against values
+// nobody saved yet. A test of a stored provider carries no body, which is how an
+// administrator tests one without retyping its bind password.
+//
+// The path without an id has nothing stored to fall back on, so it requires the
+// body and the validator answers a missing one.
+func (h *Handler) test(c fiber.Ctx) error {
+	idpID := c.Params("id")
+
+	var body *Body
+	if idpID == "" || len(c.Body()) > 0 {
+		var sent Body
+		if err := c.Bind().Body(&sent); err != nil {
+			return response.Validation(c, err)
+		}
+		body = &sent
+	}
+
+	result, err := h.svc.Test(c.Context(), actorFrom(c), idpID, body)
+	if err != nil {
+		return response.Fail(c, err)
+	}
+	return response.OK(c, result)
 }
 
 func (h *Handler) links(c fiber.Ctx) error {

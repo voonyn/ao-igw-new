@@ -88,6 +88,10 @@ type (
 
 	// MembershipLister reads the organization memberships of one person.
 	MembershipLister func(ctx context.Context, tenantID, userID string) ([]organization.Membership, error)
+
+	// RateLimiter records one hit against key and reports whether the trailing
+	// window is still within limit. cache.Client.AllowInWindow satisfies it.
+	RateLimiter func(ctx context.Context, key string, limit int, window time.Duration) (bool, error)
 )
 
 // Deps is the database side of the service.
@@ -107,6 +111,12 @@ type Deps struct {
 	UserOrg     UserOrgFinder
 	TenantRoles TenantRoleFinder
 	Memberships MembershipLister
+
+	// Allow is the connection test budget. It is one of the Redis-only
+	// exceptions to the stateless rule CLAUDE.md lists: no table holds the
+	// counter, and a cache failure refuses the test instead of letting an
+	// outbound call through. See Service.spendTest.
+	Allow RateLimiter
 
 	InTx  db.TxRunner
 	Audit *audit.Recorder

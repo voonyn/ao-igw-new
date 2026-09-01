@@ -101,7 +101,7 @@ No in-process state. Any instance must serve any request.
 - Read: read Redis. On a miss, read the database and refill Redis.
 - Logout: delete from the database and from Redis.
 
-Five exceptions. Each lives only in Redis, no table holds any of them, and a cache
+Six exceptions. Each lives only in Redis, no table holds any of them, and a cache
 failure refuses the request instead of letting it through.
 
 - The Guessing Budget in `totp.Service.spendGuess`. A failure that let the guess
@@ -113,6 +113,10 @@ failure refuses the request instead of letting it through.
 - The challenge budget in `passkey.Service.spendChallenge`. It caps sign-in challenge
   starts on a key of its own, for the same reason: a start proves nothing, and the
   person who cancels it is mid sign-in.
+- The connection test budget in `identityprovider.Service.spendTest`. The test is an
+  outbound call into a customer network that any Console administrator of the Tenant
+  drives, against a host the Tenant names. A failure that let it through would leave
+  that call unmetered for as long as Redis is down.
 - The bind budget in `identityprovider.Service.spendBind`. A bind is an outbound call
   into a customer network that any caller can drive, and a failure that let it through
   would turn the password step into a lever against that directory. The password step
