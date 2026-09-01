@@ -297,6 +297,43 @@ func TestLinksAreListedAndHardDeleted(t *testing.T) {
 	}
 }
 
+// TestInsertLink covers the write of one first bind, and the two unique keys
+// that bound it: one directory account maps to one person, and one person holds
+// at most one account per provider.
+func TestInsertLink(t *testing.T) {
+	repo, ctx := testRepo(t)
+
+	written := Link{
+		TenantID: testTenantID, IdpID: tenantIdpID,
+		ExternalID: "another-stable-guid", UserID: testUserID,
+	}
+	if err := repo.InsertLink(ctx, written); err != nil {
+		t.Fatalf("write the link: %v", err)
+	}
+
+	rows, err := repo.Links(ctx, testTenantID, testUserID)
+	if err != nil {
+		t.Fatalf("list the links: %v", err)
+	}
+	if len(rows) != 1 || rows[0].ExternalID != "another-stable-guid" {
+		t.Fatalf("the links read %+v, want the written link", rows)
+	}
+
+	// The directory account is already tied to somebody.
+	taken := written
+	taken.UserID = personID
+	if err := repo.InsertLink(ctx, taken); err == nil {
+		t.Error("a second link on the same directory account was written, want the key to refuse it")
+	}
+
+	// The person is already tied to this provider.
+	second := written
+	second.ExternalID = "a-third-stable-guid"
+	if err := repo.InsertLink(ctx, second); err == nil {
+		t.Error("a second link of the same person with the same provider was written, want the key to refuse it")
+	}
+}
+
 // TestADuplicateNameAnswersTheConflictSentinel covers uq_identity_providers_name.
 // An administrator who types a name the tenant already carries reads a conflict,
 // never a server error.

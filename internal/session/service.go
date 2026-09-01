@@ -68,16 +68,22 @@ type CredentialFinder func(ctx context.Context, tenantID, userID string) (string
 // a domain this one must not import.
 type ProviderResolver func(ctx context.Context, tenantID, identifier, userID string) (string, error)
 
-// Binder proves one password against the directory a login session names. It
-// answers nil when the directory accepted the password, and one of four
-// sentinels of this package when it did not: ErrBadCredentials, ErrDirectoryDisabled,
-// ErrDirectoryUnavailable, or ErrTooManyBinds.
+// Binder proves one password against the directory a login session names, and
+// answers the person the sign-in carries on as. It answers one of four sentinels
+// of this package when the directory refused: ErrBadCredentials,
+// ErrDirectoryDisabled, ErrDirectoryUnavailable, or ErrTooManyBinds.
+//
+// userID is the person the login session already names, and it is empty when the
+// identifier named nobody. The answer is that same person when the session named
+// one, and the person the first bind created when it did not. A bind that proved
+// the password of somebody the gateway did not hold therefore creates them, and
+// every later bind of that person creates nothing.
 //
 // The router composes it, because it reads the provider row, spends the bind
-// budget, and dials the directory, and those live in a domain this one must not
-// import. It maps that domain's sentinels onto these four, so the password step
-// reads one vocabulary.
-type Binder func(ctx context.Context, tenantID, idpID, identifier, password string) error
+// budget, dials the directory, and writes the person the first bind creates, and
+// those live in a domain this one must not import. It maps that domain's
+// sentinels onto these four, so the password step reads one vocabulary.
+type Binder func(ctx context.Context, tenantID, idpID, userID, identifier, password string) (string, error)
 
 // PendingSteps names the Pending Steps one person still owes after the password
 // step. It answers an empty list when the sign-in owes nothing.
@@ -231,7 +237,11 @@ func (s *Service) VerifyPassword(
 		return Opened{}, nil, err
 	}
 
-	if err := s.prove(ctx, live, password); err != nil {
+	// The password step is the first thing that names the person of a directory
+	// sign-in whose identifier the gateway held no row for. Every read below it
+	// takes the person the bind answered.
+	live.UserID, err = s.prove(ctx, live, password)
+	if err != nil {
 		return Opened{}, nil, err
 	}
 
@@ -277,8 +287,8 @@ func (s *Service) VerifyPassword(
 	return Opened{ID: live.ID, Token: rotated}, steps, nil
 }
 
-// prove proves the password of one login session, and records the refusal when
-// it does not hold.
+// prove proves the password of one login session, records the refusal when it
+// does not hold, and answers the person the sign-in carries on as.
 //
 // A session that names an Identity Provider is proved with a bind, and every
 // other session with the bcrypt compare. The two answer alike wherever they can:
@@ -286,41 +296,47 @@ func (s *Service) VerifyPassword(
 // matched twice all give ErrBadCredentials, which is what a wrong local password
 // gives.
 //
+// The person is the one the session already named, except on the first bind of
+// somebody the gateway held no row for: the bind creates them, and answers who
+// they are. The local compare creates nobody, so it answers the person the
+// session named.
+//
 // Every outcome runs through refuse, so login.failed is written for every
 // failure, a dial that never returned included.
-func (s *Service) prove(ctx context.Context, live LoginSession, password string) error {
+func (s *Service) prove(ctx context.Context, live LoginSession, password string) (string, error) {
 	if live.IdpID == "" {
 		hash, err := s.passwordHash(ctx, live)
 		if err != nil {
-			return err
+			return "", err
 		}
 		if err := aocrypto.VerifyPassword(hash, password); err != nil {
-			return s.refuse(ctx, live, "bad_password", err, ErrBadCredentials)
+			return "", s.refuse(ctx, live, "bad_password", err, ErrBadCredentials)
 		}
-		return nil
+		return live.UserID, nil
 	}
 
-	err := s.deps.Bind(ctx, live.TenantID, live.IdpID, live.Identifier, password)
+	userID, err := s.deps.Bind(ctx, live.TenantID, live.IdpID, live.UserID, live.Identifier, password)
 	switch {
 	case errors.Is(err, ErrDirectoryDisabled):
-		return s.refuse(ctx, live, "directory_disabled", err, ErrDirectoryDisabled)
+		return "", s.refuse(ctx, live, "directory_disabled", err, ErrDirectoryDisabled)
 	case errors.Is(err, ErrDirectoryUnavailable):
-		return s.refuse(ctx, live, "directory_unavailable", err, ErrDirectoryUnavailable)
+		return "", s.refuse(ctx, live, "directory_unavailable", err, ErrDirectoryUnavailable)
 	case errors.Is(err, ErrTooManyBinds):
-		return s.refuse(ctx, live, "too_many_binds", err, ErrTooManyBinds)
+		return "", s.refuse(ctx, live, "too_many_binds", err, ErrTooManyBinds)
 	case err != nil:
-		return s.refuse(ctx, live, "bad_password", err, ErrBadCredentials)
+		return "", s.refuse(ctx, live, "bad_password", err, ErrBadCredentials)
 	}
 
-	// The directory proved the password of somebody this gateway does not hold
-	// yet. Creating that person is the next ticket of this feature, and until it
-	// lands the sign-in is refused the way an unknown identifier is.
-	if live.UserID == "" {
-		return s.refuse(ctx, live, "no_local_person",
-			errors.New("the bind proved a password for a person this tenant does not hold"),
+	// The bind proved a password and named nobody, so the person the sign-in
+	// would carry on as does not exist. It is a defect of the seam and never an
+	// answer of a directory, and a sign-in that carried on would upgrade a
+	// session that names no person at all.
+	if userID == "" {
+		return "", s.refuse(ctx, live, "no_local_person",
+			errors.New("the bind proved a password and named no person"),
 			ErrBadCredentials)
 	}
-	return nil
+	return userID, nil
 }
 
 // floorTheStep holds the answer of the password step until the floor has passed.

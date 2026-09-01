@@ -116,6 +116,7 @@ const (
 	ActionIdpCreated  Action = "idp.created"
 	ActionIdpUpdated  Action = "idp.updated"
 	ActionIdpDeleted  Action = "idp.deleted"
+	ActionIdpLinked   Action = "idp.linked"
 	ActionIdpUnlinked Action = "idp.unlinked"
 	ActionIdpTested   Action = "idp.tested"
 )
@@ -260,6 +261,10 @@ var actionResults = map[Action]string{
 	ActionIdpUpdated:  ResultSuccess,
 	ActionIdpDeleted:  ResultSuccess,
 	ActionIdpUnlinked: ResultSuccess,
+
+	// The link a first bind wrote. It is the only record that the sign-in
+	// created the person, because the link itself is hard deleted.
+	ActionIdpLinked: ResultSuccess,
 
 	// The test ran. Which stage of it failed is a metadata key, because the
 	// result column of one action is fixed and a failed dial is still a test

@@ -73,6 +73,17 @@ type (
 	// LinkDeleter removes the Identity Link one person holds with one provider.
 	LinkDeleter func(ctx context.Context, tenantID, idpID, userID string) error
 
+	// LinkWriter writes one Identity Link. It runs on the caller's transaction.
+	LinkWriter func(ctx context.Context, row Link) error
+
+	// PersonCreator writes the local rows of one new person and answers the id
+	// it wrote. It runs on the caller's transaction.
+	//
+	// It is a function value, and not a user model, so this package never
+	// imports the user domain. The composition root writes the account, the
+	// person, and the membership behind it.
+	PersonCreator func(ctx context.Context, p Person) (string, error)
+
 	// OrgFinder reads one organization. It returns organization.ErrNotFound on a
 	// miss, so no org id can name a level the tenant does not hold.
 	OrgFinder func(ctx context.Context, tenantID, orgID string) (organization.Organization, error)
@@ -104,8 +115,10 @@ type Deps struct {
 	Domains DomainLister
 	Claim   Claimer
 
-	Links      LinkLister
-	DeleteLink LinkDeleter
+	Links        LinkLister
+	DeleteLink   LinkDeleter
+	WriteLink    LinkWriter
+	CreatePerson PersonCreator
 
 	Org         OrgFinder
 	UserOrg     UserOrgFinder

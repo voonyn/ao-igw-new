@@ -352,6 +352,11 @@ type deps struct {
 	userOrg     string
 	claimTaken  bool
 
+	// What the person creator of a first bind answers. A test that sets it
+	// refuses the create, which is what a username another person of the tenant
+	// already holds does.
+	createFails error
+
 	// The connection test budget. A test that sets neither field runs with a
 	// budget that allows everything.
 	budgetSpent  bool
@@ -366,6 +371,8 @@ var (
 	deleted    []string
 	claimed    []string
 	unlinked   []string
+	people     []Person
+	linked     []Link
 	events     []audit.Event
 	rolledBack bool
 	spends     int
@@ -377,10 +384,12 @@ func testService(t *testing.T, d deps) *Service {
 	var log logger.Logger
 	log, logs = logger.NewObserved()
 	written, updated, deleted, claimed, unlinked, events, rolledBack = nil, nil, nil, nil, nil, nil, false
+	people, linked = nil, nil
 	spends = 0
 
 	countWrites := func() int {
-		return len(written) + len(updated) + len(deleted) + len(claimed) + len(unlinked)
+		return len(written) + len(updated) + len(deleted) + len(claimed) +
+			len(unlinked) + len(people) + len(linked)
 	}
 
 	return NewService(Deps{
@@ -407,6 +416,17 @@ func testService(t *testing.T, d deps) *Service {
 			unlinked = append(unlinked, userID)
 			return nil
 		},
+		CreatePerson: func(_ context.Context, p Person) (string, error) {
+			if d.createFails != nil {
+				return "", d.createFails
+			}
+			people = append(people, p)
+			return createdUserID, nil
+		},
+		WriteLink: func(_ context.Context, row Link) error {
+			linked = append(linked, row)
+			return nil
+		},
 		// The unit of work either commits whole or leaves nothing behind, so a
 		// failed step clears what the earlier steps wrote.
 		InTx: func(ctx context.Context, fn func(context.Context) error) error {
@@ -414,6 +434,7 @@ func testService(t *testing.T, d deps) *Service {
 			err := fn(ctx)
 			if err != nil && countWrites() != before {
 				written, updated, deleted, claimed, unlinked = nil, nil, nil, nil, nil
+				people, linked = nil, nil
 				rolledBack = true
 			}
 			return err

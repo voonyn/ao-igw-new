@@ -92,8 +92,24 @@ func noProvider(context.Context, string, string, string) (string, error) {
 
 // noBind is the bind seam of a test about the local password. No login session
 // of such a test names a directory, so the seam is never called.
-func noBind(context.Context, string, string, string, string) error {
-	return errors.New("the bind seam of a local password test was called")
+func noBind(context.Context, string, string, string, string, string) (string, error) {
+	return "", errors.New("the bind seam of a local password test was called")
+}
+
+// boundAs is a bind seam that accepts the password and answers one person. It is
+// the seam of a test about what the sign-in does with the answer, and not about
+// the bind itself.
+func boundAs(userID string) Binder {
+	return func(_ context.Context, _, _, _, _, _ string) (string, error) {
+		return userID, nil
+	}
+}
+
+// refusedBind is a bind seam that refuses with one sentinel.
+func refusedBind(answer error) Binder {
+	return func(_ context.Context, _, _, _, _, _ string) (string, error) {
+		return "", answer
+	}
 }
 
 // noCredential is the credential seam of a test that never reaches the password
@@ -953,12 +969,13 @@ func refusal(t *testing.T, st *store) string {
 // proves. The bind takes the identifier the person typed, the session carries
 // the pwd factor, and the token rotates, which is what a local password does.
 func TestVerifyPassword_Bind(t *testing.T) {
-	var got struct{ tenantID, idpID, identifier, password string }
+	var got struct{ tenantID, idpID, userID, identifier, password string }
 	svc, st := directoryService(t, func(
-		_ context.Context, tenantID, idpID, identifier, password string,
-	) error {
-		got.tenantID, got.idpID, got.identifier, got.password = tenantID, idpID, identifier, password
-		return nil
+		_ context.Context, tenantID, idpID, userID, identifier, password string,
+	) (string, error) {
+		got.tenantID, got.idpID, got.userID = tenantID, idpID, userID
+		got.identifier, got.password = identifier, password
+		return userID, nil
 	})
 	opened := signedInAgainst(t, svc)
 
@@ -973,6 +990,11 @@ func TestVerifyPassword_Bind(t *testing.T) {
 	}
 	if got.identifier != directoryIdentifier {
 		t.Errorf("the bind searched for %q, want %q", got.identifier, directoryIdentifier)
+	}
+	// The session already names the person, so the bind is told who they are and
+	// creates nobody.
+	if got.userID != "user-1" {
+		t.Errorf("the bind was given the person %q, want user-1", got.userID)
 	}
 	if got.password != "the-directory-password" {
 		t.Error("the bind was given a password other than the one the person typed")
@@ -995,9 +1017,7 @@ func TestVerifyPassword_Bind(t *testing.T) {
 // directory sign-in. The trail names the same action and the same factor a local
 // password records, so nothing downstream learns which credential was proved.
 func TestVerifyPassword_BindTellsNobodyItWasADirectory(t *testing.T) {
-	svc, st := directoryService(t, func(context.Context, string, string, string, string) error {
-		return nil
-	})
+	svc, st := directoryService(t, boundAs("user-1"))
 	opened := signedInAgainst(t, svc)
 
 	if _, _, err := svc.VerifyPassword(
@@ -1023,9 +1043,7 @@ func TestVerifyPassword_BindTellsNobodyItWasADirectory(t *testing.T) {
 func TestVerifyPassword_BindRefusalsAnswerAlike(t *testing.T) {
 	for _, name := range []string{"a wrong password", "no such entry", "two entries"} {
 		t.Run(name, func(t *testing.T) {
-			svc, st := directoryService(t, func(context.Context, string, string, string, string) error {
-				return ErrBadCredentials
-			})
+			svc, st := directoryService(t, refusedBind(ErrBadCredentials))
 			opened := signedInAgainst(t, svc)
 
 			_, _, err := svc.VerifyPassword(
@@ -1072,9 +1090,11 @@ func TestVerifyPassword_RefusalsTakeTheSameTime(t *testing.T) {
 	directory := func(t *testing.T, cost time.Duration) time.Duration {
 		t.Helper()
 
-		svc, _ := directoryService(t, func(context.Context, string, string, string, string) error {
+		svc, _ := directoryService(t, func(
+			_ context.Context, _, _, _, _, _ string,
+		) (string, error) {
 			time.Sleep(cost)
-			return ErrBadCredentials
+			return "", ErrBadCredentials
 		})
 		return took(t, svc, signedInAgainst(t, svc))
 	}
@@ -1107,9 +1127,7 @@ func TestVerifyPassword_RefusalsTakeTheSameTime(t *testing.T) {
 // answer. It is not a credential failure, so it carries a slug of its own, and
 // the trail names the cause and the provider.
 func TestVerifyPassword_DirectoryUnavailable(t *testing.T) {
-	svc, st := directoryService(t, func(context.Context, string, string, string, string) error {
-		return ErrDirectoryUnavailable
-	})
+	svc, st := directoryService(t, refusedBind(ErrDirectoryUnavailable))
 	opened := signedInAgainst(t, svc)
 
 	_, _, err := svc.VerifyPassword(
@@ -1134,9 +1152,7 @@ func TestVerifyPassword_DirectoryUnavailable(t *testing.T) {
 // and a soft-deleted one, which behave alike. The answer is the one an unknown
 // identifier gets, and only the trail names the cause.
 func TestVerifyPassword_DirectoryDisabled(t *testing.T) {
-	svc, st := directoryService(t, func(context.Context, string, string, string, string) error {
-		return ErrDirectoryDisabled
-	})
+	svc, st := directoryService(t, refusedBind(ErrDirectoryDisabled))
 	opened := signedInAgainst(t, svc)
 
 	_, _, err := svc.VerifyPassword(
@@ -1152,9 +1168,7 @@ func TestVerifyPassword_DirectoryDisabled(t *testing.T) {
 // TestVerifyPassword_TooManyBinds covers the bind budget. The person waits out
 // the window, and the trail records the refused sign-in.
 func TestVerifyPassword_TooManyBinds(t *testing.T) {
-	svc, st := directoryService(t, func(context.Context, string, string, string, string) error {
-		return ErrTooManyBinds
-	})
+	svc, st := directoryService(t, refusedBind(ErrTooManyBinds))
 	opened := signedInAgainst(t, svc)
 
 	_, _, err := svc.VerifyPassword(
@@ -1167,16 +1181,81 @@ func TestVerifyPassword_TooManyBinds(t *testing.T) {
 	}
 }
 
-// TestVerifyPassword_BindWithoutALocalPerson covers a bind that proved the
-// password of somebody this gateway does not hold yet. Creating that person is
-// the next ticket of this feature, and until it lands the sign-in is refused the
-// way an unknown identifier is, with no session upgraded.
-func TestVerifyPassword_BindWithoutALocalPerson(t *testing.T) {
-	svc, st := testServiceBinding(t,
+// firstBindService builds a service whose identifier step names a directory and
+// no person. It is the first sign-in of somebody this gateway holds no row for,
+// and the bind is what creates them.
+func firstBindService(t *testing.T, bind Binder) (*Service, *store) {
+	t.Helper()
+
+	return testServiceBinding(t,
 		func(context.Context, string, string) (Identity, error) { return Identity{}, user.ErrNotFound },
 		noCredential,
 		func(context.Context, string, string, string) (string, error) { return directoryIdp, nil },
-		func(context.Context, string, string, string, string) error { return nil })
+		bind)
+}
+
+// TestVerifyPassword_FirstBindCreatesThePerson covers the first successful bind
+// of somebody this gateway holds no row for. The bind is told that the session
+// names nobody, it answers the person it created, and the sign-in carries on as
+// that person: the upgraded session names them, and so does the trail.
+func TestVerifyPassword_FirstBindCreatesThePerson(t *testing.T) {
+	var given string
+	svc, st := firstBindService(t, func(
+		_ context.Context, _, _, userID, _, _ string,
+	) (string, error) {
+		given = userID
+		return "created-1", nil
+	})
+	opened := signedInAgainst(t, svc)
+
+	upgraded, _, err := svc.VerifyPassword(
+		context.Background(), "tenant-1", opened.Token, "the-directory-password")
+	if err != nil {
+		t.Fatalf("verify password: %v", err)
+	}
+
+	if given != "" {
+		t.Errorf("the bind was given the person %q, want nobody", given)
+	}
+	if st.saved.UserID != "created-1" {
+		t.Errorf("the session names %q, want the person the bind created", st.saved.UserID)
+	}
+	if !st.saved.Authenticated() {
+		t.Error("the sign-in did not upgrade the login session")
+	}
+	if upgraded.Token == "" || upgraded.Token == opened.Token {
+		t.Error("the token did not rotate")
+	}
+	if got := st.actions(); len(got) != 1 || got[0] != string(audit.ActionLoginSucceeded) {
+		t.Errorf("the trail holds %v, want [%s]", got, audit.ActionLoginSucceeded)
+	}
+	if st.events[0].ActorID != "created-1" {
+		t.Errorf("the trail names %q, want the person the bind created", st.events[0].ActorID)
+	}
+}
+
+// TestVerifyPassword_SecondBindNamesTheSamePerson covers every later sign-in of
+// a person a bind created. The session names them, so the bind is told who they
+// are, and the person the sign-in carries on as is that same one.
+func TestVerifyPassword_SecondBindNamesTheSamePerson(t *testing.T) {
+	svc, st := directoryService(t, boundAs("user-1"))
+	opened := signedInAgainst(t, svc)
+
+	if _, _, err := svc.VerifyPassword(
+		context.Background(), "tenant-1", opened.Token, "the-directory-password"); err != nil {
+		t.Fatalf("verify password: %v", err)
+	}
+	if st.saved.UserID != "user-1" {
+		t.Errorf("the session names %q, want the person it already held", st.saved.UserID)
+	}
+}
+
+// TestVerifyPassword_BindNamesNoPerson covers a bind that proved a password and
+// answered nobody. The person the sign-in would carry on as does not exist, so
+// the step is refused the way an unknown identifier is and no session is
+// upgraded.
+func TestVerifyPassword_BindNamesNoPerson(t *testing.T) {
+	svc, st := firstBindService(t, boundAs(""))
 	opened := signedInAgainst(t, svc)
 
 	_, _, err := svc.VerifyPassword(
@@ -1189,6 +1268,27 @@ func TestVerifyPassword_BindWithoutALocalPerson(t *testing.T) {
 	}
 	if !strings.Contains(refusal(t, st), `"reason":"no_local_person"`) {
 		t.Errorf("the trail recorded %q, want the missing person reason", st.events[0].Metadata)
+	}
+}
+
+// TestVerifyPassword_FirstBindThatCreatesNobody covers a first bind whose person
+// could not be written, such as a username another person of the tenant already
+// holds. It is not a credential failure, so it answers the slug a directory that
+// did not answer gets, and no session is upgraded.
+func TestVerifyPassword_FirstBindThatCreatesNobody(t *testing.T) {
+	svc, st := firstBindService(t, refusedBind(ErrDirectoryUnavailable))
+	opened := signedInAgainst(t, svc)
+
+	_, _, err := svc.VerifyPassword(
+		context.Background(), "tenant-1", opened.Token, "the-directory-password")
+	if !errors.Is(err, ErrDirectoryUnavailable) {
+		t.Fatalf("err = %v, want ErrDirectoryUnavailable", err)
+	}
+	if st.saved.Authenticated() {
+		t.Error("the refused sign-in upgraded the login session")
+	}
+	if !strings.Contains(refusal(t, st), `"reason":"directory_unavailable"`) {
+		t.Errorf("the trail recorded %q, want the directory reason", st.events[0].Metadata)
 	}
 }
 

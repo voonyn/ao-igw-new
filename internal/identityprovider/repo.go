@@ -344,6 +344,28 @@ func (r *Repository) Links(ctx context.Context, tenantID, userID string) ([]Link
 	return rows, nil
 }
 
+// InsertLink writes the Identity Link one first bind creates. It runs on the
+// caller's transaction, so the person and the link land together.
+//
+// The primary key is (tenant_id, idp_id, external_id) and a second unique key
+// covers (tenant_id, idp_id, user_id), so a directory account already tied to
+// somebody, and a person already tied to this directory, are both refused by the
+// database.
+func (r *Repository) InsertLink(ctx context.Context, row Link) error {
+	r.log.Debug("write identity link",
+		logger.String("tenant_id", row.TenantID), logger.String("idp_id", row.IdpID),
+		logger.String("user_id", row.UserID), logger.RequestID(ctx))
+
+	if _, err := db.Conn(ctx, r.db).NewInsert().Model(&row).Exec(ctx); err != nil {
+		return fmt.Errorf("write the identity link of user %s with provider %s: %w",
+			row.UserID, row.IdpID, err)
+	}
+	r.log.Debug("wrote identity link",
+		logger.String("tenant_id", row.TenantID), logger.String("idp_id", row.IdpID),
+		logger.String("user_id", row.UserID), logger.RequestID(ctx))
+	return nil
+}
+
 // DeleteLink removes the Identity Link one person holds with one provider. It
 // runs on the caller's transaction.
 //

@@ -1124,18 +1124,23 @@ func newSessionService(
 		Log:         log,
 	})
 
-	// The bind that proves a password against a directory. Prove reads the
-	// provider row, spends the bind budget, and dials, so these three seams are
-	// the whole of what it takes. The console build of the same service, in
-	// mountAdmin, carries the rest.
+	// The bind that proves a password against a directory, and the person the
+	// first bind creates. Prove reads the provider row, spends the bind budget,
+	// and dials. Provision reads the row again and writes the person, the
+	// Identity Link, and the audit event on one transaction. The console build
+	// of the same service, in mountAdmin, carries the rest.
 	//
 	// The budget lives in Redis alone. A cache failure refuses the sign-in
 	// instead of leaving an outbound call into a customer network unmetered. See
 	// CLAUDE.md.
 	prover := identityprovider.NewService(identityprovider.Deps{
-		Find:  idps.FindByID,
-		Allow: rdb.AllowInWindow,
-		Log:   log,
+		Find:         idps.FindByID,
+		Allow:        rdb.AllowInWindow,
+		WriteLink:    idps.InsertLink,
+		CreatePerson: directoryPerson(users, organization.NewRepository(bdb, log)),
+		InTx:         tx,
+		Audit:        recorder,
+		Log:          log,
 	})
 
 	return session.NewService(session.Deps{
@@ -1144,12 +1149,25 @@ func newSessionService(
 		Steps:    steps,
 		// The bind, translated into the vocabulary of the login session domain.
 		//
-		// The Identity the bind read is dropped here. The person it names already
-		// holds a row, and creating the one who does not is the next ticket of
-		// this feature.
-		Bind: func(ctx context.Context, tenantID, idpID, identifier, password string) error {
-			_, err := prover.Prove(ctx, tenantID, idpID, identifier, password)
-			return directoryError(err)
+		// A session that already names a person answers that person, and the
+		// Identity the bind read is dropped: a later bind changes no attribute,
+		// so a rename in the directory never arrives here. A session that names
+		// nobody is the first bind of that person, and the Identity is what
+		// creates them.
+		Bind: func(ctx context.Context, tenantID, idpID, userID, identifier, password string) (string, error) {
+			person, err := prover.Prove(ctx, tenantID, idpID, identifier, password)
+			if err != nil {
+				return "", directoryError(err)
+			}
+			if userID != "" {
+				return userID, nil
+			}
+
+			userID, err = prover.Provision(ctx, tenantID, idpID, person)
+			if err != nil {
+				return "", directoryError(err)
+			}
+			return userID, nil
 		},
 		// The one credential read of the user domain answers the organization
 		// beside the hash. The sign-in needs the hash only.
@@ -1176,9 +1194,10 @@ func newSessionService(
 //
 // Everything the switch does not name answers ErrDirectoryUnavailable: a dial
 // failure, a timeout, a TLS failure, a failed bind of the service credential, a
-// budget nobody could read, and a broken read of the provider row. None of them
-// is a credential failure, and the sign-in must not carry on as if the password
-// had been proved.
+// budget nobody could read, a broken read of the provider row, and a first bind
+// whose person could not be written, such as a username another person of the
+// tenant already holds. None of them is a credential failure, and the sign-in
+// must not carry on as if the password had been proved.
 func directoryError(err error) error {
 	switch {
 	case err == nil:
