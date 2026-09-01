@@ -1233,20 +1233,6 @@ func newSessionService(
 	})
 }
 
-// directoryError turns one outcome of a sign-in bind into the sentinel the login
-// session domain answers with. It is what keeps the two packages apart: the
-// session domain imports neither the provider domain nor the LDAP client.
-//
-// A wrong password, an entry the directory does not hold, and a search that
-// matched twice answer alike, because which of the three happened says which
-// people a directory holds.
-//
-// Everything the switch does not name answers ErrDirectoryUnavailable: a dial
-// failure, a timeout, a TLS failure, a failed bind of the service credential, a
-// budget nobody could read, a broken read of the provider row, and a first bind
-// whose person could not be written, such as a username another person of the
-// tenant already holds. None of them is a credential failure, and the sign-in
-// must not carry on as if the password had been proved.
 // directoryReProof composes the re-proof of a person the Directory owns: the
 // bind the four portal routes run wherever the stored password hash is empty.
 //
@@ -1330,6 +1316,20 @@ func accountDirectoryError(err error) error {
 	}
 }
 
+// directoryError turns one outcome of a sign-in bind into the sentinel the login
+// session domain answers with. It is what keeps the two packages apart: the
+// session domain imports neither the provider domain nor the LDAP client.
+//
+// A wrong password, an entry the directory does not hold, and a search that
+// matched twice answer alike, because which of the three happened says which
+// people a directory holds.
+//
+// Everything the switch does not name answers ErrDirectoryUnavailable: a dial
+// failure, a timeout, a TLS failure, a failed bind of the service credential, a
+// budget nobody could read, a broken read of the provider row, and a first bind
+// whose person could not be written, such as a username another person of the
+// tenant already holds. None of them is a credential failure, and the sign-in
+// must not carry on as if the password had been proved.
 func directoryError(err error) error {
 	switch {
 	case err == nil:
