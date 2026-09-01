@@ -15,6 +15,7 @@ import (
 
 	"github.com/go-ldap/ldap/v3"
 
+	aocrypto "alphaomega/identitygateway/internal/platform/crypto"
 	"alphaomega/identitygateway/internal/platform/logger"
 )
 
@@ -31,6 +32,64 @@ var ErrWrongPassword = errors.New("the directory refused the password")
 // timeout, a TLS failure, or a bind failure of the service credential. None of
 // those is a credential failure, and the caller answers directory_unavailable.
 var ErrDirectory = errors.New("the directory did not answer")
+
+// ErrDisabled reports a provider that is inactive or soft deleted. The two
+// behave alike at sign-in: both refuse every person tied to them.
+//
+// The sign-in answers it with the slug an unknown identifier gets. A slug of its
+// own would name every directory-owned person of the tenant for as long as the
+// provider stays off, which is a permanent enumeration oracle at the password
+// step. directory_disabled is the answer of the admin and the test route, where
+// the caller is already authenticated. See docs/specs/0002-directory-sign-in.md.
+var ErrDisabled = errors.New("the identity provider is disabled")
+
+// ErrTooManyBinds reports an identifier that spent its whole bind budget. The
+// directory is not dialled, and the caller waits out the window.
+var ErrTooManyBinds = errors.New("too many directory binds")
+
+// ErrBindUnavailable reports a bind budget nobody could read. Redis holds the
+// whole counter, so a bind that ran without it would leave an outbound call into
+// a customer network unmetered for as long as Redis is down.
+//
+// It is not ErrTooManyBinds. Both refuse, and the two mean different things: one
+// says the caller guessed too often, and one says the gateway cannot meter the
+// call at all.
+var ErrBindUnavailable = errors.New("the bind budget is unavailable")
+
+// bindLimit and bindWindow cap how many binds one identifier of one tenant
+// drives.
+//
+// A bind is an outbound call into a customer network that any caller drives with
+// a fresh partial token, and it is the only password guess this gateway meters.
+// The number is small, because a person who types their own password needs a
+// handful of tries and nobody needs thirty.
+//
+// Ceiling: an identifier key caps one person, and any caller can drive it. Two
+// things follow. A spray across many identifiers still reaches the directory,
+// and eleven wrong guesses lock one named person out of the directory sign-in
+// for the rest of the window. The local password path has no budget, so this is
+// the one credential of this gateway that a stranger can spend. The refusal
+// answers what a wrong password answers, so the lockout says nothing about who
+// the tenant holds.
+//
+// An IP key is the upgrade, and it is not built here. See
+// docs/specs/0002-directory-sign-in.md.
+//
+// ponytail: two constants. Move them into a tenant policy row when a tenant asks
+// for its own numbers.
+const (
+	bindLimit  = 10
+	bindWindow = 15 * time.Minute
+)
+
+// bindKey names the bind budget of one identifier of one tenant.
+//
+// The identifier is personal data, so the key carries its digest and never the
+// address itself. A Redis key is read by every operator who lists the keyspace,
+// and the counter needs a stable name and nothing more.
+func bindKey(tenantID, identifier string) string {
+	return fmt.Sprintf("idp_binds:%s:%s", tenantID, aocrypto.Digest(identifier))
+}
 
 // defaultTimeoutMS bounds a row that carries no timeout. The column defaults to
 // 5000 and the body requires a value, so this floor catches only a row written
@@ -143,6 +202,95 @@ func (s *Service) Bind(ctx context.Context, p Provider, identifier, password str
 		logger.String("tenant_id", p.TenantID), logger.String("idp_id", p.ID),
 		logger.RequestID(ctx))
 	return person, nil
+}
+
+// Prove proves one password against the directory a login session names. It is
+// what the password step of the sign-in calls.
+//
+// Three steps run in this order, and the order is the point:
+//
+//  1. Read the provider. An inactive one and a soft-deleted one both refuse, and
+//     neither dials anything.
+//  2. Refuse an empty password. An unauthenticated bind proves nothing, so it
+//     never reaches the wire, and a value that never reaches the wire must not
+//     cost the person the budget a bind costs.
+//  3. Spend one bind of the budget. Nothing above this line reaches the network,
+//     so a refused provider and an empty password each cost none of it.
+//  4. Bind.
+//
+// The budget is spent before the bind and not after it, because the budget
+// bounds the outbound call and not the answer. A directory that does not answer
+// therefore spends one bind, which the spec asks it not to: the only atomic
+// primitive the cache offers is count-and-test on the way in, and a bind that
+// spent nothing until it came back would leave a black-holing host reachable as
+// often as a caller likes.
+//
+// ponytail: no refund. Give the cache a release primitive when a directory
+// outage costing a person their budget is worth the second round trip.
+//
+// The typed password reaches Bind and nothing else. No log line of this method
+// carries it, or the identifier, or the bind credential of the provider.
+func (s *Service) Prove(
+	ctx context.Context, tenantID, idpID, identifier, password string,
+) (Identity, error) {
+	s.log.Debug("prove a password against the directory",
+		logger.String("tenant_id", tenantID), logger.String("idp_id", idpID),
+		logger.RequestID(ctx))
+
+	row, err := s.deps.Find(ctx, tenantID, idpID)
+	if errors.Is(err, ErrNotFound) {
+		return Identity{}, fmt.Errorf("%w: tenant %s, provider %s", ErrDisabled, tenantID, idpID)
+	}
+	if err != nil {
+		s.log.Error("read the identity provider of the sign-in",
+			logger.String("tenant_id", tenantID), logger.String("idp_id", idpID), logger.Err(err))
+		return Identity{}, err
+	}
+	if row.State != StateActive {
+		s.log.Warn("refused a sign-in against a disabled directory",
+			logger.String("tenant_id", tenantID), logger.String("idp_id", idpID))
+		return Identity{}, fmt.Errorf("%w: tenant %s, provider %s", ErrDisabled, tenantID, idpID)
+	}
+
+	// The guard is in Bind as well, where it is what keeps an unauthenticated
+	// bind off the wire. Here it is what keeps a value that costs the directory
+	// nothing from costing the person their budget.
+	if password == "" {
+		return Identity{}, fmt.Errorf("%w: the password is empty", ErrWrongPassword)
+	}
+
+	if err := s.spendBind(ctx, tenantID, idpID, identifier); err != nil {
+		return Identity{}, err
+	}
+	return s.Bind(ctx, row, identifier, password)
+}
+
+// spendBind spends one bind of the identifier's trailing-window budget, and
+// refuses the sign-in when nothing is left.
+//
+// A cache failure refuses the bind. Redis is only a cache elsewhere in this
+// gateway, and here it is the whole budget: a failure that let the bind through
+// would turn the password step into a lever against a customer directory for as
+// long as Redis is down. The password step carries no budget of its own, so
+// there is nothing weaker to fall back to. See CLAUDE.md.
+//
+// ponytail: a refused read costs every directory-owned person their sign-in
+// while Redis is down. The local password path keeps working, because it spends
+// nothing.
+func (s *Service) spendBind(ctx context.Context, tenantID, idpID, identifier string) error {
+	allowed, err := s.deps.Allow(ctx, bindKey(tenantID, identifier), bindLimit, bindWindow)
+	if err != nil {
+		s.log.Error("read the directory bind budget",
+			logger.String("tenant_id", tenantID), logger.String("idp_id", idpID), logger.Err(err))
+		return fmt.Errorf("%w: tenant %s", ErrBindUnavailable, tenantID)
+	}
+	if allowed {
+		return nil
+	}
+
+	s.log.Warn("refused a directory bind over the budget",
+		logger.String("tenant_id", tenantID), logger.String("idp_id", idpID))
+	return fmt.Errorf("%w: tenant %s", ErrTooManyBinds, tenantID)
 }
 
 // search runs one search under the base of the provider, and answers the single

@@ -20,13 +20,31 @@ const bearerPrefix = "Bearer "
 // The sentinels this domain answers with. The mapper owns every status code, so
 // no handler below maps one itself.
 //
-// The three answer alike, slug and message, so the response never says whether
-// the identifier, the password, or the login session is what failed.
+// The five answer alike, slug and message, so the response never says whether
+// the identifier, the password, the login session, a directory that is switched
+// off, or a spent bind budget is what failed.
+//
+// The last two carry no slug of their own on purpose, and both would be an
+// enumeration oracle at the password step if they did. A disabled directory
+// would name every person tied to it for as long as it stays off. A spent bind
+// budget is worse, because a caller drives it: only a directory sign-in carries
+// a budget, so a slug of its own would say that an identifier is served by a
+// directory, and eleven wrong guesses would ask the question whenever the
+// attacker liked. The audit trail names both, because an operator reads it.
 func init() {
 	response.Map(ErrBadCredentials, fiber.StatusUnauthorized, "unauthenticated", "Unauthorized")
 	response.Map(ErrLoginSessionNotFound, fiber.StatusUnauthorized, "unauthenticated", "Unauthorized")
 	response.Map(ErrNotAuthenticated, fiber.StatusUnauthorized, "unauthenticated", "Unauthorized")
 	response.Map(ErrSubjectBound, fiber.StatusUnauthorized, "unauthenticated", "Unauthorized")
+	response.Map(ErrDirectoryDisabled, fiber.StatusUnauthorized, "unauthenticated", "Unauthorized")
+	response.Map(ErrTooManyBinds, fiber.StatusUnauthorized, "unauthenticated", "Unauthorized")
+
+	// A directory that did not answer is not a wrong password, so it carries a
+	// slug of its own and the person is told to try again. The slug says that
+	// the identifier is served by a directory, and that is paid for on purpose:
+	// the state is transient, and the person needs to call the right helpdesk.
+	response.Map(ErrDirectoryUnavailable, fiber.StatusServiceUnavailable,
+		"directory_unavailable", "Service Unavailable")
 
 	// This one carries its own slug. A person who owes a factor proved their
 	// password, so the sign-in resumes at the step they skipped instead of

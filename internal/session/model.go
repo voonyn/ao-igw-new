@@ -133,6 +133,29 @@ var ErrSubjectBound = errors.New("login session already names another person")
 // says which of them happened.
 var ErrBadCredentials = errors.New("identifier or password is wrong")
 
+// ErrDirectoryDisabled reports a sign-in against a directory that is inactive or
+// soft deleted. It is not a credential failure, and it spends no budget.
+//
+// It answers the slug ErrBadCredentials answers, so the response never says that
+// a directory is what refused. A slug of its own would name every
+// directory-owned person of the tenant for as long as the provider stays off.
+// The audit trail tells the two apart, because it is read by an operator.
+var ErrDirectoryDisabled = errors.New("the identity provider is disabled")
+
+// ErrDirectoryUnavailable reports a directory that did not answer: a dial
+// failure, a timeout, a TLS failure, or a failed bind of the service credential.
+// A bind budget nobody could read answers it too.
+//
+// None of those is a credential failure, so the answer says so. It discloses
+// that the identifier is served by a directory, and that is paid for on purpose:
+// the state is transient, and the person needs to call the right helpdesk. See
+// docs/specs/0002-directory-sign-in.md.
+var ErrDirectoryUnavailable = errors.New("the directory did not answer")
+
+// ErrTooManyBinds reports an identifier that spent its whole bind budget. The
+// person waits out the window, and the directory is not dialled.
+var ErrTooManyBinds = errors.New("too many directory binds")
+
 // LoginSession is the authority on one person's login. It is what the sealed
 // blob holds, so every field here survives a restart.
 //
@@ -149,18 +172,24 @@ var ErrBadCredentials = errors.New("identifier or password is wrong")
 // empty when the local password compare proves this sign-in. It needs no column
 // either, and no SQL read names a field inside the blob, so a session already in
 // flight decodes it to the empty string, which is what that session was.
+//
+// Identifier is what the person typed at the identifier step. The bind searches
+// the directory with it, because a person the gateway does not hold yet names no
+// email and no user id. It is personal data, and the blob is sealed, which is
+// where Email already lives.
 type LoginSession struct {
 	ID         string               `json:"id"`
 	TenantID   string               `json:"tenant_id"`
 	UserID     string               `json:"user_id,omitempty"`
 	Email      string               `json:"email,omitempty"`
 	IdpID      string               `json:"idp_id,omitempty"`
+	Identifier string               `json:"identifier,omitempty"`
 	IP         string               `json:"ip,omitempty"`
 	UserAgent  string               `json:"user_agent,omitempty"`
 	WrongCodes int                  `json:"wrong_codes,omitempty"`
 	Factors    map[string]time.Time `json:"factors,omitempty"`
-	CreatedAt time.Time            `json:"created_at"`
-	ExpiresAt time.Time            `json:"expires_at"`
+	CreatedAt  time.Time            `json:"created_at"`
+	ExpiresAt  time.Time            `json:"expires_at"`
 }
 
 // Authenticated reports whether the person verified at least one factor. A

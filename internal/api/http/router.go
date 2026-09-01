@@ -1124,10 +1124,33 @@ func newSessionService(
 		Log:         log,
 	})
 
+	// The bind that proves a password against a directory. Prove reads the
+	// provider row, spends the bind budget, and dials, so these three seams are
+	// the whole of what it takes. The console build of the same service, in
+	// mountAdmin, carries the rest.
+	//
+	// The budget lives in Redis alone. A cache failure refuses the sign-in
+	// instead of leaving an outbound call into a customer network unmetered. See
+	// CLAUDE.md.
+	prover := identityprovider.NewService(identityprovider.Deps{
+		Find:  idps.FindByID,
+		Allow: rdb.AllowInWindow,
+		Log:   log,
+	})
+
 	return session.NewService(session.Deps{
 		Identity: identityFinder(users),
 		Provider: resolver.Resolve,
 		Steps:    steps,
+		// The bind, translated into the vocabulary of the login session domain.
+		//
+		// The Identity the bind read is dropped here. The person it names already
+		// holds a row, and creating the one who does not is the next ticket of
+		// this feature.
+		Bind: func(ctx context.Context, tenantID, idpID, identifier, password string) error {
+			_, err := prover.Prove(ctx, tenantID, idpID, identifier, password)
+			return directoryError(err)
+		},
 		// The one credential read of the user domain answers the organization
 		// beside the hash. The sign-in needs the hash only.
 		Credential: func(ctx context.Context, tenantID, userID string) (string, error) {
@@ -1141,6 +1164,35 @@ func newSessionService(
 		Audit:     recorder,
 		Log:       log,
 	})
+}
+
+// directoryError turns one outcome of a sign-in bind into the sentinel the login
+// session domain answers with. It is what keeps the two packages apart: the
+// session domain imports neither the provider domain nor the LDAP client.
+//
+// A wrong password, an entry the directory does not hold, and a search that
+// matched twice answer alike, because which of the three happened says which
+// people a directory holds.
+//
+// Everything the switch does not name answers ErrDirectoryUnavailable: a dial
+// failure, a timeout, a TLS failure, a failed bind of the service credential, a
+// budget nobody could read, and a broken read of the provider row. None of them
+// is a credential failure, and the sign-in must not carry on as if the password
+// had been proved.
+func directoryError(err error) error {
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, identityprovider.ErrWrongPassword),
+		errors.Is(err, identityprovider.ErrNoEntry):
+		return session.ErrBadCredentials
+	case errors.Is(err, identityprovider.ErrDisabled):
+		return session.ErrDirectoryDisabled
+	case errors.Is(err, identityprovider.ErrTooManyBinds):
+		return session.ErrTooManyBinds
+	default:
+		return session.ErrDirectoryUnavailable
+	}
 }
 
 // pendingSteps names the Pending Steps a person still owes after the password

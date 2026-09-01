@@ -20,6 +20,24 @@ import (
 // somebody. Without it, the answer time alone says which people a tenant holds.
 const decoyPasswordHash = "$2a$12$W2/bjFPAOoBUDagpusdjV.9VOtRCC2VOjswuaOActMhq.AWsTXntu"
 
+// passwordStepFloor is the least time the password step takes, measured from
+// entry and applied to every answer it gives.
+//
+// The decoy hash gives the local path a constant cost, and a bind does not: an
+// entry the directory does not hold answers faster than a wrong password,
+// because the second bind never runs. Without the floor, account enumeration
+// returns at the password step.
+//
+// One floor covers both paths. A floor on the directory path alone would leave
+// the local path faster, and the difference would say which identifiers a
+// directory serves. The number is above the cost of one bcrypt comparison at
+// cost 12, which is what the local path pays today.
+//
+// ponytail: a constant, and it is a floor and not a fixed cost. A directory
+// slower than the floor still answers late, so a slow directory is visible in
+// the timing even though a missing entry is not.
+const passwordStepFloor = 500 * time.Millisecond
+
 // IdentityFinder reads the person one identifier names. It returns
 // user.ErrNotFound on a miss.
 type IdentityFinder func(ctx context.Context, tenantID, identifier string) (Identity, error)
@@ -50,6 +68,17 @@ type CredentialFinder func(ctx context.Context, tenantID, userID string) (string
 // a domain this one must not import.
 type ProviderResolver func(ctx context.Context, tenantID, identifier, userID string) (string, error)
 
+// Binder proves one password against the directory a login session names. It
+// answers nil when the directory accepted the password, and one of four
+// sentinels of this package when it did not: ErrBadCredentials, ErrDirectoryDisabled,
+// ErrDirectoryUnavailable, or ErrTooManyBinds.
+//
+// The router composes it, because it reads the provider row, spends the bind
+// budget, and dials the directory, and those live in a domain this one must not
+// import. It maps that domain's sentinels onto these four, so the password step
+// reads one vocabulary.
+type Binder func(ctx context.Context, tenantID, idpID, identifier, password string) error
+
 // PendingSteps names the Pending Steps one person still owes after the password
 // step. It answers an empty list when the sign-in owes nothing.
 //
@@ -63,6 +92,7 @@ type PendingSteps func(ctx context.Context, tenantID, userID string) ([]string, 
 type Deps struct {
 	Identity   IdentityFinder
 	Provider   ProviderResolver
+	Bind       Binder
 	Credential CredentialFinder
 	Steps      PendingSteps
 	Save       Saver
@@ -106,7 +136,7 @@ func (s *Service) Identify(ctx context.Context, tenantID, identifier, ip, userAg
 	if err != nil {
 		return Opened{}, err
 	}
-	return s.open(ctx, tenantID, person, idpID, ip, userAgent)
+	return s.open(ctx, tenantID, person, idpID, identifier, ip, userAgent)
 }
 
 // Open opens a partial login session that names nobody.
@@ -116,26 +146,28 @@ func (s *Service) Identify(ctx context.Context, tenantID, identifier, ip, userAg
 // person the scan resolved to.
 func (s *Service) Open(ctx context.Context, tenantID, ip, userAgent string) (Opened, error) {
 	s.log.Debug("open login session", logger.String("tenant_id", tenantID), logger.RequestID(ctx))
-	return s.open(ctx, tenantID, Identity{}, "", ip, userAgent)
+	return s.open(ctx, tenantID, Identity{}, "", "", ip, userAgent)
 }
 
 // open writes one partial login session and hands out the token that
-// credentials it. person is the zero Identity when the caller names nobody, and
-// idpID is empty when the local password compare proves the sign-in.
+// credentials it. person is the zero Identity when the caller names nobody,
+// idpID is empty when the local password compare proves the sign-in, and
+// identifier is empty when the caller names nobody at all.
 func (s *Service) open(
-	ctx context.Context, tenantID string, person Identity, idpID, ip, userAgent string,
+	ctx context.Context, tenantID string, person Identity, idpID, identifier, ip, userAgent string,
 ) (Opened, error) {
 	now := time.Now().UTC()
 	live := LoginSession{
-		ID:        utils.NewUUIDv7(),
-		TenantID:  tenantID,
-		UserID:    person.UserID,
-		Email:     person.Email,
-		IdpID:     idpID,
-		IP:        ip,
-		UserAgent: userAgent,
-		CreatedAt: now,
-		ExpiresAt: now.Add(partialLifetime),
+		ID:         utils.NewUUIDv7(),
+		TenantID:   tenantID,
+		UserID:     person.UserID,
+		Email:      person.Email,
+		IdpID:      idpID,
+		Identifier: identifier,
+		IP:         ip,
+		UserAgent:  userAgent,
+		CreatedAt:  now,
+		ExpiresAt:  now.Add(partialLifetime),
 	}
 
 	token, err := mintToken()
@@ -171,9 +203,15 @@ func (s *Service) open(
 // is disclosed exactly once, here. The authn session of an authorization
 // request is not touched, because only Complete writes it.
 //
+// A session that names a directory is proved with a bind, and every other
+// session with the bcrypt compare. Nothing below this step learns which of the
+// two ran: the factor is pwd either way, and acr is unchanged.
+//
 // A wrong password, a session that names nobody, and a broken stored hash all
 // give ErrBadCredentials. Each of them also pays for one bcrypt comparison, so
-// neither the answer nor its timing says which of them happened.
+// neither the answer nor its timing says which of them happened. The whole step
+// carries a floor besides, so a directory that holds no such entry cannot answer
+// faster than one that refused the password.
 //
 // The second return names the factors the person still owes. It is read after
 // the password is verified, so a caller who guessed wrong learns nothing about
@@ -182,6 +220,7 @@ func (s *Service) open(
 func (s *Service) VerifyPassword(
 	ctx context.Context, tenantID, token, password string,
 ) (Opened, []string, error) {
+	defer floorTheStep(time.Now())
 	s.log.Debug("verify password", logger.String("tenant_id", tenantID), logger.RequestID(ctx))
 
 	live, err := s.deps.Find(ctx, tenantID, aocrypto.Digest(token))
@@ -192,12 +231,8 @@ func (s *Service) VerifyPassword(
 		return Opened{}, nil, err
 	}
 
-	hash, err := s.passwordHash(ctx, live)
-	if err != nil {
+	if err := s.prove(ctx, live, password); err != nil {
 		return Opened{}, nil, err
-	}
-	if err := aocrypto.VerifyPassword(hash, password); err != nil {
-		return Opened{}, nil, s.refuse(ctx, live, err)
 	}
 
 	steps, err := s.deps.Steps(ctx, tenantID, live.UserID)
@@ -242,6 +277,61 @@ func (s *Service) VerifyPassword(
 	return Opened{ID: live.ID, Token: rotated}, steps, nil
 }
 
+// prove proves the password of one login session, and records the refusal when
+// it does not hold.
+//
+// A session that names an Identity Provider is proved with a bind, and every
+// other session with the bcrypt compare. The two answer alike wherever they can:
+// a wrong password, an entry the directory does not hold, and a search that
+// matched twice all give ErrBadCredentials, which is what a wrong local password
+// gives.
+//
+// Every outcome runs through refuse, so login.failed is written for every
+// failure, a dial that never returned included.
+func (s *Service) prove(ctx context.Context, live LoginSession, password string) error {
+	if live.IdpID == "" {
+		hash, err := s.passwordHash(ctx, live)
+		if err != nil {
+			return err
+		}
+		if err := aocrypto.VerifyPassword(hash, password); err != nil {
+			return s.refuse(ctx, live, "bad_password", err, ErrBadCredentials)
+		}
+		return nil
+	}
+
+	err := s.deps.Bind(ctx, live.TenantID, live.IdpID, live.Identifier, password)
+	switch {
+	case errors.Is(err, ErrDirectoryDisabled):
+		return s.refuse(ctx, live, "directory_disabled", err, ErrDirectoryDisabled)
+	case errors.Is(err, ErrDirectoryUnavailable):
+		return s.refuse(ctx, live, "directory_unavailable", err, ErrDirectoryUnavailable)
+	case errors.Is(err, ErrTooManyBinds):
+		return s.refuse(ctx, live, "too_many_binds", err, ErrTooManyBinds)
+	case err != nil:
+		return s.refuse(ctx, live, "bad_password", err, ErrBadCredentials)
+	}
+
+	// The directory proved the password of somebody this gateway does not hold
+	// yet. Creating that person is the next ticket of this feature, and until it
+	// lands the sign-in is refused the way an unknown identifier is.
+	if live.UserID == "" {
+		return s.refuse(ctx, live, "no_local_person",
+			errors.New("the bind proved a password for a person this tenant does not hold"),
+			ErrBadCredentials)
+	}
+	return nil
+}
+
+// floorTheStep holds the answer of the password step until the floor has passed.
+// entered is the moment the step began, so one call covers every return the step
+// has, the refusals and the sign-in alike.
+func floorTheStep(entered time.Time) {
+	if rest := passwordStepFloor - time.Since(entered); rest > 0 {
+		time.Sleep(rest)
+	}
+}
+
 // passwordHash reads the stored hash of the person the session names. A session
 // that names nobody, and a person the tenant no longer holds, both answer with
 // the decoy hash, so the comparison still runs.
@@ -267,23 +357,40 @@ func (s *Service) passwordHash(ctx context.Context, live LoginSession) (string, 
 	return hash, nil
 }
 
-// refuse records the refused password and returns what the caller answers with.
+// refuse records the refused password step and returns what the caller answers
+// with.
+//
+// reason names the cause for the audit trail, which an operator reads, and
+// answer is the sentinel the response is built from. The two are not the same
+// thing: a disabled directory and a wrong password answer one slug and record
+// two reasons, so the trail stays readable and the response says nothing about
+// which people a tenant holds.
+//
 // The cause names the defect for the log, and never for the response.
 //
 // A failed audit write comes back instead, and the recorder has logged it. The
 // caller then fails the request, because a refusal nobody can audit is not
 // allowed to stand.
-func (s *Service) refuse(ctx context.Context, live LoginSession, cause error) error {
+func (s *Service) refuse(
+	ctx context.Context, live LoginSession, reason string, cause, answer error,
+) error {
 	s.log.Warn("refused password",
 		logger.String("tenant_id", live.TenantID),
 		logger.String("session_id", live.ID),
+		logger.String("reason", reason),
 		logger.Err(cause))
 
-	metadata := map[string]any{"reason": "bad_password"}
+	// The provider names the directory that refused, so an operator reading a
+	// failed sign-in knows which one to look at. It is the id of a row the tenant
+	// registered, and never a credential of any kind.
+	metadata := map[string]any{"reason": reason}
+	if live.IdpID != "" {
+		metadata["idp_id"] = live.IdpID
+	}
 	if err := s.deps.Audit.Record(ctx, s.entry(live, audit.ActionLoginFailed, metadata)); err != nil {
 		return err
 	}
-	return fmt.Errorf("%w: session %s", ErrBadCredentials, live.ID)
+	return fmt.Errorf("%w: session %s", answer, live.ID)
 }
 
 // FailSecondFactor records one wrong second-factor code against the login

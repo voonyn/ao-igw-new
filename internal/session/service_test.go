@@ -3,11 +3,17 @@ package session
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io"
+	"net/http/httptest"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/gofiber/fiber/v3"
+
+	"alphaomega/identitygateway/internal/api/http/response"
 	"alphaomega/identitygateway/internal/audit"
 	aocrypto "alphaomega/identitygateway/internal/platform/crypto"
 	"alphaomega/identitygateway/internal/platform/logger"
@@ -84,6 +90,12 @@ func noProvider(context.Context, string, string, string) (string, error) {
 	return "", nil
 }
 
+// noBind is the bind seam of a test about the local password. No login session
+// of such a test names a directory, so the seam is never called.
+func noBind(context.Context, string, string, string, string) error {
+	return errors.New("the bind seam of a local password test was called")
+}
+
 // noCredential is the credential seam of a test that never reaches the password
 // step.
 func noCredential(context.Context, string, string) (string, error) {
@@ -116,12 +128,21 @@ func testServiceResolving(
 	t *testing.T, identity IdentityFinder, credential CredentialFinder, provider ProviderResolver,
 ) (*Service, *store) {
 	t.Helper()
+	return testServiceBinding(t, identity, credential, provider, noBind)
+}
+
+func testServiceBinding(
+	t *testing.T, identity IdentityFinder, credential CredentialFinder,
+	provider ProviderResolver, bind Binder,
+) (*Service, *store) {
+	t.Helper()
 
 	log, _ := logger.NewObserved()
 	st := &store{}
 	svc := NewService(Deps{
 		Identity:   identity,
 		Provider:   provider,
+		Bind:       bind,
 		Credential: credential,
 		Steps:      noSteps,
 		Save:       st.Save,
@@ -880,5 +901,332 @@ func TestFactorNames(t *testing.T) {
 	}
 	if got := (LoginSession{}).FactorNames(); len(got) != 0 {
 		t.Errorf("a session with no factor reads %v, want none", got)
+	}
+}
+
+// The fixtures of the directory sign-in tests. The person holds a local row and
+// the login session names the directory that proves their password.
+const (
+	directoryIdp        = "77777777-7777-7777-7777-777777777777"
+	directoryIdentifier = "alice@corp.example"
+)
+
+// signedInAgainst runs the identifier step of a person one directory proves, and
+// returns the token that credentials the partial session it opened.
+func signedInAgainst(t *testing.T, svc *Service) Opened {
+	t.Helper()
+	return signedIn(t, svc, directoryIdentifier)
+}
+
+// directoryService builds a service whose identifier step resolves one directory
+// for one person the tenant already holds. bind is what the directory answers.
+func directoryService(t *testing.T, bind Binder) (*Service, *store) {
+	t.Helper()
+
+	person := Identity{UserID: "user-1", Email: directoryIdentifier}
+	return testServiceBinding(t,
+		knownPerson(directoryIdentifier, person),
+		// A person the directory owns holds no local hash. A bind that fell back
+		// to this seam would read one, so the seam fails the test.
+		func(context.Context, string, string) (string, error) {
+			t.Error("the password step read a local password hash, want a bind")
+			return "", user.ErrNotFound
+		},
+		func(context.Context, string, string, string) (string, error) { return directoryIdp, nil },
+		bind)
+}
+
+// refusal names the reason and the provider one login.failed row carries.
+func refusal(t *testing.T, st *store) string {
+	t.Helper()
+
+	if len(st.events) != 1 {
+		t.Fatalf("the trail holds %v, want one row", st.actions())
+	}
+	if st.events[0].Action != string(audit.ActionLoginFailed) {
+		t.Fatalf("the trail holds %s, want %s", st.events[0].Action, audit.ActionLoginFailed)
+	}
+	return st.events[0].Metadata
+}
+
+// TestVerifyPassword_Bind covers the password step of a person one directory
+// proves. The bind takes the identifier the person typed, the session carries
+// the pwd factor, and the token rotates, which is what a local password does.
+func TestVerifyPassword_Bind(t *testing.T) {
+	var got struct{ tenantID, idpID, identifier, password string }
+	svc, st := directoryService(t, func(
+		_ context.Context, tenantID, idpID, identifier, password string,
+	) error {
+		got.tenantID, got.idpID, got.identifier, got.password = tenantID, idpID, identifier, password
+		return nil
+	})
+	opened := signedInAgainst(t, svc)
+
+	upgraded, steps, err := svc.VerifyPassword(
+		context.Background(), "tenant-1", opened.Token, "the-directory-password")
+	if err != nil {
+		t.Fatalf("verify password: %v", err)
+	}
+
+	if got.tenantID != "tenant-1" || got.idpID != directoryIdp {
+		t.Errorf("the bind ran against %s of %s, want %s of tenant-1", got.idpID, got.tenantID, directoryIdp)
+	}
+	if got.identifier != directoryIdentifier {
+		t.Errorf("the bind searched for %q, want %q", got.identifier, directoryIdentifier)
+	}
+	if got.password != "the-directory-password" {
+		t.Error("the bind was given a password other than the one the person typed")
+	}
+	if upgraded.Token == "" || upgraded.Token == opened.Token {
+		t.Error("the token did not rotate")
+	}
+	if len(steps) != 0 {
+		t.Errorf("the answer names %v, want no step owed", steps)
+	}
+	if _, proved := st.saved.Factors[FactorPassword]; !proved {
+		t.Errorf("the session carries %v, want the %s factor", st.saved.Factors, FactorPassword)
+	}
+	if got := st.actions(); len(got) != 1 || got[0] != string(audit.ActionLoginSucceeded) {
+		t.Errorf("the trail holds %v, want [%s]", got, audit.ActionLoginSucceeded)
+	}
+}
+
+// TestVerifyPassword_BindTellsNobodyItWasADirectory covers the answer of a
+// directory sign-in. The trail names the same action and the same factor a local
+// password records, so nothing downstream learns which credential was proved.
+func TestVerifyPassword_BindTellsNobodyItWasADirectory(t *testing.T) {
+	svc, st := directoryService(t, func(context.Context, string, string, string, string) error {
+		return nil
+	})
+	opened := signedInAgainst(t, svc)
+
+	if _, _, err := svc.VerifyPassword(
+		context.Background(), "tenant-1", opened.Token, "the-directory-password"); err != nil {
+		t.Fatalf("verify password: %v", err)
+	}
+
+	if len(st.events) != 1 {
+		t.Fatalf("the trail holds %v, want one row", st.actions())
+	}
+	if strings.Contains(st.events[0].Metadata, "idp") {
+		t.Errorf("the successful sign-in recorded %q, want the row a local password writes",
+			st.events[0].Metadata)
+	}
+	if names := st.saved.FactorNames(); len(names) != 1 || names[0] != FactorPassword {
+		t.Errorf("the session carries the factors %v, want [%s]", names, FactorPassword)
+	}
+}
+
+// TestVerifyPassword_BindRefusalsAnswerAlike covers the one slug every bind
+// failure answers. A wrong password, an entry the directory does not hold, and a
+// search that matched twice must not be told apart.
+func TestVerifyPassword_BindRefusalsAnswerAlike(t *testing.T) {
+	for _, name := range []string{"a wrong password", "no such entry", "two entries"} {
+		t.Run(name, func(t *testing.T) {
+			svc, st := directoryService(t, func(context.Context, string, string, string, string) error {
+				return ErrBadCredentials
+			})
+			opened := signedInAgainst(t, svc)
+
+			_, _, err := svc.VerifyPassword(
+				context.Background(), "tenant-1", opened.Token, "a-wrong-password")
+			if !errors.Is(err, ErrBadCredentials) {
+				t.Fatalf("err = %v, want ErrBadCredentials", err)
+			}
+			if !strings.Contains(refusal(t, st), `"reason":"bad_password"`) {
+				t.Errorf("the trail recorded %q, want the bad password reason", st.events[0].Metadata)
+			}
+		})
+	}
+}
+
+// TestVerifyPassword_RefusalsTakeTheSameTime is the enumeration test. Three
+// refusals are measured, and the three must not be told apart:
+//
+//   - a wrong local password, which pays one bcrypt comparison,
+//   - a wrong directory password, which pays two binds,
+//   - an entry the directory does not hold, which pays one bind.
+//
+// Without the floor the three answer at three speeds, and account enumeration
+// returns at the password step. Nothing in this suite asserted the property
+// before this feature.
+//
+// It also guards the value of the floor. A floor below the cost of one bcrypt
+// comparison would leave the local refusal the slow one, so a build that raised
+// the bcrypt cost without raising the floor fails here.
+func TestVerifyPassword_RefusalsTakeTheSameTime(t *testing.T) {
+	took := func(t *testing.T, svc *Service, opened Opened) time.Duration {
+		t.Helper()
+
+		start := time.Now()
+		if _, _, err := svc.VerifyPassword(
+			context.Background(), "tenant-1", opened.Token, "a-wrong-password",
+		); !errors.Is(err, ErrBadCredentials) {
+			t.Fatalf("err = %v, want ErrBadCredentials", err)
+		}
+		return time.Since(start)
+	}
+
+	// The two costs a real directory pays. The wrong password runs the second
+	// bind, and the unknown entry never reaches it.
+	directory := func(t *testing.T, cost time.Duration) time.Duration {
+		t.Helper()
+
+		svc, _ := directoryService(t, func(context.Context, string, string, string, string) error {
+			time.Sleep(cost)
+			return ErrBadCredentials
+		})
+		return took(t, svc, signedInAgainst(t, svc))
+	}
+
+	person := Identity{UserID: "user-1", Email: "person@example.com"}
+	svc, _ := testServiceWith(t, knownPerson("person@example.com", person), noCredential)
+	local := took(t, svc, signedIn(t, svc, "person@example.com"))
+
+	missing := directory(t, 5*time.Millisecond)
+	wrong := directory(t, 120*time.Millisecond)
+
+	for name, took := range map[string]time.Duration{
+		"a wrong local password": local, "an unknown entry": missing, "a wrong directory password": wrong,
+	} {
+		if took < passwordStepFloor {
+			t.Fatalf("%s took %s, want at least the floor of %s", name, took, passwordStepFloor)
+		}
+	}
+
+	// The margin is the scheduler of the machine the test runs on, and it is far
+	// below the difference the floor hides.
+	for _, gap := range []time.Duration{(wrong - missing).Abs(), (local - missing).Abs()} {
+		if gap > 100*time.Millisecond {
+			t.Fatalf("the refusals took %s, %s and %s, a gap of %s", local, missing, wrong, gap)
+		}
+	}
+}
+
+// TestVerifyPassword_DirectoryUnavailable covers a directory that did not
+// answer. It is not a credential failure, so it carries a slug of its own, and
+// the trail names the cause and the provider.
+func TestVerifyPassword_DirectoryUnavailable(t *testing.T) {
+	svc, st := directoryService(t, func(context.Context, string, string, string, string) error {
+		return ErrDirectoryUnavailable
+	})
+	opened := signedInAgainst(t, svc)
+
+	_, _, err := svc.VerifyPassword(
+		context.Background(), "tenant-1", opened.Token, "the-directory-password")
+	if !errors.Is(err, ErrDirectoryUnavailable) {
+		t.Fatalf("err = %v, want ErrDirectoryUnavailable", err)
+	}
+	if errors.Is(err, ErrBadCredentials) {
+		t.Fatalf("err = %v, want a directory failure and not a credential failure", err)
+	}
+
+	metadata := refusal(t, st)
+	if !strings.Contains(metadata, `"reason":"directory_unavailable"`) {
+		t.Errorf("the trail recorded %q, want the directory reason", metadata)
+	}
+	if !strings.Contains(metadata, directoryIdp) {
+		t.Errorf("the trail recorded %q, want the provider that refused", metadata)
+	}
+}
+
+// TestVerifyPassword_DirectoryDisabled covers a provider a tenant switched off,
+// and a soft-deleted one, which behave alike. The answer is the one an unknown
+// identifier gets, and only the trail names the cause.
+func TestVerifyPassword_DirectoryDisabled(t *testing.T) {
+	svc, st := directoryService(t, func(context.Context, string, string, string, string) error {
+		return ErrDirectoryDisabled
+	})
+	opened := signedInAgainst(t, svc)
+
+	_, _, err := svc.VerifyPassword(
+		context.Background(), "tenant-1", opened.Token, "the-directory-password")
+	if !errors.Is(err, ErrDirectoryDisabled) {
+		t.Fatalf("err = %v, want ErrDirectoryDisabled", err)
+	}
+	if !strings.Contains(refusal(t, st), `"reason":"directory_disabled"`) {
+		t.Errorf("the trail recorded %q, want the disabled reason", st.events[0].Metadata)
+	}
+}
+
+// TestVerifyPassword_TooManyBinds covers the bind budget. The person waits out
+// the window, and the trail records the refused sign-in.
+func TestVerifyPassword_TooManyBinds(t *testing.T) {
+	svc, st := directoryService(t, func(context.Context, string, string, string, string) error {
+		return ErrTooManyBinds
+	})
+	opened := signedInAgainst(t, svc)
+
+	_, _, err := svc.VerifyPassword(
+		context.Background(), "tenant-1", opened.Token, "the-directory-password")
+	if !errors.Is(err, ErrTooManyBinds) {
+		t.Fatalf("err = %v, want ErrTooManyBinds", err)
+	}
+	if !strings.Contains(refusal(t, st), `"reason":"too_many_binds"`) {
+		t.Errorf("the trail recorded %q, want the budget reason", st.events[0].Metadata)
+	}
+}
+
+// TestVerifyPassword_BindWithoutALocalPerson covers a bind that proved the
+// password of somebody this gateway does not hold yet. Creating that person is
+// the next ticket of this feature, and until it lands the sign-in is refused the
+// way an unknown identifier is, with no session upgraded.
+func TestVerifyPassword_BindWithoutALocalPerson(t *testing.T) {
+	svc, st := testServiceBinding(t,
+		func(context.Context, string, string) (Identity, error) { return Identity{}, user.ErrNotFound },
+		noCredential,
+		func(context.Context, string, string, string) (string, error) { return directoryIdp, nil },
+		func(context.Context, string, string, string, string) error { return nil })
+	opened := signedInAgainst(t, svc)
+
+	_, _, err := svc.VerifyPassword(
+		context.Background(), "tenant-1", opened.Token, "the-directory-password")
+	if !errors.Is(err, ErrBadCredentials) {
+		t.Fatalf("err = %v, want ErrBadCredentials", err)
+	}
+	if st.saved.Authenticated() {
+		t.Error("the refused sign-in upgraded the login session")
+	}
+	if !strings.Contains(refusal(t, st), `"reason":"no_local_person"`) {
+		t.Errorf("the trail recorded %q, want the missing person reason", st.events[0].Metadata)
+	}
+}
+
+// TestDirectoryRefusalsAnswerOneSlug proves on the wire that a disabled
+// directory, a spent bind budget, and a wrong password cannot be told apart.
+//
+// Only a directory sign-in carries a budget, so a slug of its own would say that
+// an identifier is served by a directory, and a caller could ask the question
+// whenever they liked by spending the budget. A disabled directory would name
+// every person tied to it for as long as it stays off.
+func TestDirectoryRefusalsAnswerOneSlug(t *testing.T) {
+	answer := func(err error) string {
+		t.Helper()
+
+		app := fiber.New()
+		app.Get("/x", func(c fiber.Ctx) error { return response.Fail(c, err) })
+
+		res, testErr := app.Test(httptest.NewRequest(fiber.MethodGet, "/x", nil))
+		if testErr != nil {
+			t.Fatalf("test request: %v", testErr)
+		}
+		defer res.Body.Close()
+
+		body, readErr := io.ReadAll(res.Body)
+		if readErr != nil {
+			t.Fatalf("read the answer: %v", readErr)
+		}
+		return fmt.Sprintf("%d %s", res.StatusCode, body)
+	}
+
+	wrong := answer(fmt.Errorf("%w: session s-1", ErrBadCredentials))
+	if disabled := answer(fmt.Errorf("%w: session s-1", ErrDirectoryDisabled)); disabled != wrong {
+		t.Fatalf("a disabled directory answers %s, want the %s a wrong password answers", disabled, wrong)
+	}
+	if spent := answer(fmt.Errorf("%w: session s-1", ErrTooManyBinds)); spent != wrong {
+		t.Fatalf("a spent bind budget answers %s, want the %s a wrong password answers", spent, wrong)
+	}
+	if unavailable := answer(fmt.Errorf("%w: session s-1", ErrDirectoryUnavailable)); unavailable == wrong {
+		t.Fatal("a directory that did not answer reads as a wrong password, want a slug of its own")
 	}
 }

@@ -303,6 +303,136 @@ func TestBindReportsADirectoryThatRefusesTheConnection(t *testing.T) {
 	}
 }
 
+// TestProveRefusesAnInactiveProvider covers the switch a tenant turns off. The
+// directory is not dialled and the budget is not spent, because neither the
+// person nor the directory did anything wrong.
+func TestProveRefusesAnInactiveProvider(t *testing.T) {
+	off := failingProvider(t)
+	off.State = StateInactive
+	svc := testService(t, deps{rows: []Provider{off}})
+
+	_, err := svc.Prove(context.Background(), testTenantID, tenantIdpID, "alice", "the-typed-password")
+	if !errors.Is(err, ErrDisabled) {
+		t.Fatalf("err = %v, want ErrDisabled", err)
+	}
+	if spends != 0 {
+		t.Errorf("the refused sign-in spent %d binds, want none", spends)
+	}
+}
+
+// TestProveRefusesAProviderNobodyHolds covers the soft-deleted row. The read
+// filters deleted_at, so a deleted provider is a miss, and the two states behave
+// alike: both refuse and neither spends the budget.
+func TestProveRefusesAProviderNobodyHolds(t *testing.T) {
+	svc := testService(t, deps{})
+
+	_, err := svc.Prove(context.Background(), testTenantID, deadIdpID, "alice", "the-typed-password")
+	if !errors.Is(err, ErrDisabled) {
+		t.Fatalf("err = %v, want ErrDisabled", err)
+	}
+	if spends != 0 {
+		t.Errorf("the refused sign-in spent %d binds, want none", spends)
+	}
+}
+
+// TestProveRefusesASpentBindBudget covers the cap. The provider dials an address
+// nothing listens on, so an answer that named the directory would prove that the
+// bind ran. ErrTooManyBinds proves that it did not.
+func TestProveRefusesASpentBindBudget(t *testing.T) {
+	svc := testService(t, deps{rows: []Provider{failingProvider(t)}, budgetSpent: true})
+
+	_, err := svc.Prove(context.Background(), testTenantID, tenantIdpID, "alice", "the-typed-password")
+	if !errors.Is(err, ErrTooManyBinds) {
+		t.Fatalf("err = %v, want ErrTooManyBinds", err)
+	}
+	if errors.Is(err, ErrDirectory) {
+		t.Fatalf("err = %v, want the cap and not a directory that was dialled", err)
+	}
+}
+
+// TestProveRefusesABindBudgetNobodyCouldRead covers the cache failure. Redis
+// holds the whole budget, so a bind that ran without it would leave an outbound
+// call into a customer network unmetered for as long as Redis is down.
+func TestProveRefusesABindBudgetNobodyCouldRead(t *testing.T) {
+	svc := testService(t, deps{rows: []Provider{failingProvider(t)}, budgetBroken: true})
+
+	_, err := svc.Prove(context.Background(), testTenantID, tenantIdpID, "alice", "the-typed-password")
+	if !errors.Is(err, ErrBindUnavailable) {
+		t.Fatalf("err = %v, want ErrBindUnavailable", err)
+	}
+	if errors.Is(err, ErrTooManyBinds) || errors.Is(err, ErrDirectory) {
+		t.Fatalf("err = %v, want the unreadable budget and not the spent one", err)
+	}
+}
+
+// TestProveSpendsOneBindOnALiveProvider covers the order the budget is spent in.
+// It is spent on the way in, because it bounds the outbound call and not the
+// answer, so a directory that never answered has spent one bind.
+func TestProveSpendsOneBindOnALiveProvider(t *testing.T) {
+	svc := testService(t, deps{rows: []Provider{failingProvider(t)}})
+
+	_, err := svc.Prove(context.Background(), testTenantID, tenantIdpID, "alice", "the-typed-password")
+	if !errors.Is(err, ErrDirectory) {
+		t.Fatalf("err = %v, want ErrDirectory", err)
+	}
+	if spends != 1 {
+		t.Errorf("the sign-in spent %d binds, want one", spends)
+	}
+}
+
+// TestProveSpendsNothingOnAnEmptyPassword covers the value that costs the
+// directory nothing. An unauthenticated bind never reaches the wire, so it must
+// not cost the person the budget a real bind costs: without this order, a
+// stranger locks a named person out of the directory sign-in with ten empty
+// requests.
+func TestProveSpendsNothingOnAnEmptyPassword(t *testing.T) {
+	svc := testService(t, deps{rows: []Provider{failingProvider(t)}})
+
+	_, err := svc.Prove(context.Background(), testTenantID, tenantIdpID, "alice", "")
+	if !errors.Is(err, ErrWrongPassword) {
+		t.Fatalf("err = %v, want ErrWrongPassword", err)
+	}
+	if spends != 0 {
+		t.Errorf("the empty password spent %d binds, want none", spends)
+	}
+}
+
+// TestBindKeyNamesNoIdentifier proves that the budget key carries the digest of
+// the identifier and never the address itself. Every operator who lists the
+// keyspace reads these keys.
+func TestBindKeyNamesNoIdentifier(t *testing.T) {
+	key := bindKey(testTenantID, "alice@corp.example")
+
+	if strings.Contains(key, "alice") || strings.Contains(key, "corp.example") {
+		t.Fatalf("bindKey = %q, want no identifier in it", key)
+	}
+	if key == bindKey(testTenantID, "bob@corp.example") {
+		t.Fatal("two identifiers share one budget key, want one key each")
+	}
+	if key != bindKey(testTenantID, "alice@corp.example") {
+		t.Fatal("the key of one identifier changed between two reads")
+	}
+}
+
+// TestProveLogsNoPassword proves that neither the typed password nor the
+// configured bind password reaches a log line of the sign-in bind.
+func TestProveLogsNoPassword(t *testing.T) {
+	svc := testService(t, deps{rows: []Provider{failingProvider(t)}})
+
+	if _, err := svc.Prove(
+		context.Background(), testTenantID, tenantIdpID, "alice", "the-typed-password",
+	); err == nil {
+		t.Fatal("Prove answered no error, want a directory that refused the connection")
+	}
+
+	for _, entry := range logs.All() {
+		line := fmt.Sprintf("%s %v", entry.Message, entry.ContextMap())
+		if strings.Contains(line, "the-typed-password") || strings.Contains(line, theSecret) {
+			t.Fatalf("a log line reads %q, want no password in it", line)
+		}
+	}
+}
+
 // silentDirectory listens, accepts, and answers nothing. It is the directory
 // that hangs a request.
 func silentDirectory(t *testing.T) string {

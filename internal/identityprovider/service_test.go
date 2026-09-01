@@ -368,6 +368,7 @@ var (
 	unlinked   []string
 	events     []audit.Event
 	rolledBack bool
+	spends     int
 	logs       *observer.ObservedLogs
 )
 
@@ -376,6 +377,7 @@ func testService(t *testing.T, d deps) *Service {
 	var log logger.Logger
 	log, logs = logger.NewObserved()
 	written, updated, deleted, claimed, unlinked, events, rolledBack = nil, nil, nil, nil, nil, nil, false
+	spends = 0
 
 	countWrites := func() int {
 		return len(written) + len(updated) + len(deleted) + len(claimed) + len(unlinked)
@@ -447,6 +449,7 @@ func testService(t *testing.T, d deps) *Service {
 			if d.budgetBroken {
 				return false, errors.New("the cache is down")
 			}
+			spends++
 			return !d.budgetSpent, nil
 		},
 		TenantRoles: func(context.Context, string, string) ([]string, error) { return d.tenantRoles, nil },
