@@ -1108,8 +1108,25 @@ func newSessionService(
 	users := user.NewRepository(bdb, log)
 	sessions := session.NewRepository(bdb, cipher, log)
 
+	// Which Identity Provider proves this sign-in. The session domain imports
+	// neither the provider domain nor the four reads that answer the question,
+	// so the crossing is one function value composed here.
+	//
+	// The resolver is built beside the session and not beside the console
+	// service, because resolution runs on the sign-in path, where there is no
+	// actor, no audit row, and no transaction.
+	idps := identityprovider.NewRepository(bdb, cipher, log)
+	resolver := identityprovider.NewResolver(identityprovider.ResolverDeps{
+		DomainOwner: idps.FindByDomain,
+		Linked:      idps.LinkedProviders,
+		Active:      idps.ActiveIDs,
+		Held:        users.HoldsIdentifier,
+		Log:         log,
+	})
+
 	return session.NewService(session.Deps{
 		Identity: identityFinder(users),
+		Provider: resolver.Resolve,
 		Steps:    steps,
 		// The one credential read of the user domain answers the organization
 		// beside the hash. The sign-in needs the hash only.

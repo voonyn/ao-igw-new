@@ -158,6 +158,43 @@ func (r *Repository) FindByIdentifier(ctx context.Context, tenantID, identifier 
 	return row, nil
 }
 
+// HoldsIdentifier reports whether the tenant holds any account for one
+// identifier, whatever its state, and soft-deleted rows included.
+//
+// It is the second read Provider Resolution needs, and it exists because
+// FindByIdentifier filters state = active inside the query: a deactivated,
+// locked, or soft-deleted person reads as absent there. A sign-in that took that
+// for "nobody" would resolve a directory and let the first bind write a brand-new
+// person, because uq_username maps a NULL deleted_at to an epoch and leaves the
+// username of a soft-deleted person free.
+//
+// It filters no user_type either. A machine account holds the username as much
+// as a person does, and uq_username does not care which of the two holds it.
+//
+// The identifier is personal data, so neither it nor the answer reaches a log
+// line.
+func (r *Repository) HoldsIdentifier(ctx context.Context, tenantID, identifier string) (bool, error) {
+	r.log.Debug("read whether the tenant holds the identifier",
+		logger.String("tenant_id", tenantID), logger.RequestID(ctx))
+
+	held, err := db.Conn(ctx, r.db).NewSelect().
+		Model((*User)(nil)).
+		Join(humanJoin).
+		Where("u.tenant_id = ?", tenantID).
+		Where("u.username = ? OR h.email = ?", identifier, identifier).
+		WhereAllWithDeleted().
+		Exists(ctx)
+	if err != nil {
+		return false, fmt.Errorf("read whether tenant %s holds the identifier: %w", tenantID, err)
+	}
+
+	// The answer is not logged. It says whether the identifier named a real
+	// person, which is what this step must never disclose.
+	r.log.Debug("counted the accounts one identifier names",
+		logger.String("tenant_id", tenantID), logger.RequestID(ctx))
+	return held, nil
+}
+
 // FindByUsername reads the person one username names, and only that column.
 //
 // QR Login resolves a scan through it. The Scan Verifier keys a person by their

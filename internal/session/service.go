@@ -41,6 +41,15 @@ type Terminator func(ctx context.Context, tenantID, sessionID string) error
 // user.ErrNotFound when no live account of the tenant carries the id.
 type CredentialFinder func(ctx context.Context, tenantID, userID string) (string, error)
 
+// ProviderResolver names the Identity Provider that proves one sign-in. It
+// answers an empty id when the local password compare proves it, and an error
+// when no single provider can.
+//
+// The router composes it, because it reads the directories a tenant registered,
+// the domains they claim, and the Identity Links of the person, and those live in
+// a domain this one must not import.
+type ProviderResolver func(ctx context.Context, tenantID, identifier, userID string) (string, error)
+
 // PendingSteps names the Pending Steps one person still owes after the password
 // step. It answers an empty list when the sign-in owes nothing.
 //
@@ -53,6 +62,7 @@ type PendingSteps func(ctx context.Context, tenantID, userID string) ([]string, 
 // a recorder, so the logic is testable without a database.
 type Deps struct {
 	Identity   IdentityFinder
+	Provider   ProviderResolver
 	Credential CredentialFinder
 	Steps      PendingSteps
 	Save       Saver
@@ -86,7 +96,17 @@ func (s *Service) Identify(ctx context.Context, tenantID, identifier, ip, userAg
 		s.log.Error("read user", logger.String("tenant_id", tenantID), logger.Err(err))
 		return Opened{}, err
 	}
-	return s.open(ctx, tenantID, person, ip, userAgent)
+	// A resolution that broke stops the request, the way a broken read of the
+	// person above it does. The resolver answers an empty id for every case the
+	// local password compare proves, so an error here is a read that failed and
+	// never a person who is not held: a sign-in that carried on would fall back
+	// to a local password hash that a claimed domain took out of service. The
+	// resolver has logged it.
+	idpID, err := s.deps.Provider(ctx, tenantID, identifier, person.UserID)
+	if err != nil {
+		return Opened{}, err
+	}
+	return s.open(ctx, tenantID, person, idpID, ip, userAgent)
 }
 
 // Open opens a partial login session that names nobody.
@@ -96,13 +116,14 @@ func (s *Service) Identify(ctx context.Context, tenantID, identifier, ip, userAg
 // person the scan resolved to.
 func (s *Service) Open(ctx context.Context, tenantID, ip, userAgent string) (Opened, error) {
 	s.log.Debug("open login session", logger.String("tenant_id", tenantID), logger.RequestID(ctx))
-	return s.open(ctx, tenantID, Identity{}, ip, userAgent)
+	return s.open(ctx, tenantID, Identity{}, "", ip, userAgent)
 }
 
 // open writes one partial login session and hands out the token that
-// credentials it. person is the zero Identity when the caller names nobody.
+// credentials it. person is the zero Identity when the caller names nobody, and
+// idpID is empty when the local password compare proves the sign-in.
 func (s *Service) open(
-	ctx context.Context, tenantID string, person Identity, ip, userAgent string,
+	ctx context.Context, tenantID string, person Identity, idpID, ip, userAgent string,
 ) (Opened, error) {
 	now := time.Now().UTC()
 	live := LoginSession{
@@ -110,6 +131,7 @@ func (s *Service) open(
 		TenantID:  tenantID,
 		UserID:    person.UserID,
 		Email:     person.Email,
+		IdpID:     idpID,
 		IP:        ip,
 		UserAgent: userAgent,
 		CreatedAt: now,
@@ -129,10 +151,15 @@ func (s *Service) open(
 		return Opened{}, err
 	}
 
+	// The session id ties the steps of one sign-in together, and the provider id
+	// says which credential the password step will prove. Whether the identifier
+	// named a person is not logged: this step answers the same thing either way,
+	// and a log line that named it would be the enumeration oracle the answer is
+	// not.
 	s.log.Debug("opened login session",
 		logger.String("tenant_id", tenantID),
 		logger.String("session_id", live.ID),
-		logger.Bool("known_user", person.UserID != ""), logger.RequestID(ctx))
+		logger.String("idp_id", live.IdpID), logger.RequestID(ctx))
 	return Opened{ID: live.ID, Token: token}, nil
 }
 

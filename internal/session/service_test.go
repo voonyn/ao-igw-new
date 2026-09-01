@@ -78,6 +78,12 @@ func knownPerson(identifier string, person Identity) IdentityFinder {
 	}
 }
 
+// noProvider is the resolution seam of a test about the local password. No
+// directory proves the sign-in, so the bcrypt compare answers it.
+func noProvider(context.Context, string, string, string) (string, error) {
+	return "", nil
+}
+
 // noCredential is the credential seam of a test that never reaches the password
 // step.
 func noCredential(context.Context, string, string) (string, error) {
@@ -103,11 +109,19 @@ func testService(t *testing.T, identity IdentityFinder) (*Service, *store) {
 
 func testServiceWith(t *testing.T, identity IdentityFinder, credential CredentialFinder) (*Service, *store) {
 	t.Helper()
+	return testServiceResolving(t, identity, credential, noProvider)
+}
+
+func testServiceResolving(
+	t *testing.T, identity IdentityFinder, credential CredentialFinder, provider ProviderResolver,
+) (*Service, *store) {
+	t.Helper()
 
 	log, _ := logger.NewObserved()
 	st := &store{}
 	svc := NewService(Deps{
 		Identity:   identity,
+		Provider:   provider,
 		Credential: credential,
 		Steps:      noSteps,
 		Save:       st.Save,
@@ -262,6 +276,63 @@ func TestIdentify_ReadFails(t *testing.T) {
 
 	if _, err := svc.Identify(context.Background(), "tenant-1", "person@example.com", "", ""); !errors.Is(err, boom) {
 		t.Errorf("identify gave %v, want %v", err, boom)
+	}
+}
+
+// TestIdentify_RecordsTheResolvedProvider proves that the identifier step writes
+// the Identity Provider onto the login session. The password step reads it there,
+// so the resolution runs once and no later step resolves again.
+func TestIdentify_RecordsTheResolvedProvider(t *testing.T) {
+	const idpID = "idp-1"
+	svc, st := testServiceResolving(t,
+		knownPerson("person@example.com", Identity{UserID: "user-1"}), noCredential,
+		func(context.Context, string, string, string) (string, error) { return idpID, nil })
+
+	if _, err := svc.Identify(context.Background(), "tenant-1", "person@example.com", "", ""); err != nil {
+		t.Fatalf("identify: %v", err)
+	}
+	if st.saved.IdpID != idpID {
+		t.Errorf("the saved session names %q, want %q", st.saved.IdpID, idpID)
+	}
+}
+
+// TestIdentify_ResolutionFails covers a resolution that broke. It stops the
+// request, the way a broken read of the person does.
+//
+// The resolver answers an empty id for every case the local compare proves, and
+// for both of its refusals, so an error here is a read that failed and never a
+// person the tenant does not hold. A sign-in that carried on would fall back to a
+// local password hash that a claimed domain took out of service.
+func TestIdentify_ResolutionFails(t *testing.T) {
+	boom := errors.New("the database is down")
+	svc, st := testServiceResolving(t,
+		knownPerson("person@example.com", Identity{UserID: "user-1"}), noCredential,
+		func(context.Context, string, string, string) (string, error) { return "", boom })
+
+	if _, err := svc.Identify(context.Background(), "tenant-1", "person@example.com", "", ""); !errors.Is(err, boom) {
+		t.Fatalf("identify gave %v, want %v", err, boom)
+	}
+	if st.savedHash != "" {
+		t.Error("a failed resolution saved a login session")
+	}
+}
+
+// TestOpen_NamesNoProvider covers the flow that learns the person later. QR Login
+// opens a session before anybody has typed an identifier, so there is nothing to
+// resolve a directory from.
+func TestOpen_NamesNoProvider(t *testing.T) {
+	svc, st := testServiceResolving(t,
+		knownPerson("person@example.com", Identity{UserID: "user-1"}), noCredential,
+		func(context.Context, string, string, string) (string, error) {
+			t.Error("Open resolved an identity provider")
+			return "idp-1", nil
+		})
+
+	if _, err := svc.Open(context.Background(), "tenant-1", "", ""); err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	if st.saved.IdpID != "" {
+		t.Errorf("the saved session names %q, want no provider", st.saved.IdpID)
 	}
 }
 

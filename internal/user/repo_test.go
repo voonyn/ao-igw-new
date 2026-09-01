@@ -403,3 +403,51 @@ func TestClearPasskeysRemovesEveryPasskey(t *testing.T) {
 		t.Errorf("a second reset gives %v, want no error", err)
 	}
 }
+
+// TestHoldsIdentifier is the second read Provider Resolution makes. It reads
+// whether the tenant holds an account at all, so it filters neither the state,
+// nor the soft delete, nor the type of the account.
+//
+// Every person below reads as absent through FindByIdentifier, which filters
+// state = active inside the query. A sign-in that took that for "nobody" would
+// resolve a directory and let the first bind write a brand-new row over them.
+func TestHoldsIdentifier(t *testing.T) {
+	repo, ctx := testRepo(t)
+
+	held := []string{
+		"admin",          // the active person, by username
+		"admin@acme.com", // the same person, by email
+		"locked",         // a locked account
+		"gone",           // a soft-deleted account
+		"gone@acme.com",  // the same account, by email
+		"robot",          // a machine account, which holds the username too
+	}
+	for _, identifier := range held {
+		got, err := repo.HoldsIdentifier(ctx, testTenantID, identifier)
+		if err != nil {
+			t.Fatalf("read whether the tenant holds %q: %v", identifier, err)
+		}
+		if !got {
+			t.Errorf("%q reads as absent, want the account the tenant holds", identifier)
+		}
+	}
+
+	// Nobody holds these. The second one proves the tenant scope: another
+	// tenant's people never make this one's identifier look taken.
+	for _, absent := range []string{"nobody", "nobody@acme.com"} {
+		got, err := repo.HoldsIdentifier(ctx, "99999999-9999-9999-9999-999999999999", absent)
+		if err != nil {
+			t.Fatalf("read whether the tenant holds %q: %v", absent, err)
+		}
+		if got {
+			t.Errorf("%q reads as held, want nothing", absent)
+		}
+	}
+	got, err := repo.HoldsIdentifier(ctx, "99999999-9999-9999-9999-999999999999", "admin")
+	if err != nil {
+		t.Fatalf("read whether another tenant holds the identifier: %v", err)
+	}
+	if got {
+		t.Error("another tenant reads the identifier as held, want the tenant scope kept")
+	}
+}

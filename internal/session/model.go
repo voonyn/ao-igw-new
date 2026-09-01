@@ -144,11 +144,17 @@ var ErrBadCredentials = errors.New("identifier or password is wrong")
 // WrongCodes counts the wrong second-factor codes this sign-in submitted. It
 // lives in the sealed blob, so it needs no column and every instance reads the
 // same number.
+//
+// IdpID names the Identity Provider the identifier step resolved, and it is
+// empty when the local password compare proves this sign-in. It needs no column
+// either, and no SQL read names a field inside the blob, so a session already in
+// flight decodes it to the empty string, which is what that session was.
 type LoginSession struct {
 	ID         string               `json:"id"`
 	TenantID   string               `json:"tenant_id"`
 	UserID     string               `json:"user_id,omitempty"`
 	Email      string               `json:"email,omitempty"`
+	IdpID      string               `json:"idp_id,omitempty"`
 	IP         string               `json:"ip,omitempty"`
 	UserAgent  string               `json:"user_agent,omitempty"`
 	WrongCodes int                  `json:"wrong_codes,omitempty"`

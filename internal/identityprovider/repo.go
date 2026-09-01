@@ -48,6 +48,20 @@ var providerColumns = []string{
 const providerNameJoin = `LEFT JOIN identity_providers AS ip
 	ON ip.id = ipl.idp_id AND ip.tenant_id = ipl.tenant_id AND ip.deleted_at IS NULL`
 
+// The two joins Provider Resolution reads a provider through. Each one is an
+// inner join, so a domain and a link whose provider is soft deleted match
+// nothing. The caller adds the state, because the value is a constant of this
+// package and not a literal in a SQL string.
+//
+// The alias differs per table, so the two clauses cannot be one.
+const (
+	domainProviderJoin = `JOIN identity_providers AS ip
+		ON ip.id = ipd.idp_id AND ip.tenant_id = ipd.tenant_id AND ip.deleted_at IS NULL`
+
+	linkProviderJoin = `JOIN identity_providers AS ip
+		ON ip.id = ipl.idp_id AND ip.tenant_id = ipl.tenant_id AND ip.deleted_at IS NULL`
+)
+
 // Repository reads and writes the identity providers, the domains they claim,
 // and the Identity Links of one tenant.
 //
@@ -399,4 +413,92 @@ func affected(res sql.Result, miss error) error {
 		return miss
 	}
 	return nil
+}
+
+// FindByDomain reads the provider that claims one email domain, live and active.
+// A domain nobody claims, and a domain whose provider is inactive or soft
+// deleted, both return ErrNotFound.
+//
+// The domain is part of an identifier, which is personal data, so it never
+// reaches a log line.
+func (r *Repository) FindByDomain(ctx context.Context, tenantID, domain string) (string, error) {
+	r.log.Debug("read the identity provider that claims a domain",
+		logger.String("tenant_id", tenantID), logger.RequestID(ctx))
+
+	var idpID string
+	err := db.Conn(ctx, r.db).NewSelect().
+		Model((*Domain)(nil)).
+		ColumnExpr("ipd.idp_id").
+		Join(domainProviderJoin).
+		Where("ipd.tenant_id = ?", tenantID).
+		Where("ipd.domain = ?", domain).
+		Where("ip.state = ?", StateActive).
+		Limit(1).
+		Scan(ctx, &idpID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", fmt.Errorf("%w: tenant %s", ErrNotFound, tenantID)
+	}
+	if err != nil {
+		return "", fmt.Errorf("read the identity provider that claims a domain of tenant %s: %w",
+			tenantID, err)
+	}
+
+	r.log.Debug("found the identity provider that claims a domain",
+		logger.String("tenant_id", tenantID), logger.String("idp_id", idpID), logger.RequestID(ctx))
+	return idpID, nil
+}
+
+// LinkedProviders reads the providers one person holds an Identity Link with,
+// narrowed to the live active ones that take a typed password.
+//
+// LDAP is the one type that takes a typed password. A redirect provider proves a
+// sign-in somewhere else, so a link with one never routes the password step.
+func (r *Repository) LinkedProviders(ctx context.Context, tenantID, userID string) ([]string, error) {
+	r.log.Debug("read the linked identity providers of a person",
+		logger.String("tenant_id", tenantID), logger.String("user_id", userID), logger.RequestID(ctx))
+
+	var idpIDs []string
+	err := db.Conn(ctx, r.db).NewSelect().
+		Model((*Link)(nil)).
+		ColumnExpr("ipl.idp_id").
+		Join(linkProviderJoin).
+		Where("ipl.tenant_id = ?", tenantID).
+		Where("ipl.user_id = ?", userID).
+		Where("ip.type = ?", TypeLDAP).
+		Where("ip.state = ?", StateActive).
+		Order("ipl.idp_id ASC").
+		Scan(ctx, &idpIDs)
+	if err != nil {
+		return nil, fmt.Errorf("read the linked identity providers of user %s of tenant %s: %w",
+			userID, tenantID, err)
+	}
+
+	r.log.Debug("found the linked identity providers of a person",
+		logger.String("tenant_id", tenantID), logger.String("user_id", userID),
+		logger.Int("count", len(idpIDs)), logger.RequestID(ctx))
+	return idpIDs, nil
+}
+
+// ActiveIDs reads every live active provider of one tenant, at both levels
+// together. Provider Resolution counts them when an identifier names no account,
+// and that case knows no organization yet.
+func (r *Repository) ActiveIDs(ctx context.Context, tenantID string) ([]string, error) {
+	r.log.Debug("read the active identity providers",
+		logger.String("tenant_id", tenantID), logger.RequestID(ctx))
+
+	var idpIDs []string
+	err := db.Conn(ctx, r.db).NewSelect().
+		Model((*Provider)(nil)).
+		ColumnExpr("ip.id").
+		Where("ip.tenant_id = ?", tenantID).
+		Where("ip.state = ?", StateActive).
+		Order("ip.id ASC").
+		Scan(ctx, &idpIDs)
+	if err != nil {
+		return nil, fmt.Errorf("read the active identity providers of tenant %s: %w", tenantID, err)
+	}
+
+	r.log.Debug("found the active identity providers",
+		logger.String("tenant_id", tenantID), logger.Int("count", len(idpIDs)), logger.RequestID(ctx))
+	return idpIDs, nil
 }

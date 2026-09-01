@@ -325,3 +325,105 @@ func TestADuplicateNameAnswersTheConflictSentinel(t *testing.T) {
 		t.Errorf("a rename onto a taken name reads %v, want ErrNameTaken", err)
 	}
 }
+
+// TestFindByDomainReadsTheLiveActiveClaim covers case 1 of Provider Resolution.
+// The claim of the active provider answers, and the claim of the inactive one is
+// matched by nothing.
+func TestFindByDomainReadsTheLiveActiveClaim(t *testing.T) {
+	repo, ctx := testRepo(t)
+
+	idpID, err := repo.FindByDomain(ctx, testTenantID, "corp.example")
+	if err != nil {
+		t.Fatalf("read the provider that claims the domain: %v", err)
+	}
+	if idpID != tenantIdpID {
+		t.Errorf("the domain resolved %q, want the tenant-wide provider", idpID)
+	}
+
+	// sub.example is claimed by the inactive provider, and nobody claims
+	// nowhere.example.
+	for _, domain := range []string{"sub.example", "nowhere.example"} {
+		if _, err := repo.FindByDomain(ctx, testTenantID, domain); !errors.Is(err, ErrNotFound) {
+			t.Errorf("%s gave %v, want ErrNotFound", domain, err)
+		}
+	}
+}
+
+// TestFindByDomainKeepsTheTenantScope proves that a domain of one tenant never
+// routes the sign-in of another. Both tenants can claim the same host.
+func TestFindByDomainKeepsTheTenantScope(t *testing.T) {
+	repo, ctx := testRepo(t)
+
+	if _, err := repo.FindByDomain(ctx, otherTenant, "corp.example"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("the other tenant read %v, want ErrNotFound", err)
+	}
+}
+
+// TestLinkedProvidersReadsTheLiveActiveLinks covers case 2 of Provider
+// Resolution. A link with an inactive provider and a link with a soft-deleted one
+// are matched by nothing, so neither routes a password step and neither makes
+// the person ambiguous.
+func TestLinkedProvidersReadsTheLiveActiveLinks(t *testing.T) {
+	repo, ctx := testRepo(t)
+
+	link := `INSERT INTO identity_provider_user_links
+	    (tenant_id, idp_id, external_id, user_id, created_at) VALUES (?, ?, ?, ?, NOW(3))`
+	for _, idpID := range []string{orgIdpID, deadIdpID} {
+		if _, err := repo.db.ExecContext(ctx, link, testTenantID, idpID, "guid-"+idpID, personID); err != nil {
+			t.Fatalf("write the identity link with %s: %v", idpID, err)
+		}
+	}
+
+	idpIDs, err := repo.LinkedProviders(ctx, testTenantID, personID)
+	if err != nil {
+		t.Fatalf("read the linked providers: %v", err)
+	}
+	if len(idpIDs) != 1 || idpIDs[0] != tenantIdpID {
+		t.Errorf("the person is linked to %v, want the live active provider alone", idpIDs)
+	}
+}
+
+// TestLinkedProvidersReadsNothingForAPersonWithNoLink covers case 3. The person
+// the tenant holds is tied to no directory, so the local compare answers.
+func TestLinkedProvidersReadsNothingForAPersonWithNoLink(t *testing.T) {
+	repo, ctx := testRepo(t)
+
+	idpIDs, err := repo.LinkedProviders(ctx, testTenantID, testUserID)
+	if err != nil {
+		t.Fatalf("read the linked providers: %v", err)
+	}
+	if len(idpIDs) != 0 {
+		t.Errorf("the person is linked to %v, want nothing", idpIDs)
+	}
+}
+
+// TestActiveIDsCountsBothLevelsAndNothingElse covers case 4. The count covers the
+// tenant-wide row and the organization rows together, and an inactive provider, a
+// soft-deleted one, and the provider of another tenant are counted by nothing.
+func TestActiveIDsCountsBothLevelsAndNothingElse(t *testing.T) {
+	repo, ctx := testRepo(t)
+
+	idpIDs, err := repo.ActiveIDs(ctx, testTenantID)
+	if err != nil {
+		t.Fatalf("read the active providers: %v", err)
+	}
+	if len(idpIDs) != 1 || idpIDs[0] != tenantIdpID {
+		t.Errorf("the tenant holds %v, want the live active provider alone", idpIDs)
+	}
+
+	// The organization row is inactive. Switching it on makes the tenant
+	// ambiguous, which is the refusal case 4 answers with, and it proves that
+	// both levels are counted together.
+	if _, err := repo.db.ExecContext(ctx,
+		`UPDATE identity_providers SET state = ? WHERE id = ?`, StateActive, orgIdpID); err != nil {
+		t.Fatalf("activate the organization provider: %v", err)
+	}
+
+	idpIDs, err = repo.ActiveIDs(ctx, testTenantID)
+	if err != nil {
+		t.Fatalf("read the active providers: %v", err)
+	}
+	if len(idpIDs) != 2 {
+		t.Errorf("the tenant holds %v, want both levels counted together", idpIDs)
+	}
+}
