@@ -153,6 +153,29 @@ func TestVerifyPasswordAnswersADirectoryOutageAsItself(t *testing.T) {
 	}
 }
 
+// TestVerifyPasswordAnswersABrokenDirectoryAccountAsItself proves the second
+// rule a person depends on: a state no try of theirs can clear is never told to
+// try again.
+//
+// A person whom no single directory entry proves holds a broken account: no live
+// active Identity Link, or more than one, or a search that matched none, or a
+// search that matched two. Only an administrator can mend it, so the sentinel
+// travels back whole, and never as a wrong password or a directory outage.
+func TestVerifyPasswordAnswersABrokenDirectoryAccountAsItself(t *testing.T) {
+	svc := directoryService(t, directoryDeps{proveErr: ErrDirectoryNoEntry})
+
+	err := svc.VerifyPassword(t.Context(), person, currentPassword)
+	if !errors.Is(err, ErrDirectoryNoEntry) {
+		t.Fatalf("VerifyPassword answered %v, want %v", err, ErrDirectoryNoEntry)
+	}
+	if errors.Is(err, ErrBadPassword) {
+		t.Error("a broken directory account answered a wrong password, want the broken account")
+	}
+	if errors.Is(err, ErrDirectoryUnavailable) {
+		t.Error("a broken directory account answered a directory outage, want the broken account")
+	}
+}
+
 // TestVerifyPasswordKeepsTheLocalCompare proves that nothing changed for a
 // person who holds a local password. The bcrypt compare runs, and no bind does.
 func TestVerifyPasswordKeepsTheLocalCompare(t *testing.T) {

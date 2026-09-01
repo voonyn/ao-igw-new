@@ -362,7 +362,14 @@ Admin routes, on the shared admin group beside `authpolicy`:
 Every answer uses the one envelope. Every error carries a slug. New slugs:
 `directory_unavailable`, `directory_disabled`, `provider_ambiguous`,
 `domain_already_claimed`, `last_local_owner`, `last_identity_link`,
-`password_not_local`.
+`password_not_local`, `directory_no_entry`.
+
+`directory_no_entry` is the portal re-proof only, and it answers 409. A person whom
+no single directory entry proves holds a broken account: no live active Identity
+Link, more than one, a search that matched none, or a search that matched two. The
+state stays until somebody edits the links or the directory, so the answer never
+tells the person to try again. The sign-in keeps `invalid_credentials` for the same
+states, because the password step must not say which people a tenant holds.
 
 The login routes gain nothing. `/login/identifier` and `/login/password` keep their
 request and their answer, which is the point.

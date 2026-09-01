@@ -84,6 +84,11 @@ export function passkeyMessage(status: number, code: unknown): string {
   if (code === "directory_unavailable") {
     return "Your organization's directory did not respond. Please try again in a moment."
   }
+  // No single directory entry proves the person. The state stays until somebody
+  // edits the directory, so the copy never asks them to try again.
+  if (code === "directory_no_entry") {
+    return "Your account is not linked to a single directory entry. Please tell your administrator."
+  }
   if (code === "mfa_unavailable") return "Two-step verification is unavailable right now. Please try again in a moment."
   // One helper serves the add, the rename and the removal, and each dialog caps
   // its own field in the browser. A gateway that still refuses the body means

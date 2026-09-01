@@ -1302,11 +1302,16 @@ func directoryReProof(
 // accountDirectoryError turns one outcome of a portal re-proof bind into the
 // sentinel the user domain answers with.
 //
-// A password the directory refused is the one credential failure. Everything
-// else — a directory that is switched off, no single directory that owns the
-// person, an entry the search did not match, a spent bind budget, a budget
-// nobody could read, a dial that never returned — says that the directory could
-// not prove the person, and they are told to try again.
+// A password the directory refused is the one credential failure.
+//
+// A person whom no single directory entry proves is the one permanent state: no
+// live active link, more than one link, a search that matched no entry, and a
+// search that matched two. All four stay until somebody edits the links or the
+// directory, so the answer says the account is broken and never "try again".
+//
+// Everything else — a directory that is switched off, a spent bind budget, a
+// budget nobody could read, a dial that never returned — says that the directory
+// could not prove the person for a moment, and they are told to try again.
 //
 // The sign-in collapses those states into one refusal, because the password step
 // must not say which people a tenant holds. The portal has nothing to hide: the
@@ -1318,6 +1323,8 @@ func accountDirectoryError(err error) error {
 		return nil
 	case errors.Is(err, identityprovider.ErrWrongPassword):
 		return user.ErrBadPassword
+	case errors.Is(err, identityprovider.ErrNoEntry):
+		return user.ErrDirectoryNoEntry
 	default:
 		return user.ErrDirectoryUnavailable
 	}

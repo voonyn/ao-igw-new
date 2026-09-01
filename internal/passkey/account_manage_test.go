@@ -10,6 +10,7 @@ import (
 
 	"alphaomega/identitygateway/internal/audit"
 	"alphaomega/identitygateway/internal/platform/logger"
+	"alphaomega/identitygateway/internal/user"
 )
 
 // The rules a person meets after the first Passkey exists: the cap, the device
@@ -303,5 +304,44 @@ func TestDecodeCredentialID(t *testing.T) {
 		if _, err := decodeCredentialID(bad); !errors.Is(err, ErrNotFound) {
 			t.Errorf("decodeCredentialID of %q answered %v, want %v", bad, err, ErrNotFound)
 		}
+	}
+}
+
+// TestAccountRemove_CarriesTheBrokenAccountOfADirectoryPerson proves the answer
+// a person reads when no single directory entry proves them.
+//
+// The state is permanent. The person holds no live active Identity Link, or more
+// than one, or the search of the directory matched none, or it matched two. No
+// try of theirs changes any of that, so the sentinel must reach the caller whole
+// and never collapse into the refusal a wrong password gets.
+func TestAccountRemove_CarriesTheBrokenAccountOfADirectoryPerson(t *testing.T) {
+	log := logger.New()
+	account := user.NewAccountService(user.AccountDeps{
+		// A person the Directory owns. The stored hash is empty, always.
+		Credential: func(_ context.Context, tenantID, userID string) (user.User, error) {
+			return user.User{ID: userID, TenantID: tenantID, PasswordHash: ""}, nil
+		},
+		ProveDirectory: func(context.Context, string, string, string) error {
+			return user.ErrDirectoryNoEntry
+		},
+		Log: log,
+	})
+
+	svc := NewService(Deps{
+		VerifyPassword: func(ctx context.Context, tenantID, userID, plain string) error {
+			return account.VerifyPassword(ctx,
+				user.Actor{TenantID: tenantID, UserID: userID}, plain)
+		},
+		Delete: func(context.Context, string, string, []byte) error {
+			t.Error("the removal wrote for an account no directory entry proves")
+			return nil
+		},
+		Log: log,
+	})
+
+	who := Principal{UserID: testUserID}
+	err := svc.AccountRemove(t.Context(), testTenantID, who, "AQID", "the-directory-password")
+	if !errors.Is(err, user.ErrDirectoryNoEntry) {
+		t.Fatalf("the removal answered %v, want %v", err, user.ErrDirectoryNoEntry)
 	}
 }

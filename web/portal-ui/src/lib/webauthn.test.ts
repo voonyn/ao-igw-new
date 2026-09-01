@@ -53,6 +53,7 @@ test("every gateway slug maps to a message of its own", function () {
     "passkey_not_found",
     "invalid_credentials",
     "directory_unavailable",
+    "directory_no_entry",
     "mfa_unavailable",
     "rate_limited",
     "invalid_input",
@@ -88,6 +89,15 @@ test("a directory that did not answer is not read as a wrong password", function
   const message = passkeyMessage(503, "directory_unavailable")
   assert.match(message, /directory/i)
   assert.doesNotMatch(message, /incorrect/i)
+})
+
+// A person whom no single directory entry proves holds a broken account. Nothing
+// they do makes the next try work, so the copy must send them to an administrator
+// and never to the retry the outage copy offers.
+test("a broken directory account is not told to try again", function () {
+  const message = passkeyMessage(409, "directory_no_entry")
+  assert.match(message, /administrator/i)
+  assert.doesNotMatch(message, /try again/i)
 })
 
 test("a status with no slug still maps", function () {

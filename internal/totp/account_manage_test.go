@@ -288,3 +288,56 @@ func TestAccountRemoveTakesTheBindOfAPersonTheDirectoryOwns(t *testing.T) {
 		t.Error("the factor was not cleared")
 	}
 }
+
+// TestTheTwoRoutesCarryTheBrokenAccountOfADirectoryPerson proves the answer a
+// person reads when no single directory entry proves them.
+//
+// The state is permanent. The person holds no live active Identity Link, or more
+// than one, or the search of the directory matched none, or it matched two. No
+// try of theirs changes any of that, so the sentinel must reach the caller whole
+// and never collapse into the refusal a wrong password gets.
+//
+// Both destructive addresses of this module take the same proof, so both are
+// measured here.
+func TestTheTwoRoutesCarryTheBrokenAccountOfADirectoryPerson(t *testing.T) {
+	prove := func(ctx context.Context, tenantID, userID, plain string) error {
+		account := user.NewAccountService(user.AccountDeps{
+			Credential: func(_ context.Context, tenantID, userID string) (user.User, error) {
+				return user.User{ID: userID, TenantID: tenantID, PasswordHash: ""}, nil
+			},
+			ProveDirectory: func(context.Context, string, string, string) error {
+				return user.ErrDirectoryNoEntry
+			},
+			Log: logger.New(),
+		})
+		return account.VerifyPassword(ctx,
+			user.Actor{TenantID: tenantID, UserID: userID}, plain)
+	}
+
+	t.Run("the second factor disable", func(t *testing.T) {
+		svc, calls := manageService(active(), nil, nil)
+		svc.deps.VerifyPassword = prove
+
+		err := svc.AccountRemove(t.Context(), statusTenantID, manager(), "the-directory-password")
+		if !errors.Is(err, user.ErrDirectoryNoEntry) {
+			t.Fatalf("AccountRemove answered %v, want %v", err, user.ErrDirectoryNoEntry)
+		}
+		if calls.cleared {
+			t.Error("the factor was cleared for an account no directory entry proves")
+		}
+	})
+
+	t.Run("the recovery code regeneration", func(t *testing.T) {
+		svc, calls := manageService(active(), nil, nil)
+		svc.deps.VerifyPassword = prove
+
+		_, err := svc.AccountReplaceRecoveryCodes(
+			t.Context(), statusTenantID, manager(), "the-directory-password")
+		if !errors.Is(err, user.ErrDirectoryNoEntry) {
+			t.Fatalf("AccountReplaceRecoveryCodes answered %v, want %v", err, user.ErrDirectoryNoEntry)
+		}
+		if calls.saved != nil {
+			t.Error("the codes were replaced for an account no directory entry proves")
+		}
+	})
+}

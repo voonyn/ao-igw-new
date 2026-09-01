@@ -62,8 +62,11 @@ func TestDirectoryError(t *testing.T) {
 // disabled directory and a spent budget into the refusal a wrong password gets.
 // The portal caller already proved who they are with an access token, so there
 // is nothing to hide, and only a password the directory refused reads as a wrong
-// password. Every other state says that the directory could not prove the
-// person, and they are told to try again.
+// password.
+//
+// The portal also tells two kinds of failure apart. A directory that could not
+// answer is transient, and the person tries again. A person whom no single
+// directory entry proves is permanent, and no try of theirs can work.
 //
 // See docs/specs/0002-directory-sign-in.md.
 func TestAccountDirectoryError(t *testing.T) {
@@ -74,7 +77,7 @@ func TestAccountDirectoryError(t *testing.T) {
 	}{
 		{"a bind that proved the password", nil, nil},
 		{"a wrong password", identityprovider.ErrWrongPassword, user.ErrBadPassword},
-		{"no single directory owns the person", identityprovider.ErrNoEntry, user.ErrDirectoryUnavailable},
+		{"no single directory entry proves the person", identityprovider.ErrNoEntry, user.ErrDirectoryNoEntry},
 		{"a disabled provider", identityprovider.ErrDisabled, user.ErrDirectoryUnavailable},
 		{"a spent budget", identityprovider.ErrTooManyBinds, user.ErrDirectoryUnavailable},
 		{"a directory that did not answer", identityprovider.ErrDirectory, user.ErrDirectoryUnavailable},
@@ -101,6 +104,11 @@ func TestAccountDirectoryError(t *testing.T) {
 			}
 			if c.want == user.ErrDirectoryUnavailable && errors.Is(got, user.ErrBadPassword) {
 				t.Error("a directory that could not prove the person reads as a wrong password")
+			}
+			// The permanent state must never borrow the transient answer. A 503
+			// tells the person to try again, and no try of theirs can work.
+			if c.want == user.ErrDirectoryNoEntry && errors.Is(got, user.ErrDirectoryUnavailable) {
+				t.Error("a person whom no single directory entry proves reads as a directory outage")
 			}
 		})
 	}

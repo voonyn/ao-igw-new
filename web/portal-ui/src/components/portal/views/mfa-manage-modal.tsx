@@ -177,6 +177,11 @@ function manageMessage(status: number, code: unknown): string {
   if (code === "directory_unavailable") {
     return "Your organization's directory did not respond. Please try again in a moment.";
   }
+  // No single directory entry proves the person. The state stays until somebody
+  // edits the directory, so the copy never asks them to try again.
+  if (code === "directory_no_entry") {
+    return "Your account is not linked to a single directory entry. Please tell your administrator.";
+  }
   if (code === "no_active_factor") return "Two-step verification is already off for this account.";
   if (code === "invalid_input") return "Enter your current password.";
   if (status === 401) return "Your session is no longer valid.";

@@ -33,6 +33,18 @@ var ErrPasswordNotLocal = errors.New("the password of the account is not local")
 // and never that the password they typed is wrong.
 var ErrDirectoryUnavailable = errors.New("the directory did not answer")
 
+// ErrDirectoryNoEntry reports a person whom no single directory entry proves.
+//
+// Four states reach it: the person holds no live active Identity Link, the
+// person holds more than one, the search matched no entry, and the search
+// matched two. Each one is an answer, and each one stays until somebody edits
+// the links or the directory.
+//
+// It is not a directory that could not answer, and it must never read as one. A
+// person who meets it holds a broken account, nothing they do makes the next try
+// work, and only an administrator can mend it. The answer says so.
+var ErrDirectoryNoEntry = errors.New("no single directory entry holds the person")
+
 // The reads and writes the self-service half of this domain composes its answers
 // from. Each one is a function value, so the logic is testable without a
 // database.
@@ -64,8 +76,9 @@ type (
 	// composition root reads the username the bind searches on.
 	//
 	// It answers nil on a match, ErrDirectoryUnavailable when no directory could
-	// answer, and any other error for a refusal. The password never reaches a
-	// log line of this domain.
+	// answer, ErrDirectoryNoEntry when no single directory entry proves the
+	// person, and any other error for a refusal. The password never reaches a log
+	// line of this domain.
 	DirectoryProver func(ctx context.Context, tenantID, userID, plain string) error
 
 	// SessionRevoker ends every login session of one person except the one
@@ -302,8 +315,9 @@ func (s *AccountService) checkPassword(ctx context.Context, a Actor, hash, plain
 // every one of them, and the destructive portal routes would be closed to them
 // for ever.
 //
-// A directory that could not answer travels back as itself, so the answer says
-// service unavailable and never a wrong password. Every other failure reads as a
+// Two states travel back as themselves. A directory that could not answer says
+// service unavailable, and a person whom no single directory entry proves says
+// that. Neither ever reads as a wrong password. Every other failure reads as a
 // refused password, which is what a wrong bind is.
 //
 // The password never reaches a log line, and the directory layer already logged
@@ -313,7 +327,7 @@ func (s *AccountService) proveDirectory(ctx context.Context, a Actor, plain stri
 	switch {
 	case err == nil:
 		return nil
-	case errors.Is(err, ErrDirectoryUnavailable):
+	case errors.Is(err, ErrDirectoryUnavailable), errors.Is(err, ErrDirectoryNoEntry):
 		return err
 	default:
 		return s.refuse(a, "the directory refused the password")
