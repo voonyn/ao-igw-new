@@ -369,6 +369,15 @@ type deps struct {
 	// already holds does.
 	createFails error
 
+	// What the Identity Link read of a sign-in answers. A test that sets it
+	// breaks the read, which is what a database that did not answer does.
+	findLinkFails error
+
+	// Whether the person one Identity Link names can still sign in. A test that
+	// sets it offboards them, which is what a deactivated row and a soft-deleted
+	// row both do.
+	personOffboarded bool
+
 	// The connection test budget. A test that sets neither field runs with a
 	// budget that allows everything.
 	budgetSpent  bool
@@ -438,6 +447,20 @@ func testService(t *testing.T, d deps) *Service {
 		WriteLink: func(_ context.Context, row Link) error {
 			linked = append(linked, row)
 			return nil
+		},
+		CanSignIn: func(context.Context, string, string) (bool, error) {
+			return !d.personOffboarded, nil
+		},
+		FindLink: func(_ context.Context, _, idpID, externalID string) (string, error) {
+			if d.findLinkFails != nil {
+				return "", d.findLinkFails
+			}
+			for _, row := range d.links {
+				if row.IdpID == idpID && row.ExternalID == externalID {
+					return row.UserID, nil
+				}
+			}
+			return "", ErrLinkNotFound
 		},
 		// The unit of work either commits whole or leaves nothing behind, so a
 		// failed step clears what the earlier steps wrote.

@@ -498,3 +498,28 @@ func TestActiveIDsCountsBothLevelsAndNothingElse(t *testing.T) {
 		t.Errorf("the tenant holds %v, want both levels counted together", idpIDs)
 	}
 }
+
+// TestLinkedUserReadsTheStableExternalID covers the read every sign-in after the
+// first one takes. The key is the stable directory id, so a username the
+// directory later changes still names the same person, and an identifier that
+// matches no column of the person still signs them in.
+//
+// The read is tenant scoped, and a stable id no link holds answers the sentinel.
+func TestLinkedUserReadsTheStableExternalID(t *testing.T) {
+	repo, ctx := testRepo(t)
+
+	userID, err := repo.LinkedUser(ctx, testTenantID, tenantIdpID, "a-stable-guid")
+	if err != nil {
+		t.Fatalf("read the linked person: %v", err)
+	}
+	if userID != personID {
+		t.Errorf("the link names %q, want %q", userID, personID)
+	}
+
+	if _, err := repo.LinkedUser(ctx, testTenantID, tenantIdpID, "another-guid"); !errors.Is(err, ErrLinkNotFound) {
+		t.Errorf("a stable id no link holds answered %v, want ErrLinkNotFound", err)
+	}
+	if _, err := repo.LinkedUser(ctx, otherTenant, tenantIdpID, "a-stable-guid"); !errors.Is(err, ErrLinkNotFound) {
+		t.Errorf("the link of another tenant answered %v, want ErrLinkNotFound", err)
+	}
+}

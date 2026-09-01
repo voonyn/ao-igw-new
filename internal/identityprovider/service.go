@@ -88,6 +88,19 @@ type (
 	// LinkWriter writes one Identity Link. It runs on the caller's transaction.
 	LinkWriter func(ctx context.Context, row Link) error
 
+	// LinkedUserFinder answers the person one directory account is tied to, by
+	// the stable external id the Identity Link holds. A miss answers
+	// ErrLinkNotFound.
+	LinkedUserFinder func(ctx context.Context, tenantID, idpID, externalID string) (string, error)
+
+	// SignInReporter reports whether one person can still sign in. A person the
+	// tenant does not hold, a deactivated one, a soft-deleted one, and a machine
+	// account all answer false.
+	//
+	// It is a function value, and not a user model, so this package never
+	// imports the user domain.
+	SignInReporter func(ctx context.Context, tenantID, userID string) (bool, error)
+
 	// PersonCreator writes the local rows of one new person and answers the id
 	// it wrote. It runs on the caller's transaction.
 	//
@@ -148,6 +161,12 @@ type Deps struct {
 	DeleteLink   LinkDeleter
 	WriteLink    LinkWriter
 	CreatePerson PersonCreator
+
+	// The two reads of the sign-in bind. FindLink names the person the proved
+	// directory account is tied to, and CanSignIn says whether that person may
+	// still sign in. See Service.PersonOf.
+	FindLink  LinkedUserFinder
+	CanSignIn SignInReporter
 
 	Org         OrgFinder
 	UserOrg     UserOrgFinder

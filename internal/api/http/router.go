@@ -1152,9 +1152,21 @@ func newSessionService(
 	// instead of leaving an outbound call into a customer network unmetered. See
 	// CLAUDE.md.
 	prover := identityprovider.NewService(identityprovider.Deps{
-		Find:         idps.FindByID,
-		Allow:        rdb.AllowInWindow,
-		WriteLink:    idps.InsertLink,
+		Find:      idps.FindByID,
+		Allow:     rdb.AllowInWindow,
+		WriteLink: idps.InsertLink,
+		FindLink:  idps.LinkedUser,
+		// The one read that says whether the person an Identity Link names may
+		// still sign in. FindByID filters the state, the account type, and the
+		// soft delete inside the query, so a deactivated, deleted, or machine
+		// row reads as absent.
+		CanSignIn: func(ctx context.Context, tenantID, userID string) (bool, error) {
+			_, err := users.FindByID(ctx, tenantID, userID)
+			if errors.Is(err, user.ErrNotFound) {
+				return false, nil
+			}
+			return err == nil, err
+		},
 		CreatePerson: directoryPerson(users, organization.NewRepository(bdb, log)),
 		InTx:         tx,
 		Audit:        recorder,
@@ -1167,21 +1179,18 @@ func newSessionService(
 		Steps:    steps,
 		// The bind, translated into the vocabulary of the login session domain.
 		//
-		// A session that already names a person answers that person, and the
-		// Identity the bind read is dropped: a later bind changes no attribute,
-		// so a rename in the directory never arrives here. A session that names
-		// nobody is the first bind of that person, and the Identity is what
-		// creates them.
+		// PersonOf names the person the proved account signs in as: the Identity
+		// Link first, by the stable external id, then the person the session
+		// already names, and the first bind creates them only when neither read
+		// named anybody. A later bind changes no attribute, so a rename in the
+		// directory never arrives here.
 		Bind: func(ctx context.Context, tenantID, idpID, userID, identifier, password string) (string, error) {
 			person, err := prover.Prove(ctx, tenantID, idpID, identifier, password)
 			if err != nil {
 				return "", directoryError(err)
 			}
-			if userID != "" {
-				return userID, nil
-			}
 
-			userID, err = prover.Provision(ctx, tenantID, idpID, person)
+			userID, err = prover.PersonOf(ctx, tenantID, idpID, userID, person)
 			if err != nil {
 				return "", directoryError(err)
 			}

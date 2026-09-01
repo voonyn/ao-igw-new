@@ -212,3 +212,148 @@ func TestProvisionLogsNoCredential(t *testing.T) {
 		}
 	}
 }
+
+// aliceLink is the Identity Link the first bind of alice wrote. It holds the
+// stable directory id and the person that bind created.
+func aliceLink() Link {
+	return Link{
+		TenantID: testTenantID, IdpID: tenantIdpID,
+		ExternalID: alice.ExternalID, UserID: personID,
+	}
+}
+
+// TestPersonOfAnswersTheLinkedPerson covers every sign-in after the first one.
+// The person types a User Principal Name that matches neither the username nor
+// the email the first bind stored, so the identifier step found nobody. The
+// Identity Link holds the stable directory id, and it names the person.
+//
+// Before this read, the empty session person read as a first bind, the create
+// ran again, and uq_username refused it. The person was told for ever that the
+// directory was unavailable.
+func TestPersonOfAnswersTheLinkedPerson(t *testing.T) {
+	svc := testService(t, deps{rows: []Provider{storedProvider(testOrgID)}, links: []Link{aliceLink()}})
+
+	userID, err := svc.PersonOf(context.Background(), testTenantID, tenantIdpID, "", alice)
+	if err != nil {
+		t.Fatalf("PersonOf: %v", err)
+	}
+	if userID != personID {
+		t.Fatalf("the bind signed in %q, want the person the link holds, %q", userID, personID)
+	}
+	if len(people) != 0 || len(linked) != 0 || len(events) != 0 {
+		t.Errorf("the second sign-in wrote %+v, %+v and %+v, want nothing", people, linked, events)
+	}
+}
+
+// TestPersonOfAnswersOnePersonWhateverTheIdentifier covers the three forms one
+// person signs in with: the bare username and the mapped email, which the
+// identifier step matches, and an unmapped User Principal Name, which it does
+// not. The Identity Link answers the same person for all three.
+func TestPersonOfAnswersOnePersonWhateverTheIdentifier(t *testing.T) {
+	cases := []struct {
+		name    string
+		session string
+	}{
+		{"the bare username the directory stored", personID},
+		{"the mapped email the directory stored", personID},
+		{"a User Principal Name the mapping never wrote", ""},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			svc := testService(t, deps{
+				rows:  []Provider{storedProvider(testOrgID)},
+				links: []Link{aliceLink()},
+			})
+
+			userID, err := svc.PersonOf(context.Background(), testTenantID, tenantIdpID, c.session, alice)
+			if err != nil {
+				t.Fatalf("PersonOf: %v", err)
+			}
+			if userID != personID {
+				t.Fatalf("the bind signed in %q, want %q", userID, personID)
+			}
+			if len(people) != 0 {
+				t.Errorf("the sign-in wrote %+v, want no person", people)
+			}
+		})
+	}
+}
+
+// TestPersonOfAnswersTheSessionPerson covers the local account a domain claim
+// routed to a directory. The identifier step found them, they hold no Identity
+// Link, and the bind writes none: the sign-in creates nobody.
+func TestPersonOfAnswersTheSessionPerson(t *testing.T) {
+	svc := testService(t, deps{rows: []Provider{storedProvider(testOrgID)}})
+
+	userID, err := svc.PersonOf(context.Background(), testTenantID, tenantIdpID, testUserID, alice)
+	if err != nil {
+		t.Fatalf("PersonOf: %v", err)
+	}
+	if userID != testUserID {
+		t.Fatalf("the bind signed in %q, want the person the session names, %q", userID, testUserID)
+	}
+	if len(people) != 0 || len(linked) != 0 {
+		t.Errorf("the sign-in wrote %+v and %+v, want nothing", people, linked)
+	}
+}
+
+// TestPersonOfProvisionsWhenNoLinkHoldsTheExternalID covers the first bind. No
+// link holds the stable id and the session names nobody, so this account belongs
+// to somebody this gateway does not hold yet.
+func TestPersonOfProvisionsWhenNoLinkHoldsTheExternalID(t *testing.T) {
+	other := aliceLink()
+	other.ExternalID = "a-stable-id-of-somebody-else"
+	svc := testService(t, deps{rows: []Provider{storedProvider(testOrgID)}, links: []Link{other}})
+
+	userID, err := svc.PersonOf(context.Background(), testTenantID, tenantIdpID, "", alice)
+	if err != nil {
+		t.Fatalf("PersonOf: %v", err)
+	}
+	if userID != createdUserID {
+		t.Fatalf("the first bind created %q, want %q", userID, createdUserID)
+	}
+	if len(people) != 1 || len(linked) != 1 {
+		t.Fatalf("the first bind wrote %+v and %+v, want one of each", people, linked)
+	}
+}
+
+// TestPersonOfRefusesABrokenLinkRead covers the read that did not answer. The
+// sign-in stops there. A read that failed says nothing about whether a link
+// exists, and a create that ran on it would double the person.
+func TestPersonOfRefusesABrokenLinkRead(t *testing.T) {
+	svc := testService(t, deps{
+		rows:          []Provider{storedProvider(testOrgID)},
+		findLinkFails: errors.New("the database is down"),
+	})
+
+	if _, err := svc.PersonOf(context.Background(), testTenantID, tenantIdpID, "", alice); err == nil {
+		t.Fatal("PersonOf answered a person, want the failed read")
+	}
+	if len(people) != 0 || len(linked) != 0 {
+		t.Errorf("the refused sign-in wrote %+v and %+v, want nothing", people, linked)
+	}
+}
+
+// TestPersonOfRefusesAnOffboardedLinkedPerson covers the person an administrator
+// deactivated or soft deleted while their directory account still lives. The
+// Identity Link still holds them, and the sign-in must refuse.
+//
+// The refusal says that the gateway cannot carry on. It is not a wrong password,
+// because the password was proved, and a slug of its own would say which people
+// the tenant holds.
+func TestPersonOfRefusesAnOffboardedLinkedPerson(t *testing.T) {
+	svc := testService(t, deps{
+		rows:             []Provider{storedProvider(testOrgID)},
+		links:            []Link{aliceLink()},
+		personOffboarded: true,
+	})
+
+	_, err := svc.PersonOf(context.Background(), testTenantID, tenantIdpID, "", alice)
+	if !errors.Is(err, ErrDirectory) {
+		t.Fatalf("err = %v, want ErrDirectory", err)
+	}
+	if len(people) != 0 || len(linked) != 0 {
+		t.Errorf("the refused sign-in wrote %+v and %+v, want nothing", people, linked)
+	}
+}

@@ -40,6 +40,64 @@ type Person struct {
 	DisplayName string
 }
 
+// PersonOf answers the person one proved directory account signs in as.
+//
+// The Identity Link is read first, by the stable external id the bind read from
+// the entry. It is the only key that holds. A provider maps the username and the
+// email, and the person can type a third form that is neither, such as a User
+// Principal Name, so the identifier step finds nobody. A sign-in that read "first
+// bind" from that miss alone created the same person twice, and the second write
+// failed on the username the first one took.
+//
+// The person the session already names answers next. That is the local account a
+// domain claim routed to a directory: the identifier step found them, they hold
+// no Identity Link, and no bind writes one.
+//
+// Provision runs last, and only when neither read named anybody. That is the
+// first bind of somebody this gateway does not hold.
+func (s *Service) PersonOf(
+	ctx context.Context, tenantID, idpID, userID string, identity Identity,
+) (string, error) {
+	s.log.Debug("name the person the directory proved",
+		logger.String("tenant_id", tenantID), logger.String("idp_id", idpID), logger.RequestID(ctx))
+
+	linked, err := s.deps.FindLink(ctx, tenantID, idpID, identity.ExternalID)
+	if err != nil && !errors.Is(err, ErrLinkNotFound) {
+		s.log.Error("read the identity link of a proved directory account",
+			logger.String("tenant_id", tenantID), logger.String("idp_id", idpID), logger.Err(err))
+		return "", err
+	}
+	if linked != "" {
+		// The identifier step reads active people alone, so a person it named
+		// can sign in. A person the link names is read by no such filter, and an
+		// administrator who deactivates or deletes somebody whose directory
+		// account still lives must not see them sign in again. The refusal says
+		// that the gateway cannot carry on, and never which people it holds.
+		live, err := s.deps.CanSignIn(ctx, tenantID, linked)
+		if err != nil {
+			s.log.Error("read whether the person of an identity link can sign in",
+				logger.String("tenant_id", tenantID), logger.String("idp_id", idpID),
+				logger.String("user_id", linked), logger.Err(err))
+			return "", err
+		}
+		if !live {
+			s.log.Warn("refused a directory sign-in of a person who cannot sign in",
+				logger.String("tenant_id", tenantID), logger.String("idp_id", idpID),
+				logger.String("user_id", linked))
+			return "", fmt.Errorf("%w: tenant %s, user %s", ErrDirectory, tenantID, linked)
+		}
+
+		s.log.Debug("the identity link names the person of this sign-in",
+			logger.String("tenant_id", tenantID), logger.String("idp_id", idpID),
+			logger.String("user_id", linked), logger.RequestID(ctx))
+		return linked, nil
+	}
+	if userID != "" {
+		return userID, nil
+	}
+	return s.Provision(ctx, tenantID, idpID, identity)
+}
+
 // Provision creates the person one directory account names, and writes the
 // Identity Link that ties the two together. It answers the id of the person it
 // created.

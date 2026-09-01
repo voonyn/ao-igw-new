@@ -344,6 +344,38 @@ func (r *Repository) Links(ctx context.Context, tenantID, userID string) ([]Link
 	return rows, nil
 }
 
+// LinkedUser answers the person one directory account is tied to, read by the
+// stable external id the Identity Link holds. A miss answers ErrLinkNotFound.
+//
+// It is the read every bind after the first one takes. The typed identifier
+// matches no column reliably: the provider maps the username and the email, and
+// the person can type a third form that is neither, such as a User Principal
+// Name. The external id is the one value that does not move.
+func (r *Repository) LinkedUser(ctx context.Context, tenantID, idpID, externalID string) (string, error) {
+	r.log.Debug("read the person one directory account is tied to",
+		logger.String("tenant_id", tenantID), logger.String("idp_id", idpID), logger.RequestID(ctx))
+
+	var userID string
+	err := db.Conn(ctx, r.db).NewSelect().
+		Model((*Link)(nil)).
+		ColumnExpr("ipl.user_id").
+		Where("ipl.tenant_id = ?", tenantID).
+		Where("ipl.idp_id = ?", idpID).
+		Where("ipl.external_id = ?", externalID).
+		Scan(ctx, &userID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", fmt.Errorf("%w: tenant %s, provider %s", ErrLinkNotFound, tenantID, idpID)
+	}
+	if err != nil {
+		return "", fmt.Errorf("read the person tied to provider %s of tenant %s: %w", idpID, tenantID, err)
+	}
+
+	r.log.Debug("found the person one directory account is tied to",
+		logger.String("tenant_id", tenantID), logger.String("idp_id", idpID),
+		logger.String("user_id", userID), logger.RequestID(ctx))
+	return userID, nil
+}
+
 // InsertLink writes the Identity Link one first bind creates. It runs on the
 // caller's transaction, so the person and the link land together.
 //
