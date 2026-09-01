@@ -174,6 +174,11 @@ is free and the first bind writes a brand-new active person. A deactivated perso
 row is not deleted, instead trips `uq_username` and answers a 500 after the password was
 proved.
 
+The same read runs again in the write, and it must. Case 1 answers a claimed domain and
+returns before the case 4 read, so a claim alone routes an offboarded person straight to
+the first bind. The refusal therefore lives in `Provision`, where every case arrives.
+See "Never revive a person the Tenant already holds" below.
+
 A Tenant that registers a second provider therefore loses the bare-username route for
 everybody. That is stated, not accidental. The alternative sends one customer's
 password to another customer's server. See ADR 0013.
@@ -280,6 +285,18 @@ any caller can drive with a fresh partial token.
   therefore reach nothing in the Console until somebody says so.
 - **Create only.** A later bind changes no attribute. A rename in the directory never
   arrives here. That is the stated ceiling, and refresh-on-bind is the upgrade.
+- **Never revive a person the Tenant already holds.** Before the insert, the write asks
+  whether the Tenant holds an account for the identifier the person typed, or for the
+  username or the email address of the directory entry, in any state and soft-deleted
+  rows included. If it holds one, the sign-in is refused with the slug a directory that
+  did not answer gets. The password was proved and the person exists, so the gateway
+  cannot carry on, and a slug of its own would say that the Tenant holds a row for that
+  identifier. One refusal covers both shapes: the soft-deleted person `uq_username` would
+  let through, and the deactivated person it answers a 500 for.
+- **Three forms are read, not one.** The typed identifier is the read case 4 makes, moved
+  to where case 1 also arrives. The two entry attributes catch a person held under a form
+  they did not type, and a provider that maps no email attribute leaves one of them
+  empty. Any single read leaves the others through.
 - Six attributes are mapped: the stable external id, the username, the email, the first
   name, the last name, and the display name. Zitadel maps thirteen. Nine of those would
   write columns that no token can carry: `ScopeRepository.Profile` never selects
@@ -405,8 +422,9 @@ the fake instead of the wire behaviour that carries every real defect.
 - The budget: the cap, the refusal on a Redis error, and the Guessing Budget untouched.
 - An inactive provider and a soft-deleted provider both refuse, with the same slug an
   unknown identifier gets.
-- A deactivated person and a soft-deleted person never reach case 4: the bind never runs
-  and no second `users` row is written.
+- A deactivated person and a soft-deleted person never reach case 4, and a claimed domain
+  that routes them through case 1 is refused in the write: no second `users` row, no
+  Identity Link, and no `idp.linked` row.
 - The three guard rails, each with the row it refuses to leave behind, and the domain
   claim that would take the last local `IAM_OWNER` with it.
 - The portal: the bind re-proof on TOTP disable, and the empty-hash guard.

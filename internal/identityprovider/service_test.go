@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -378,6 +379,14 @@ type deps struct {
 	// row both do.
 	personOffboarded bool
 
+	// The identifiers the tenant already holds an account for, whatever its
+	// state and soft-deleted rows included. A test that names one here holds an
+	// offboarded person whose directory account still lives, so the first bind
+	// of that account creates nobody. heldBroken breaks the read instead, which
+	// is what a database that did not answer does.
+	held       []string
+	heldBroken bool
+
 	// The connection test budget. A test that sets neither field runs with a
 	// budget that allows everything.
 	budgetSpent  bool
@@ -450,6 +459,12 @@ func testService(t *testing.T, d deps) *Service {
 		},
 		CanSignIn: func(context.Context, string, string) (bool, error) {
 			return !d.personOffboarded, nil
+		},
+		Held: func(_ context.Context, _, identifier string) (bool, error) {
+			if d.heldBroken {
+				return false, errors.New("the database is down")
+			}
+			return slices.Contains(d.held, identifier), nil
 		},
 		FindLink: func(_ context.Context, _, idpID, externalID string) (string, error) {
 			if d.findLinkFails != nil {

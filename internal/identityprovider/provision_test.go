@@ -13,6 +13,10 @@ import (
 // createdUserID is the id the fake person creator answers with.
 const createdUserID = "cccccccc-cccc-cccc-cccc-cccccccccccc"
 
+// typed is what the person typed at the identifier step. Every provisioning test
+// binds as alice, who types the email address a claimed domain routes.
+const typed = "alice@corp.example"
+
 // alice is the directory account every provisioning test binds as. It carries
 // the six attributes the mapping reads, and nothing else.
 var alice = Identity{
@@ -31,7 +35,7 @@ var alice = Identity{
 func TestProvision(t *testing.T) {
 	svc := testService(t, deps{rows: []Provider{storedProvider(testOrgID)}})
 
-	userID, err := svc.Provision(context.Background(), testTenantID, tenantIdpID, alice)
+	userID, err := svc.Provision(context.Background(), testTenantID, tenantIdpID, typed, alice)
 	if err != nil {
 		t.Fatalf("Provision: %v", err)
 	}
@@ -90,7 +94,7 @@ func TestProvisionUsesTheDefaultOrganization(t *testing.T) {
 	row.DefaultOrgID = otherOrgID
 	svc := testService(t, deps{rows: []Provider{row}})
 
-	if _, err := svc.Provision(context.Background(), testTenantID, tenantIdpID, alice); err != nil {
+	if _, err := svc.Provision(context.Background(), testTenantID, tenantIdpID, typed, alice); err != nil {
 		t.Fatalf("Provision: %v", err)
 	}
 	if len(people) != 1 || people[0].OrgID != otherOrgID {
@@ -104,7 +108,7 @@ func TestProvisionUsesTheDefaultOrganization(t *testing.T) {
 func TestProvisionWithoutAnOrganization(t *testing.T) {
 	svc := testService(t, deps{rows: []Provider{storedProvider("")}})
 
-	_, err := svc.Provision(context.Background(), testTenantID, tenantIdpID, alice)
+	_, err := svc.Provision(context.Background(), testTenantID, tenantIdpID, typed, alice)
 	if !errors.Is(err, ErrNoOrganization) {
 		t.Fatalf("err = %v, want ErrNoOrganization", err)
 	}
@@ -122,7 +126,7 @@ func TestProvisionWithoutAUsername(t *testing.T) {
 	nameless := alice
 	nameless.Username = ""
 
-	_, err := svc.Provision(context.Background(), testTenantID, tenantIdpID, nameless)
+	_, err := svc.Provision(context.Background(), testTenantID, tenantIdpID, typed, nameless)
 	if !errors.Is(err, ErrNoUsername) {
 		t.Fatalf("err = %v, want ErrNoUsername", err)
 	}
@@ -145,7 +149,7 @@ func TestProvisionRefusesADisabledProvider(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			svc := testService(t, d)
 
-			_, err := svc.Provision(context.Background(), testTenantID, tenantIdpID, alice)
+			_, err := svc.Provision(context.Background(), testTenantID, tenantIdpID, typed, alice)
 			if !errors.Is(err, ErrDisabled) {
 				t.Fatalf("err = %v, want ErrDisabled", err)
 			}
@@ -163,7 +167,7 @@ func TestProvisionLeavesNoHalfPerson(t *testing.T) {
 	taken := errors.New("duplicate username")
 	svc := testService(t, deps{rows: []Provider{storedProvider(testOrgID)}, createFails: taken})
 
-	_, err := svc.Provision(context.Background(), testTenantID, tenantIdpID, alice)
+	_, err := svc.Provision(context.Background(), testTenantID, tenantIdpID, typed, alice)
 	if !errors.Is(err, taken) {
 		t.Fatalf("err = %v, want the refused create", err)
 	}
@@ -183,7 +187,7 @@ func TestProvisionRollsTheLinkBack(t *testing.T) {
 	broken := errors.New("the link could not be written")
 	svc.deps.WriteLink = func(context.Context, Link) error { return broken }
 
-	if _, err := svc.Provision(context.Background(), testTenantID, tenantIdpID, alice); !errors.Is(err, broken) {
+	if _, err := svc.Provision(context.Background(), testTenantID, tenantIdpID, typed, alice); !errors.Is(err, broken) {
 		t.Fatalf("err = %v, want the failed link write", err)
 	}
 	if !rolledBack {
@@ -197,7 +201,7 @@ func TestProvisionRollsTheLinkBack(t *testing.T) {
 func TestProvisionLogsNoCredential(t *testing.T) {
 	svc := testService(t, deps{rows: []Provider{storedProvider(testOrgID)}})
 
-	if _, err := svc.Provision(context.Background(), testTenantID, tenantIdpID, alice); err != nil {
+	if _, err := svc.Provision(context.Background(), testTenantID, tenantIdpID, typed, alice); err != nil {
 		t.Fatalf("Provision: %v", err)
 	}
 	for _, line := range logs.All() {
@@ -233,7 +237,7 @@ func aliceLink() Link {
 func TestPersonOfAnswersTheLinkedPerson(t *testing.T) {
 	svc := testService(t, deps{rows: []Provider{storedProvider(testOrgID)}, links: []Link{aliceLink()}})
 
-	userID, err := svc.PersonOf(context.Background(), testTenantID, tenantIdpID, "", alice)
+	userID, err := svc.PersonOf(context.Background(), testTenantID, tenantIdpID, typed, "", alice)
 	if err != nil {
 		t.Fatalf("PersonOf: %v", err)
 	}
@@ -266,7 +270,7 @@ func TestPersonOfAnswersOnePersonWhateverTheIdentifier(t *testing.T) {
 				links: []Link{aliceLink()},
 			})
 
-			userID, err := svc.PersonOf(context.Background(), testTenantID, tenantIdpID, c.session, alice)
+			userID, err := svc.PersonOf(context.Background(), testTenantID, tenantIdpID, typed, c.session, alice)
 			if err != nil {
 				t.Fatalf("PersonOf: %v", err)
 			}
@@ -286,7 +290,7 @@ func TestPersonOfAnswersOnePersonWhateverTheIdentifier(t *testing.T) {
 func TestPersonOfAnswersTheSessionPerson(t *testing.T) {
 	svc := testService(t, deps{rows: []Provider{storedProvider(testOrgID)}})
 
-	userID, err := svc.PersonOf(context.Background(), testTenantID, tenantIdpID, testUserID, alice)
+	userID, err := svc.PersonOf(context.Background(), testTenantID, tenantIdpID, typed, testUserID, alice)
 	if err != nil {
 		t.Fatalf("PersonOf: %v", err)
 	}
@@ -306,7 +310,7 @@ func TestPersonOfProvisionsWhenNoLinkHoldsTheExternalID(t *testing.T) {
 	other.ExternalID = "a-stable-id-of-somebody-else"
 	svc := testService(t, deps{rows: []Provider{storedProvider(testOrgID)}, links: []Link{other}})
 
-	userID, err := svc.PersonOf(context.Background(), testTenantID, tenantIdpID, "", alice)
+	userID, err := svc.PersonOf(context.Background(), testTenantID, tenantIdpID, typed, "", alice)
 	if err != nil {
 		t.Fatalf("PersonOf: %v", err)
 	}
@@ -327,7 +331,7 @@ func TestPersonOfRefusesABrokenLinkRead(t *testing.T) {
 		findLinkFails: errors.New("the database is down"),
 	})
 
-	if _, err := svc.PersonOf(context.Background(), testTenantID, tenantIdpID, "", alice); err == nil {
+	if _, err := svc.PersonOf(context.Background(), testTenantID, tenantIdpID, typed, "", alice); err == nil {
 		t.Fatal("PersonOf answered a person, want the failed read")
 	}
 	if len(people) != 0 || len(linked) != 0 {
@@ -349,11 +353,113 @@ func TestPersonOfRefusesAnOffboardedLinkedPerson(t *testing.T) {
 		personOffboarded: true,
 	})
 
-	_, err := svc.PersonOf(context.Background(), testTenantID, tenantIdpID, "", alice)
+	_, err := svc.PersonOf(context.Background(), testTenantID, tenantIdpID, typed, "", alice)
 	if !errors.Is(err, ErrDirectory) {
 		t.Fatalf("err = %v, want ErrDirectory", err)
 	}
 	if len(people) != 0 || len(linked) != 0 {
 		t.Errorf("the refused sign-in wrote %+v and %+v, want nothing", people, linked)
+	}
+}
+
+// TestProvisionRefusesAnAccountTheTenantHolds covers the first bind of somebody
+// this gateway already holds in a state the identifier step reads as absent.
+//
+// Provider Resolution case 1 answers a claimed domain and returns before the
+// read that would have caught them, so the sign-in reaches the bind naming
+// nobody. Without this guard a soft-deleted person whose directory account still
+// lives is created again as a brand-new active person, and the offboarding is
+// undone: uq_username maps a NULL deleted_at to an epoch, so the username is
+// free and the insert stands. A deactivated person trips that key instead and
+// answers a 500 after the password was proved.
+//
+// The bind runs through PersonOf, which is the whole of case 1: no Identity
+// Link, and no person the session names.
+//
+// A soft-deleted person and a deactivated person are one case here. Held filters
+// neither the state nor the soft delete, so both answer true, and which of the
+// two rows the tenant holds is what internal/user/repo_test.go proves of the
+// read itself. What differs here is the form the row is held under, and each
+// case names one, because one form alone would leave the others through.
+//
+// The refusal is ErrDirectory, and never a credential failure. The password was
+// proved, and a slug of its own would say that the tenant holds a row for that
+// identifier.
+func TestProvisionRefusesAnAccountTheTenantHolds(t *testing.T) {
+	for name, held := range map[string][]string{
+		"held under the identifier the person typed": {typed},
+		"held under the username of the entry":       {alice.Username},
+		"held under the email of the entry":          {alice.Email},
+	} {
+		t.Run(name, func(t *testing.T) {
+			svc := testService(t, deps{rows: []Provider{storedProvider(testOrgID)}, held: held})
+
+			_, err := svc.PersonOf(context.Background(), testTenantID, tenantIdpID, typed, "", alice)
+			if !errors.Is(err, ErrDirectory) {
+				t.Fatalf("err = %v, want ErrDirectory", err)
+			}
+			if len(people) != 0 || len(linked) != 0 {
+				t.Errorf("the refused bind wrote %+v and %+v, want nothing", people, linked)
+			}
+			if len(events) != 0 {
+				t.Errorf("the trail holds %v, want nothing", events)
+			}
+		})
+	}
+}
+
+// TestProvisionReadsTheTypedIdentifier covers a provider that maps no email
+// attribute, and a directory username the local row does not hold. The person
+// types the address the soft-deleted row carries, and that address is the only
+// form that names them. A guard that read the entry alone would create them
+// again.
+func TestProvisionReadsTheTypedIdentifier(t *testing.T) {
+	entry := alice
+	entry.Username = "a.adams"
+	entry.Email = ""
+
+	svc := testService(t, deps{rows: []Provider{storedProvider(testOrgID)}, held: []string{typed}})
+
+	_, err := svc.Provision(context.Background(), testTenantID, tenantIdpID, typed, entry)
+	if !errors.Is(err, ErrDirectory) {
+		t.Fatalf("err = %v, want ErrDirectory", err)
+	}
+	if len(people) != 0 || len(linked) != 0 {
+		t.Errorf("the refused bind wrote %+v and %+v, want nothing", people, linked)
+	}
+}
+
+// TestProvisionRefusesABrokenHeldRead covers the read that says whether the
+// tenant already holds the account. A read that broke creates nobody: a first
+// bind that carried on would write the person the read was there to refuse.
+func TestProvisionRefusesABrokenHeldRead(t *testing.T) {
+	svc := testService(t, deps{rows: []Provider{storedProvider(testOrgID)}, heldBroken: true})
+
+	_, err := svc.Provision(context.Background(), testTenantID, tenantIdpID, typed, alice)
+	if err == nil {
+		t.Fatal("the broken read created a person, want a refusal")
+	}
+	if len(people) != 0 || len(linked) != 0 {
+		t.Errorf("the refused bind wrote %+v and %+v, want nothing", people, linked)
+	}
+}
+
+// TestProvisionLogsNoIdentifierOnARefusal proves that the refusal of an account
+// the tenant already holds names the tenant and the provider, and never the
+// identifier. The identifier is personal data, and the refusal is the one answer
+// that would say the tenant holds a row for it.
+func TestProvisionLogsNoIdentifierOnARefusal(t *testing.T) {
+	svc := testService(t, deps{rows: []Provider{storedProvider(testOrgID)}, held: []string{alice.Username}})
+
+	if _, err := svc.Provision(context.Background(), testTenantID, tenantIdpID, typed, alice); err == nil {
+		t.Fatal("the held account was created, want a refusal")
+	}
+	for _, entry := range logs.All() {
+		line := fmt.Sprint(entry.Message, entry.ContextMap())
+		for _, secret := range []string{alice.Username, alice.Email, theSecret} {
+			if strings.Contains(line, secret) {
+				t.Errorf("a log line carries %q: %s", secret, line)
+			}
+		}
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"alphaomega/identitygateway/internal/audit"
@@ -55,8 +56,12 @@ type Person struct {
 //
 // Provision runs last, and only when neither read named anybody. That is the
 // first bind of somebody this gateway does not hold.
+//
+// identifier is what the person typed. It reaches Provision, and nothing else
+// here reads it: the guard of the first bind asks whether the tenant already
+// holds an account for it, and the identifier step could not have found one.
 func (s *Service) PersonOf(
-	ctx context.Context, tenantID, idpID, userID string, identity Identity,
+	ctx context.Context, tenantID, idpID, identifier, userID string, identity Identity,
 ) (string, error) {
 	s.log.Debug("name the person the directory proved",
 		logger.String("tenant_id", tenantID), logger.String("idp_id", idpID), logger.RequestID(ctx))
@@ -95,7 +100,7 @@ func (s *Service) PersonOf(
 	if userID != "" {
 		return userID, nil
 	}
-	return s.Provision(ctx, tenantID, idpID, identity)
+	return s.Provision(ctx, tenantID, idpID, identifier, identity)
 }
 
 // Provision creates the person one directory account names, and writes the
@@ -120,7 +125,9 @@ func (s *Service) PersonOf(
 //
 // It is always a human account. Nothing here writes a machine account, and no
 // caller can ask for one.
-func (s *Service) Provision(ctx context.Context, tenantID, idpID string, identity Identity) (string, error) {
+func (s *Service) Provision(
+	ctx context.Context, tenantID, idpID, identifier string, identity Identity,
+) (string, error) {
 	s.log.Debug("create the person the directory proved",
 		logger.String("tenant_id", tenantID), logger.String("idp_id", idpID), logger.RequestID(ctx))
 
@@ -154,6 +161,9 @@ func (s *Service) Provision(ctx context.Context, tenantID, idpID string, identit
 		s.log.Error("the directory entry carries no username",
 			logger.String("tenant_id", tenantID), logger.String("idp_id", idpID))
 		return "", fmt.Errorf("%w: tenant %s, provider %s", ErrNoUsername, tenantID, idpID)
+	}
+	if err := s.heldAlready(ctx, tenantID, idpID, identifier, identity); err != nil {
+		return "", err
 	}
 
 	var userID string
@@ -207,4 +217,70 @@ func (s *Service) Provision(ctx context.Context, tenantID, idpID string, identit
 		logger.String("org_id", orgID),
 		logger.String("user_id", userID))
 	return userID, nil
+}
+
+// heldAlready refuses a first bind whose person the tenant already holds, in any
+// state.
+//
+// The identifier step reads active people alone, so a deactivated person and a
+// soft-deleted one both name nobody there, and the sign-in reaches this write as
+// a first bind. Provider Resolution carries a read that catches them, and case 1
+// answers a claimed domain before it runs, so the claim alone routes an
+// offboarded person straight here. See docs/specs/0002-directory-sign-in.md.
+//
+// Without this the create stands: uq_username maps a NULL deleted_at to an
+// epoch, so the username of a soft-deleted person is free. The tenant then holds
+// two rows for one person, the new one is active and holds a fresh organization
+// membership, and the offboarding is undone. A deactivated person trips that key
+// instead and answers a 500 after the password was proved. One refusal covers
+// both.
+//
+// Three identifiers are read. What the person typed is the first, and it is the
+// read Provider Resolution case 4 would have made: case 1 answers a claimed
+// domain and returns before it, so this is where it lands instead. The username
+// and the email address of the directory entry follow, because either one names
+// a person the identifier step would have found under a form the person did not
+// type. A provider that maps no email attribute leaves that one empty, and a
+// person can be held under one form and not another, so a single read is not
+// enough.
+//
+// The refusal is ErrDirectory, and never a credential failure. The password was
+// proved, the person exists, and the gateway cannot carry on. A slug of its own
+// would say that the tenant holds a row for that identifier, which is the
+// enumeration answer the password step must not give.
+//
+// The read runs before the transaction, so two first binds of the same person at
+// the same moment both pass it. uq_username then refuses the second insert, and
+// the transaction leaves nothing behind, so the race costs a 500 and never a
+// second row. An email address two rows share is not covered by that key, and no
+// key exists to cover it. Both are the ceiling of this guard, and a unique key on
+// the email address is the upgrade.
+//
+// The identifier is personal data, so neither it nor the answer reaches a log
+// line.
+func (s *Service) heldAlready(
+	ctx context.Context, tenantID, idpID, identifier string, identity Identity,
+) error {
+	var read []string
+	for _, name := range []string{identifier, identity.Username, identity.Email} {
+		if name == "" || slices.Contains(read, name) {
+			continue
+		}
+		read = append(read, name)
+
+		held, err := s.deps.Held(ctx, tenantID, name)
+		if err != nil {
+			s.log.Error("read whether the tenant already holds the account of a first bind",
+				logger.String("tenant_id", tenantID), logger.String("idp_id", idpID), logger.Err(err))
+			return err
+		}
+		if !held {
+			continue
+		}
+
+		s.log.Warn("refused a first bind for a person the tenant already holds",
+			logger.String("tenant_id", tenantID), logger.String("idp_id", idpID))
+		return fmt.Errorf("%w: tenant %s, provider %s", ErrDirectory, tenantID, idpID)
+	}
+	return nil
 }

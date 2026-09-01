@@ -1167,6 +1167,11 @@ func newSessionService(
 			}
 			return err == nil, err
 		},
+		// The read that refuses a first bind for a person the tenant already
+		// holds. It is the resolver's read, and the write needs one of its own
+		// because Provider Resolution case 1 answers a claimed domain before
+		// the resolver runs it. See Service.heldAlready.
+		Held:         users.HoldsIdentifier,
 		CreatePerson: directoryPerson(users, organization.NewRepository(bdb, log)),
 		InTx:         tx,
 		Audit:        recorder,
@@ -1190,7 +1195,7 @@ func newSessionService(
 				return "", directoryError(err)
 			}
 
-			userID, err = prover.PersonOf(ctx, tenantID, idpID, userID, person)
+			userID, err = prover.PersonOf(ctx, tenantID, idpID, identifier, userID, person)
 			if err != nil {
 				return "", directoryError(err)
 			}

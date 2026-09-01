@@ -162,11 +162,17 @@ type Deps struct {
 	WriteLink    LinkWriter
 	CreatePerson PersonCreator
 
-	// The two reads of the sign-in bind. FindLink names the person the proved
+	// The three reads of the sign-in bind. FindLink names the person the proved
 	// directory account is tied to, and CanSignIn says whether that person may
 	// still sign in. See Service.PersonOf.
+	//
+	// Held is the read of the first bind, and it filters neither the state nor
+	// the soft delete. It is the same read the resolver carries as
+	// ResolverDeps.Held, and Service.heldAlready states why the write needs one
+	// of its own.
 	FindLink  LinkedUserFinder
 	CanSignIn SignInReporter
+	Held      PersonFinder
 
 	Org         OrgFinder
 	UserOrg     UserOrgFinder
