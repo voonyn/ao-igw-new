@@ -52,7 +52,9 @@ type Person struct {
 //
 // The person the session already names answers next. That is the local account a
 // domain claim routed to a directory: the identifier step found them, they hold
-// no Identity Link, and no bind writes one.
+// no Identity Link, and no bind writes one. A person who holds a link with this
+// provider is refused there instead, because the link names an entry the bind
+// did not prove.
 //
 // Provision runs last, and only when neither read named anybody. That is the
 // first bind of somebody this gateway does not hold.
@@ -98,6 +100,31 @@ func (s *Service) PersonOf(
 		return linked, nil
 	}
 	if userID != "" {
+		// The link read missed, and that means one of two things. The person
+		// holds no link with this provider, which is the local account a domain
+		// claim routed to a directory, and the fallback below is right. Or the
+		// person holds one and it names another entry of the same directory,
+		// which is a directory that gave one identifier to a second entry: a
+		// rename frees the old address, the directory hands it on, and the bind
+		// proves somebody else. The sign-in never carries on as somebody the
+		// proof did not name.
+		//
+		// The refusal says that the gateway cannot carry on, and never that the
+		// password was wrong: it was proved. A slug of its own would say which
+		// people the tenant holds.
+		holds, err := s.deps.Linked(ctx, tenantID, userID)
+		if err != nil {
+			s.log.Error("read the identity links of the person the session names",
+				logger.String("tenant_id", tenantID), logger.String("idp_id", idpID),
+				logger.String("user_id", userID), logger.Err(err))
+			return "", err
+		}
+		if slices.Contains(holds, idpID) {
+			s.log.Warn("refused a directory sign-in whose entry another identity link names",
+				logger.String("tenant_id", tenantID), logger.String("idp_id", idpID),
+				logger.String("user_id", userID))
+			return "", fmt.Errorf("%w: tenant %s, provider %s", ErrDirectory, tenantID, idpID)
+		}
 		return userID, nil
 	}
 	return s.Provision(ctx, tenantID, idpID, identifier, identity)

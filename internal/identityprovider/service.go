@@ -153,10 +153,11 @@ type Deps struct {
 
 	Links LinkLister
 
-	// Linked is the resolver's own read: the live active providers that take a
-	// typed password and that one person holds an Identity Link with. The guard
-	// rail on the unlink counts the links that still sign somebody in, and this
-	// is that count.
+	// Linked is the live active providers that take a typed password and that
+	// one person holds an Identity Link with. The resolver names the provider of
+	// a sign-in with it, the guard rail on the unlink counts the links that
+	// still sign somebody in, and Service.PersonOf refuses a bind whose entry
+	// another link of the same provider names.
 	Linked       LinkedFinder
 	DeleteLink   LinkDeleter
 	WriteLink    LinkWriter

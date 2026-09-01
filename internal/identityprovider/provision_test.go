@@ -463,3 +463,65 @@ func TestProvisionLogsNoIdentifierOnARefusal(t *testing.T) {
 		}
 	}
 }
+
+// TestPersonOfRefusesAnEntryAnotherLinkNames covers a directory that gave one
+// identifier to a second entry. The rename frees the old address, the directory
+// hands it to somebody else, and the search of the next sign-in matches that
+// second entry alone.
+//
+// The bind proves the password of the second entry, and the Identity Link read
+// misses on its stable id. The person the session names holds a link with this
+// provider already, and that link names the first entry. The bind proved
+// somebody else, so the sign-in stops.
+//
+// The refusal is ErrDirectory, and never a credential failure. The password was
+// proved, and a slug of its own would say which people the tenant holds.
+func TestPersonOfRefusesAnEntryAnotherLinkNames(t *testing.T) {
+	svc := testService(t, deps{
+		rows:   []Provider{storedProvider(testOrgID)},
+		linked: []string{tenantIdpID},
+	})
+
+	_, err := svc.PersonOf(context.Background(), testTenantID, tenantIdpID, typed, testUserID, alice)
+	if !errors.Is(err, ErrDirectory) {
+		t.Fatalf("err = %v, want ErrDirectory", err)
+	}
+	if len(people) != 0 || len(linked) != 0 {
+		t.Errorf("the refused sign-in wrote %+v and %+v, want nothing", people, linked)
+	}
+	if len(events) != 0 {
+		t.Errorf("the trail holds %v, want nothing", events)
+	}
+}
+
+// TestPersonOfAnswersTheSessionPersonLinkedElsewhere covers the documented
+// fallback of a person who holds a link with another provider. The link of this
+// provider is the one that must name the proved entry, and the person holds
+// none, so the session person still answers.
+func TestPersonOfAnswersTheSessionPersonLinkedElsewhere(t *testing.T) {
+	svc := testService(t, deps{
+		rows:   []Provider{storedProvider(testOrgID)},
+		linked: []string{otherIdpID},
+	})
+
+	userID, err := svc.PersonOf(context.Background(), testTenantID, tenantIdpID, typed, testUserID, alice)
+	if err != nil {
+		t.Fatalf("PersonOf: %v", err)
+	}
+	if userID != testUserID {
+		t.Fatalf("the bind signed in %q, want the person the session names, %q", userID, testUserID)
+	}
+}
+
+// TestPersonOfRefusesABrokenLinkedRead covers the read of the links the session
+// person holds. A read that did not answer says nothing about whether the person
+// is linked to this provider, so the sign-in stops there.
+func TestPersonOfRefusesABrokenLinkedRead(t *testing.T) {
+	svc := testService(t, deps{rows: []Provider{storedProvider(testOrgID)}})
+	broken := errors.New("the database is down")
+	svc.deps.Linked = func(context.Context, string, string) ([]string, error) { return nil, broken }
+
+	if _, err := svc.PersonOf(context.Background(), testTenantID, tenantIdpID, typed, testUserID, alice); !errors.Is(err, broken) {
+		t.Fatalf("err = %v, want the failed read", err)
+	}
+}

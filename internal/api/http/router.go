@@ -1162,6 +1162,10 @@ func newSessionService(
 		Allow:     rdb.AllowInWindow,
 		WriteLink: idps.InsertLink,
 		FindLink:  idps.LinkedUser,
+		// The links the person the session names already holds. A bind whose
+		// entry a link of this provider does not name signs nobody in. See
+		// Service.PersonOf.
+		Linked: idps.LinkedProviders,
 		// The one read that says whether the person an Identity Link names may
 		// still sign in. FindByID filters the state, the account type, and the
 		// soft delete inside the query, so a deactivated, deleted, or machine
