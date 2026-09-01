@@ -86,7 +86,7 @@ func knownPerson(identifier string, person Identity) IdentityFinder {
 
 // noProvider is the resolution seam of a test about the local password. No
 // directory proves the sign-in, so the bcrypt compare answers it.
-func noProvider(context.Context, string, string, string) (string, error) {
+func noProvider(context.Context, string, string, string, string) (string, error) {
 	return "", nil
 }
 
@@ -323,13 +323,35 @@ func TestIdentify_RecordsTheResolvedProvider(t *testing.T) {
 	const idpID = "idp-1"
 	svc, st := testServiceResolving(t,
 		knownPerson("person@example.com", Identity{UserID: "user-1"}), noCredential,
-		func(context.Context, string, string, string) (string, error) { return idpID, nil })
+		func(context.Context, string, string, string, string) (string, error) { return idpID, nil })
 
 	if _, err := svc.Identify(context.Background(), "tenant-1", "person@example.com", "", ""); err != nil {
 		t.Fatalf("identify: %v", err)
 	}
 	if st.saved.IdpID != idpID {
 		t.Errorf("the saved session names %q, want %q", st.saved.IdpID, idpID)
+	}
+}
+
+// TestIdentify_NamesTheEmailOfThePerson proves that the identifier step hands
+// the resolver both forms of the person. The identifier step accepts a username,
+// and a domain claim read from the typed form alone is stepped around by typing
+// one. See internal/identityprovider/resolve.go.
+func TestIdentify_NamesTheEmailOfThePerson(t *testing.T) {
+	var gotIdentifier, gotEmail string
+	svc, _ := testServiceResolving(t,
+		knownPerson("ada", Identity{UserID: "user-1", Email: "ada@corp.example"}), noCredential,
+		func(_ context.Context, _, identifier, _, email string) (string, error) {
+			gotIdentifier, gotEmail = identifier, email
+			return "", nil
+		})
+
+	if _, err := svc.Identify(context.Background(), "tenant-1", "ada", "", ""); err != nil {
+		t.Fatalf("identify: %v", err)
+	}
+	if gotIdentifier != "ada" || gotEmail != "ada@corp.example" {
+		t.Errorf("the resolver read %q and %q, want the typed form and the email of the person",
+			gotIdentifier, gotEmail)
 	}
 }
 
@@ -344,7 +366,7 @@ func TestIdentify_ResolutionFails(t *testing.T) {
 	boom := errors.New("the database is down")
 	svc, st := testServiceResolving(t,
 		knownPerson("person@example.com", Identity{UserID: "user-1"}), noCredential,
-		func(context.Context, string, string, string) (string, error) { return "", boom })
+		func(context.Context, string, string, string, string) (string, error) { return "", boom })
 
 	if _, err := svc.Identify(context.Background(), "tenant-1", "person@example.com", "", ""); !errors.Is(err, boom) {
 		t.Fatalf("identify gave %v, want %v", err, boom)
@@ -360,7 +382,7 @@ func TestIdentify_ResolutionFails(t *testing.T) {
 func TestOpen_NamesNoProvider(t *testing.T) {
 	svc, st := testServiceResolving(t,
 		knownPerson("person@example.com", Identity{UserID: "user-1"}), noCredential,
-		func(context.Context, string, string, string) (string, error) {
+		func(context.Context, string, string, string, string) (string, error) {
 			t.Error("Open resolved an identity provider")
 			return "idp-1", nil
 		})
@@ -948,7 +970,7 @@ func directoryService(t *testing.T, bind Binder) (*Service, *store) {
 			t.Error("the password step read a local password hash, want a bind")
 			return "", user.ErrNotFound
 		},
-		func(context.Context, string, string, string) (string, error) { return directoryIdp, nil },
+		func(context.Context, string, string, string, string) (string, error) { return directoryIdp, nil },
 		bind)
 }
 
@@ -1190,7 +1212,7 @@ func firstBindService(t *testing.T, bind Binder) (*Service, *store) {
 	return testServiceBinding(t,
 		func(context.Context, string, string) (Identity, error) { return Identity{}, user.ErrNotFound },
 		noCredential,
-		func(context.Context, string, string, string) (string, error) { return directoryIdp, nil },
+		func(context.Context, string, string, string, string) (string, error) { return directoryIdp, nil },
 		bind)
 }
 

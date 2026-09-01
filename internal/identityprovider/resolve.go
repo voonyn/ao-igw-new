@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	"alphaomega/identitygateway/internal/platform/logger"
@@ -86,8 +87,11 @@ func NewResolver(deps ResolverDeps) *Resolver {
 // read of the person already does at this step, so the answer is the same for
 // everybody, and a sign-in never falls back to a local password hash that a
 // domain claim was meant to take out of service.
-func (r *Resolver) Resolve(ctx context.Context, tenantID, identifier, userID string) (string, error) {
-	idpID, err := r.resolve(ctx, tenantID, identifier, userID)
+//
+// userID and email are the person the identifier step named, and both are empty
+// when that read named nobody.
+func (r *Resolver) Resolve(ctx context.Context, tenantID, identifier, userID, email string) (string, error) {
+	idpID, err := r.resolve(ctx, tenantID, identifier, userID, email)
 	if errors.Is(err, ErrAmbiguous) {
 		return "", nil
 	}
@@ -96,13 +100,18 @@ func (r *Resolver) Resolve(ctx context.Context, tenantID, identifier, userID str
 
 // resolve runs the four cases and refuses with ErrAmbiguous.
 //
-// userID is the person FindByIdentifier named, and it is empty when that read
-// missed. Four cases run in this order:
+// userID and email are the person FindByIdentifier named, and both are empty
+// when that read missed. Four cases run in this order:
 //
-//  1. The identifier carries a domain that a live active provider claims. That
-//     provider answers. It outranks every case below, including a person who
-//     holds a local password, which is what makes a domain claim a guard rail of
-//     its own. See docs/specs/0002-directory-sign-in.md.
+//  1. A live active provider claims the domain of the person. Two forms carry
+//     that domain, and case 1 reads both: the identifier they typed, and the
+//     email address the tenant holds for them. A person who types their
+//     username carries the claim in the second form alone, and a claim a person
+//     steps around by typing another form of their own identifier is no guard
+//     rail. Either match answers that provider. It outranks every case below,
+//     including a person who holds a local password, which is what makes a
+//     domain claim a guard rail of its own. See
+//     docs/specs/0002-directory-sign-in.md.
 //  2. No domain match, and the person holds exactly one Identity Link with a
 //     provider that takes a typed password. That provider answers.
 //  3. No domain match, and the person holds no such link. The local compare
@@ -113,12 +122,19 @@ func (r *Resolver) Resolve(ctx context.Context, tenantID, identifier, userID str
 // A person who holds no link and no password hash reaches case 3 and is refused
 // by the password step, which is what happens to them today.
 //
-// The identifier is personal data, so it never reaches a log line.
-func (r *Resolver) resolve(ctx context.Context, tenantID, identifier, userID string) (string, error) {
+// The email form of case 1 carries a ceiling. The bind searches the directory on
+// the string the person typed, ldap.go:273, so a provider whose user filter
+// matches the email attribute alone refuses a typed username that a claim on the
+// email form routed here. That filter has to match every form a tenant lets
+// people type in any case, because a typed email meets the same wall today.
+//
+// The identifier and the email address are personal data, so neither reaches a
+// log line.
+func (r *Resolver) resolve(ctx context.Context, tenantID, identifier, userID, email string) (string, error) {
 	r.log.Debug("resolve the identity provider",
 		logger.String("tenant_id", tenantID), logger.RequestID(ctx))
 
-	if domain := emailDomain(identifier); domain != "" {
+	for _, domain := range domainsOf(identifier, email) {
 		idpID, err := r.deps.DomainOwner(ctx, tenantID, domain)
 		if err == nil {
 			return idpID, nil
@@ -181,6 +197,20 @@ func (r *Resolver) sole(tenantID string, idpIDs []string) (string, error) {
 	r.log.Warn("refused a sign-in that no single identity provider proves",
 		logger.String("tenant_id", tenantID))
 	return "", fmt.Errorf("%w: tenant %s", ErrAmbiguous, tenantID)
+}
+
+// domainsOf answers the domains case 1 reads, in the order it reads them. A
+// form that carries no domain, and a second form that repeats the first, add
+// nothing: a person who typed their own email address drives one read.
+func domainsOf(forms ...string) []string {
+	var domains []string
+	for _, form := range forms {
+		domain := emailDomain(form)
+		if domain != "" && !slices.Contains(domains, domain) {
+			domains = append(domains, domain)
+		}
+	}
+	return domains
 }
 
 // emailDomain answers the domain one identifier carries, trimmed and lowercased,

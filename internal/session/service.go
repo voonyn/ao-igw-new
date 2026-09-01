@@ -66,7 +66,15 @@ type CredentialFinder func(ctx context.Context, tenantID, userID string) (string
 // The router composes it, because it reads the directories a tenant registered,
 // the domains they claim, and the Identity Links of the person, and those live in
 // a domain this one must not import.
-type ProviderResolver func(ctx context.Context, tenantID, identifier, userID string) (string, error)
+//
+// userID and email are the person the identifier named, and both are empty when
+// the identifier named nobody. A domain claim is read from both forms of the
+// person, the identifier they typed and the email address the tenant holds for
+// them, so a claim a person steps around by typing their username is no guard
+// rail.
+type ProviderResolver func(
+	ctx context.Context, tenantID, identifier, userID, email string,
+) (string, error)
 
 // Binder proves one password against the directory a login session names, and
 // answers the person the sign-in carries on as. It answers one of five sentinels
@@ -146,7 +154,7 @@ func (s *Service) Identify(ctx context.Context, tenantID, identifier, ip, userAg
 	// never a person who is not held: a sign-in that carried on would fall back
 	// to a local password hash that a claimed domain took out of service. The
 	// resolver has logged it.
-	idpID, err := s.deps.Provider(ctx, tenantID, identifier, person.UserID)
+	idpID, err := s.deps.Provider(ctx, tenantID, identifier, person.UserID, person.Email)
 	if err != nil {
 		return Opened{}, err
 	}

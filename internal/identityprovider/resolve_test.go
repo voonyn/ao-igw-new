@@ -78,11 +78,13 @@ func testResolver(t *testing.T, w world) (*Resolver, *reads) {
 	}), ran
 }
 
-// resolve runs one resolution and fails the test when it refused.
-func resolve(t *testing.T, r *Resolver, identifier, userID string) string {
+// resolve runs one resolution and fails the test when it refused. email is the
+// address the tenant holds for the person, and it is empty when the identifier
+// named nobody.
+func resolve(t *testing.T, r *Resolver, identifier, userID, email string) string {
 	t.Helper()
 
-	idpID, err := r.Resolve(context.Background(), testTenantID, identifier, userID)
+	idpID, err := r.Resolve(context.Background(), testTenantID, identifier, userID, email)
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -98,7 +100,7 @@ func TestCaseOneDomainClaimAnswers(t *testing.T) {
 		linked: []string{orgIdpID},
 	})
 
-	if got := resolve(t, r, theIdentifier, testUserID); got != tenantIdpID {
+	if got := resolve(t, r, theIdentifier, testUserID, ""); got != tenantIdpID {
 		t.Fatalf("idp = %q, want the provider that claims the domain", got)
 	}
 	if ran.linked != 0 || ran.held != 0 || ran.active != 0 {
@@ -117,7 +119,7 @@ func TestDomainMatchIgnoresCaseAndSpace(t *testing.T) {
 		"  ADA@CORP.EXAMPLE  ",
 		"\tAda@Corp.Example\n",
 	} {
-		if got := resolve(t, r, typed, ""); got != tenantIdpID {
+		if got := resolve(t, r, typed, "", ""); got != tenantIdpID {
 			t.Fatalf("%q resolved %q, want the provider that claims the domain", typed, got)
 		}
 	}
@@ -128,11 +130,64 @@ func TestDomainMatchIgnoresCaseAndSpace(t *testing.T) {
 func TestBareUsernameReadsNoDomainClaim(t *testing.T) {
 	r, ran := testResolver(t, world{claims: map[string]string{theDomain: tenantIdpID}})
 
-	if got := resolve(t, r, bareUsername, testUserID); got != "" {
+	if got := resolve(t, r, bareUsername, testUserID, ""); got != "" {
 		t.Fatalf("idp = %q, want the local password compare", got)
 	}
 	if ran.domain != 0 {
 		t.Fatalf("the domain claim was read %d times, want none", ran.domain)
+	}
+}
+
+// TestCaseOneReadsTheEmailOfThePerson proves that a domain claim is resolved
+// from the person and not from the string they typed. The identifier step
+// accepts a username as well as an email address, so a claim that read the typed
+// form alone was stepped around by typing the username, and the local bcrypt
+// compare then proved the sign-in against the hash the claim retired.
+//
+// The person holds an Identity Link of their own here, so the test also proves
+// that the email form outranks case 2 the way the typed form does.
+func TestCaseOneReadsTheEmailOfThePerson(t *testing.T) {
+	r, ran := testResolver(t, world{
+		claims: map[string]string{theDomain: tenantIdpID},
+		linked: []string{orgIdpID},
+	})
+
+	if got := resolve(t, r, bareUsername, testUserID, theIdentifier); got != tenantIdpID {
+		t.Fatalf("idp = %q, want the provider that claims the domain", got)
+	}
+	if ran.linked != 0 || ran.held != 0 || ran.active != 0 {
+		t.Fatalf("reads below the domain claim ran: %+v", ran)
+	}
+}
+
+// TestCaseOneReadsTheTypedFormOnce proves that the two forms of one person cost
+// one read. A person who types their own email address carries the same domain
+// twice, and a claim that is not there is not there either way.
+func TestCaseOneReadsTheTypedFormOnce(t *testing.T) {
+	r, ran := testResolver(t, world{claims: map[string]string{theDomain: tenantIdpID}})
+
+	if got := resolve(t, r, theIdentifier, testUserID, theIdentifier); got != tenantIdpID {
+		t.Fatalf("idp = %q, want the provider that claims the domain", got)
+	}
+	if ran.domain != 1 {
+		t.Fatalf("the domain claim was read %d times, want one", ran.domain)
+	}
+}
+
+// TestNoClaimCoversTheEmailOfThePerson proves that the email form claims
+// nothing on its own. The tenant claims one domain, the person carries another,
+// and the cases below case 1 answer them as they do today.
+func TestNoClaimCoversTheEmailOfThePerson(t *testing.T) {
+	r, ran := testResolver(t, world{
+		claims: map[string]string{theDomain: tenantIdpID},
+		linked: []string{orgIdpID},
+	})
+
+	if got := resolve(t, r, bareUsername, testUserID, "ada@other.example"); got != orgIdpID {
+		t.Fatalf("idp = %q, want the provider of the identity link", got)
+	}
+	if ran.domain != 1 {
+		t.Fatalf("the domain claim was read %d times, want one for the email form", ran.domain)
 	}
 }
 
@@ -142,7 +197,7 @@ func TestBareUsernameReadsNoDomainClaim(t *testing.T) {
 func TestCaseTwoOneIdentityLinkAnswers(t *testing.T) {
 	r, ran := testResolver(t, world{linked: []string{orgIdpID}, active: []string{orgIdpID}})
 
-	if got := resolve(t, r, bareUsername, testUserID); got != orgIdpID {
+	if got := resolve(t, r, bareUsername, testUserID, ""); got != orgIdpID {
 		t.Fatalf("idp = %q, want the linked provider", got)
 	}
 	if ran.held != 0 || ran.active != 0 {
@@ -156,7 +211,7 @@ func TestCaseTwoOneIdentityLinkAnswers(t *testing.T) {
 func TestCaseTwoRefusesTwoIdentityLinks(t *testing.T) {
 	r, _ := testResolver(t, world{linked: []string{orgIdpID, tenantIdpID}})
 
-	_, err := r.resolve(context.Background(), testTenantID, bareUsername, testUserID)
+	_, err := r.resolve(context.Background(), testTenantID, bareUsername, testUserID, "")
 	if !errors.Is(err, ErrAmbiguous) {
 		t.Fatalf("err = %v, want ErrAmbiguous", err)
 	}
@@ -167,7 +222,7 @@ func TestCaseTwoRefusesTwoIdentityLinks(t *testing.T) {
 func TestCaseThreeLocalPasswordAnswers(t *testing.T) {
 	r, _ := testResolver(t, world{active: []string{tenantIdpID}})
 
-	if got := resolve(t, r, bareUsername, testUserID); got != "" {
+	if got := resolve(t, r, bareUsername, testUserID, ""); got != "" {
 		t.Fatalf("idp = %q, want the local password compare", got)
 	}
 }
@@ -178,7 +233,7 @@ func TestCaseThreeLocalPasswordAnswers(t *testing.T) {
 func TestCaseFourSoleProviderAnswers(t *testing.T) {
 	r, ran := testResolver(t, world{active: []string{tenantIdpID}})
 
-	if got := resolve(t, r, bareUsername, ""); got != tenantIdpID {
+	if got := resolve(t, r, bareUsername, "", ""); got != tenantIdpID {
 		t.Fatalf("idp = %q, want the one provider of the tenant", got)
 	}
 	if ran.held != 1 {
@@ -193,7 +248,7 @@ func TestCaseFourSoleProviderAnswers(t *testing.T) {
 func TestCaseFourRefusesTwoProviders(t *testing.T) {
 	r, _ := testResolver(t, world{active: []string{tenantIdpID, orgIdpID}})
 
-	_, err := r.resolve(context.Background(), testTenantID, bareUsername, "")
+	_, err := r.resolve(context.Background(), testTenantID, bareUsername, "", "")
 	if !errors.Is(err, ErrAmbiguous) {
 		t.Fatalf("err = %v, want ErrAmbiguous", err)
 	}
@@ -206,7 +261,7 @@ func TestCaseFourRefusesTwoProviders(t *testing.T) {
 func TestCaseFourSkipsAnAccountTheTenantHolds(t *testing.T) {
 	r, ran := testResolver(t, world{held: true, active: []string{tenantIdpID}})
 
-	if got := resolve(t, r, bareUsername, ""); got != "" {
+	if got := resolve(t, r, bareUsername, "", ""); got != "" {
 		t.Fatalf("idp = %q, want the local password compare", got)
 	}
 	if ran.active != 0 {
@@ -221,7 +276,7 @@ func TestTenantWithNoDirectoryResolvesNothing(t *testing.T) {
 	r, _ := testResolver(t, world{})
 
 	for _, userID := range []string{testUserID, ""} {
-		if got := resolve(t, r, theIdentifier, userID); got != "" {
+		if got := resolve(t, r, theIdentifier, userID, ""); got != "" {
 			t.Fatalf("idp = %q, want the local password compare", got)
 		}
 	}
@@ -243,7 +298,7 @@ func TestABrokenReadRefuses(t *testing.T) {
 		}
 
 		r, _ := testResolver(t, w)
-		if _, err := r.Resolve(context.Background(), testTenantID, identifier, userID); !errors.Is(err, broken) {
+		if _, err := r.Resolve(context.Background(), testTenantID, identifier, userID, ""); !errors.Is(err, broken) {
 			t.Fatalf("%s read: err = %v, want the read error", name, err)
 		}
 	}
@@ -257,9 +312,9 @@ func TestNoRefusalNamesTheCaseItRefused(t *testing.T) {
 	log, observed := logger.NewObserved()
 
 	linked, _ := testResolverLogging(log, world{linked: []string{orgIdpID, tenantIdpID}}).
-		Resolve(context.Background(), testTenantID, bareUsername, testUserID)
+		Resolve(context.Background(), testTenantID, bareUsername, testUserID, "")
 	unknown, _ := testResolverLogging(log, world{active: []string{orgIdpID, tenantIdpID}}).
-		Resolve(context.Background(), testTenantID, bareUsername, "")
+		Resolve(context.Background(), testTenantID, bareUsername, "", "")
 
 	if linked != "" || unknown != "" {
 		t.Fatalf("a refusal named a provider: %q and %q", linked, unknown)
@@ -308,7 +363,7 @@ func TestResolveAnswersTheLocalCompareWhenItRefuses(t *testing.T) {
 
 	for name, w := range cases {
 		r, _ := testResolver(t, w)
-		idpID, err := r.Resolve(context.Background(), testTenantID, bareUsername, userIDs[name])
+		idpID, err := r.Resolve(context.Background(), testTenantID, bareUsername, userIDs[name], "")
 		if err != nil {
 			t.Fatalf("%s: Resolve gave %v, want the local password compare", name, err)
 		}
@@ -325,7 +380,7 @@ func TestResolveStopsOnABrokenRead(t *testing.T) {
 	broken := errors.New("the database is unreachable")
 	r, _ := testResolver(t, world{broken: broken})
 
-	if _, err := r.Resolve(context.Background(), testTenantID, theIdentifier, testUserID); !errors.Is(err, broken) {
+	if _, err := r.Resolve(context.Background(), testTenantID, theIdentifier, testUserID, ""); !errors.Is(err, broken) {
 		t.Fatalf("err = %v, want the read error", err)
 	}
 }
