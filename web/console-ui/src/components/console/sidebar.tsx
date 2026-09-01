@@ -62,6 +62,7 @@ export function Sidebar() {
         { id: "tenants", icon: "server", tenantOnly: true },
         { id: "policies", icon: "scroll", tenantOnly: true },
         { id: "notifications", icon: "mail", tenantOnly: true },
+        { id: "idps", icon: "link", tenantOnly: true },
         { id: "audit", icon: "laptop", tenantOnly: true },
         { id: "bootstrap", icon: "rocket", tenantOnly: true },
       ],

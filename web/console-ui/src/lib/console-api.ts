@@ -827,6 +827,24 @@ const MUTATION_MESSAGES: Record<string, string> = {
   // Only an IAM_OWNER writes a tenant membership, so a tenant with none left could
   // never grant one again.
   last_owner: "The tenant must keep one IAM_OWNER — grant the role to somebody else first.",
+  // A domain claim routes every person whose email carries it to the directory,
+  // including the owners who hold a local password. One directory outage must
+  // not lock every administrator out of the console, so the claim is refused.
+  last_local_owner:
+    "The tenant must keep one IAM_OWNER who signs in with a password this gateway holds. Give the role to such a person first.",
+  // A domain routes every person whose email carries it to one directory, so two
+  // providers cannot hold the same one. The identity-provider form names the
+  // domain that is taken; this is the sentence every other surface reads.
+  domain_already_claimed: "Another identity provider of this tenant already claims that domain.",
+  // An identity provider stays at the level it was created at, so a tenant-wide
+  // provider never becomes an organization's own.
+  level_fixed: "An identity provider stays at the level it was created at.",
+  // The connection test is an outbound call into a customer network, so it
+  // carries a budget of its own.
+  rate_limited: "Too many attempts. Wait a moment and try again.",
+  // The budget lives only in Redis, and a budget nobody can read refuses the
+  // test rather than letting an unmetered outbound call through.
+  test_unavailable: "The connection test can't run at the moment. Try again shortly.",
 };
 
 /** Maps the gateway's resource-write error codes to a human sentence. */
@@ -924,4 +942,122 @@ export const notificationsApi = {
     mutate<NotificationTemplate>(`${tmplBase(orgId)}/${key}`, "PUT", b),
   deleteTemplate: (key: string, orgId?: string) =>
     mutate<{ ok: boolean }>(`${tmplBase(orgId)}/${key}`, "DELETE"),
+};
+
+// ── Identity providers (directory sign-in) ────────────────────────────────────
+
+/** Transport of one directory. A boolean cannot tell StartTLS from LDAPS, and
+ * those two differ in port and in handshake, so the wire value is an integer. */
+export const IDP_MODE_PLAIN = 1;
+export const IDP_MODE_STARTTLS = 2;
+export const IDP_MODE_LDAPS = 3;
+
+/** The scheme each transport accepts, mirroring `identityprovider.modeSchemes`.
+ * The gateway is the enforcement point; this only marks the box before a save. */
+export const IDP_MODE_SCHEMES: Record<number, string> = {
+  [IDP_MODE_PLAIN]: "ldap://",
+  [IDP_MODE_STARTTLS]: "ldap://",
+  [IDP_MODE_LDAPS]: "ldaps://",
+};
+
+/** One directory as the console reads it.
+ *
+ * `bindPasswordSet` reports that a bind credential is stored. The credential is
+ * write-only, and no read path answers it in any shape.
+ *
+ * `orgId` carries the level: "" is the tenant-wide provider, and a UUID is that
+ * organization's own. A provider stays at the level it was created at. */
+export interface IdentityProvider {
+  id: string;
+  tenantId: string;
+  orgId: string;
+  name: string;
+  type: number;
+  state: number; // 1 active, 2 inactive
+  defaultOrgId: string;
+  mode: number;
+  servers: string[];
+  rootCa: string;
+  timeoutSeconds: number;
+  bindDn: string;
+  bindPasswordSet: boolean;
+  baseDn: string;
+  userObjectClasses: string[];
+  userFilters: string[];
+  userBase: string;
+  attrId: string;
+  attrUsername: string;
+  attrEmail: string;
+  attrFirstName: string;
+  attrLastName: string;
+  attrDisplayName: string;
+  domains: string[];
+  created: string;
+}
+
+/** Write body. The console submits the whole form, so every field except the
+ * bind password replaces what is stored.
+ *
+ * `bindPassword` is the one write-only field, and it answers three ways: absent
+ * keeps the stored credential, "" clears it, and a value replaces it.
+ *
+ * `confirmPlaintext` is the explicit confirmation a plain bind needs. The
+ * gateway refuses mode 1 without it. */
+export interface IdentityProviderBody {
+  orgId?: string;
+  name: string;
+  state: number;
+  defaultOrgId?: string;
+  mode: number;
+  confirmPlaintext: boolean;
+  servers: string[];
+  rootCa: string;
+  timeoutSeconds: number;
+  bindDn: string;
+  bindPassword?: string;
+  baseDn: string;
+  userObjectClasses: string[];
+  userFilters: string[];
+  userBase: string;
+  attrId: string;
+  attrUsername: string;
+  attrEmail: string;
+  attrFirstName: string;
+  attrLastName: string;
+  attrDisplayName: string;
+  domains: string[];
+}
+
+/** What one connection test answers.
+ *
+ * `stage` names the step that failed — "dial", "tls", "bind" or "search" — and
+ * it is empty when every stage passed. `matched` is how many entries the search
+ * matched, and it is read only when `ok` is true. A failed stage is a 200: the
+ * test ran, so the console renders the stage rather than an error. */
+export interface ConnectionTestResult {
+  ok: boolean;
+  stage: string;
+  matched: number;
+  detail: string;
+}
+
+const idpBase = "/api/admin/identity-providers";
+
+/** Client for the identity-provider admin API, proxied through the BFF.
+ *
+ * The list is bounded — a tenant registers a handful of directories — so it
+ * answers whole and it carries no pager.
+ *
+ * `test` without an id tests a configuration nobody saved yet, so an operator
+ * checks a directory before the first save. */
+export const identityProvidersApi = {
+  // `getOptional`, not `getJson`: the read is tenant-manager only, and a 403 is
+  // a permission answer the view has to say out loud.
+  list: () => getOptional<IdentityProvider[]>(idpBase),
+  create: (b: IdentityProviderBody) => mutate<IdentityProvider>(idpBase, "POST", b),
+  update: (id: string, b: IdentityProviderBody) =>
+    mutate<IdentityProvider>(`${idpBase}/${encodeURIComponent(id)}`, "PUT", b),
+  remove: (id: string) => mutate<{ ok: boolean }>(`${idpBase}/${encodeURIComponent(id)}`, "DELETE"),
+  test: (b: IdentityProviderBody, id?: string) =>
+    mutate<ConnectionTestResult>(id ? `${idpBase}/${encodeURIComponent(id)}/test` : `${idpBase}/test`, "POST", b),
 };

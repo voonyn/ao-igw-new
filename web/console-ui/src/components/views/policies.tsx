@@ -5,6 +5,7 @@ import { Icon } from "@/components/console/icons";
 import { Btn, confirmAction, ViewNotice } from "@/components/console/primitives";
 import { useConsole, usePending } from "@/components/console/store";
 import { PageHead } from "@/components/console/page-head";
+import { lines } from "@/lib/helpers";
 import {
   authPolicyApi,
   canManageTenant,
@@ -244,10 +245,7 @@ function PolicyForm({ pol, scope, onReload }: { pol: AuthPolicy; scope: string; 
       pwMinLength: n("pwMinLength"),
       pwMinClasses: n("pwMinClasses"),
       pwCheckBreach: val("pwCheckBreach", breach),
-      pwDenyList: val(
-        "pwDenyList",
-        deny.split(/[\n,]/).map((s) => s.trim()).filter(Boolean),
-      ),
+      pwDenyList: val("pwDenyList", lines(deny)),
       recoveryResetTtlSeconds: n("recoveryResetTtlSeconds"),
       recoveryVerifyTtlSeconds: n("recoveryVerifyTtlSeconds"),
       mfaRequired: val("mfaRequired", mfaRequired),

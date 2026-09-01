@@ -76,6 +76,17 @@ export function utcTs(iso: string): string {
   return Number.isNaN(d.getTime()) ? iso : d.toISOString();
 }
 
+/** THE textarea-to-list reader. A form that collects a list of short values —
+ * a password deny-list, the servers of a directory, the domains it claims —
+ * gives the operator one box and splits it here, on a newline or a comma.
+ * Blank entries are dropped, so a trailing newline never submits an empty value. */
+export function lines(text: string): string[] {
+  return text
+    .split(/[\n,]/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
 export function initials(name: string): string {
   return (name || "?")
     .split(" ")
@@ -110,6 +121,7 @@ export const PAGE_PATH: Record<string, string> = {
   groups: "/groups",
   roles: "/roles",
   policies: "/policies",
+  idps: "/identity-providers",
   audit: "/audit",
   catalog: "/catalog",
 };
@@ -137,6 +149,7 @@ export const PAGE_TITLES: Record<string, string> = {
   groups: "Groups",
   roles: "Custom Roles",
   policies: "Auth Policy",
+  idps: "Identity Providers",
   audit: "Audit Log",
   catalog: "App Catalog",
 };
