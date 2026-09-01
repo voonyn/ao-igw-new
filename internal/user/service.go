@@ -130,6 +130,11 @@ type (
 	// TenantOwnerCounter counts how many people sit as IAM_OWNER of the tenant.
 	TenantOwnerCounter func(ctx context.Context, tenantID string) (int64, error)
 
+	// LocalOwnerLister reads the people sitting as IAM_OWNER of the tenant whom
+	// the local password compare signs in. The counter above cannot answer for
+	// them, because it counts the owners a directory proves as well.
+	LocalOwnerLister func(ctx context.Context, tenantID string) ([]tenant.LocalOwner, error)
+
 	// DIEnroller registers one person with the Scan Verifier and answers the
 	// identifier it keeps for them.
 	DIEnroller func(ctx context.Context, u di.EnrolUser) (string, error)
@@ -163,6 +168,10 @@ type Deps struct {
 	TenantMember TenantMemberFinder
 
 	CountTenantOwners TenantOwnerCounter
+	// The first guard rail: never leave the tenant with no IAM_OWNER whom the
+	// local password compare signs in. It runs after the count, which cannot
+	// answer it on its own.
+	LocalTenantOwners LocalOwnerLister
 
 	// Enrol and SetDI mirror a newly provisioned person into the Scan Verifier.
 	// Both are nil when this deployment runs no Scan Verifier, and a nil Enrol is
@@ -1002,16 +1011,51 @@ func (s *Service) keepsAnOwner(ctx context.Context, a Actor, userID, what string
 	if err != nil {
 		return s.fail(a.TenantID, a.UserID, "count the owners of the tenant", err)
 	}
-	if owners > 1 {
+	if owners <= 1 {
+		s.log.Warn("refused a write that would leave the tenant without an owner",
+			logger.String("tenant_id", a.TenantID),
+			logger.String("user_id", a.UserID),
+			logger.String("target_user_id", userID),
+			logger.String("what", what))
+		return fmt.Errorf("%w: %s, user %s", ErrLastOwner, what, userID)
+	}
+	return s.keepsALocalOwner(ctx, a, userID, what)
+}
+
+// keepsALocalOwner refuses a write that would leave nobody sitting as IAM_OWNER
+// whom the local password compare signs in.
+//
+// It runs after the count above, and it refuses writes that the count passes. A
+// tenant with ten owners a directory proves and one owner this gateway proves
+// counts eleven, so the deactivate of the eleventh reads eleven and goes
+// through, and the next directory outage locks every administrator out of the
+// console.
+//
+// The membership service refuses the revoke of the same seat with the same
+// slug. This guard covers the account itself, the way the count above does.
+//
+// The caller has already read that this person sits as IAM_OWNER, so the only
+// question left is whether anybody else is a local owner.
+//
+// ponytail: the read runs outside the transaction, the way the count above
+// already does. Two writes that each take one of the last two local owners can
+// both pass. Take a locking read inside the transaction if an operator ever hits
+// it.
+func (s *Service) keepsALocalOwner(ctx context.Context, a Actor, userID, what string) error {
+	owners, err := s.deps.LocalTenantOwners(ctx, a.TenantID)
+	if err != nil {
+		return s.fail(a.TenantID, a.UserID, "read the local owners of the tenant", err)
+	}
+	if !tenant.LastLocalOwner(owners, func(o tenant.LocalOwner) bool { return o.UserID == userID }) {
 		return nil
 	}
 
-	s.log.Warn("refused a write that would leave the tenant without an owner",
+	s.log.Warn("refused a write that would leave the tenant without a local owner",
 		logger.String("tenant_id", a.TenantID),
 		logger.String("user_id", a.UserID),
 		logger.String("target_user_id", userID),
 		logger.String("what", what))
-	return fmt.Errorf("%w: %s, user %s", ErrLastOwner, what, userID)
+	return fmt.Errorf("%w: %s, user %s", tenant.ErrLastLocalOwner, what, userID)
 }
 
 // refuse logs one refused write and returns ErrForbidden.

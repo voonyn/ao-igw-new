@@ -456,6 +456,167 @@ func TestDeleteAllowsAnOwnerWhileAnotherSits(t *testing.T) {
 	}
 }
 
+// localOwner is the one owner whom the local password compare signs in. The ten
+// beside them in these tests are proved by a directory, so the count reads
+// eleven and the list of local owners reads one.
+var localOwner = tenant.LocalOwner{UserID: testUserID, Email: "owner@acme.test"}
+
+// TestDeactivateRefusesTheLastLocalOwner covers the first guard rail on the
+// account write. Ten owners a directory proves and one owner this gateway
+// proves count eleven, so the count rail passes and the local rail refuses.
+// Without it the next directory outage locks every administrator out.
+func TestDeactivateRefusesTheLastLocalOwner(t *testing.T) {
+	svc := adminService(t, adminDeps{
+		tenantRoles: []string{tenant.RoleIAMOwner},
+		owners:      11,
+		localOwners: []tenant.LocalOwner{localOwner},
+		rows:        []User{seededPerson(testOrgID, StateActive)},
+	})
+
+	err := svc.Deactivate(context.Background(), admin, testUserID)
+	if !errors.Is(err, tenant.ErrLastLocalOwner) {
+		t.Fatalf("Deactivate answered %v, want tenant.ErrLastLocalOwner", err)
+	}
+	if len(states) != 0 {
+		t.Fatalf("the write wrote %v, want nothing", states)
+	}
+	if len(events) != 0 {
+		t.Fatalf("the refused write recorded %d events, want none", len(events))
+	}
+}
+
+// TestDeleteRefusesTheLastLocalOwner covers the same rail on the delete. The
+// delete is the harder half: it leaves the membership row in place and nobody
+// able to sign in and grant the role again.
+func TestDeleteRefusesTheLastLocalOwner(t *testing.T) {
+	svc := adminService(t, adminDeps{
+		tenantRoles: []string{tenant.RoleIAMOwner},
+		owners:      11,
+		localOwners: []tenant.LocalOwner{localOwner},
+		rows:        []User{seededPerson(testOrgID, StateActive)},
+	})
+
+	err := svc.Delete(context.Background(), admin, testUserID)
+	if !errors.Is(err, tenant.ErrLastLocalOwner) {
+		t.Fatalf("Delete answered %v, want tenant.ErrLastLocalOwner", err)
+	}
+	if len(deletedUsers) != 0 {
+		t.Fatalf("the write deleted %v, want nothing", deletedUsers)
+	}
+	if len(events) != 0 {
+		t.Fatalf("the refused write recorded %d events, want none", len(events))
+	}
+}
+
+// TestDeactivateAndDeleteAllowALocalOwnerWhileAnotherSits proves the rail
+// refuses the last local owner only. A tenant with two of them loses one and
+// keeps a console it can sign in to.
+func TestDeactivateAndDeleteAllowALocalOwnerWhileAnotherSits(t *testing.T) {
+	second := tenant.LocalOwner{UserID: otherUserID, Email: "second@acme.test"}
+
+	svc := adminService(t, adminDeps{
+		tenantRoles: []string{tenant.RoleIAMOwner},
+		owners:      11,
+		localOwners: []tenant.LocalOwner{localOwner, second},
+		rows:        []User{seededPerson(testOrgID, StateActive)},
+	})
+	if err := svc.Deactivate(context.Background(), admin, testUserID); err != nil {
+		t.Fatalf("Deactivate: %v", err)
+	}
+	if len(states) != 1 || states[0] != StateInactive {
+		t.Fatalf("the write wrote %v, want the inactive state", states)
+	}
+
+	svc = adminService(t, adminDeps{
+		tenantRoles: []string{tenant.RoleIAMOwner},
+		owners:      11,
+		localOwners: []tenant.LocalOwner{localOwner, second},
+		rows:        []User{seededPerson(testOrgID, StateActive)},
+	})
+	if err := svc.Delete(context.Background(), admin, testUserID); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if len(deletedUsers) != 1 || deletedUsers[0] != testUserID {
+		t.Fatalf("the write deleted %v, want %s", deletedUsers, testUserID)
+	}
+}
+
+// TestDeactivateAndDeleteIgnoreTheLocalRailWithNoLocalOwner covers a tenant
+// whose owners a directory proves and this gateway proves for none. There is
+// nothing left to protect, and a refusal there would trap an administrator
+// whose directory is gone for good.
+func TestDeactivateAndDeleteIgnoreTheLocalRailWithNoLocalOwner(t *testing.T) {
+	noLocalOwner := adminDeps{
+		tenantRoles: []string{tenant.RoleIAMOwner},
+		owners:      11,
+		rows:        []User{seededPerson(testOrgID, StateActive)},
+	}
+
+	svc := adminService(t, noLocalOwner)
+	if err := svc.Deactivate(context.Background(), admin, testUserID); err != nil {
+		t.Fatalf("Deactivate: %v", err)
+	}
+	if len(states) != 1 || states[0] != StateInactive {
+		t.Fatalf("the write wrote %v, want the inactive state", states)
+	}
+
+	svc = adminService(t, noLocalOwner)
+	if err := svc.Delete(context.Background(), admin, testUserID); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if len(deletedUsers) != 1 || deletedUsers[0] != testUserID {
+		t.Fatalf("the write deleted %v, want %s", deletedUsers, testUserID)
+	}
+}
+
+// TestDeactivateAndDeleteReadTheCountRailFirst proves the order of the two
+// rails. A tenant with one owner is refused by the count, whatever the list of
+// local owners reads, so the slug an operator sees names the seat and not the
+// compare.
+func TestDeactivateAndDeleteReadTheCountRailFirst(t *testing.T) {
+	oneOwner := adminDeps{
+		tenantRoles: []string{tenant.RoleIAMOwner},
+		owners:      1,
+		localOwners: []tenant.LocalOwner{{UserID: otherUserID, Email: "second@acme.test"}},
+		rows:        []User{seededPerson(testOrgID, StateActive)},
+	}
+
+	svc := adminService(t, oneOwner)
+	if err := svc.Deactivate(context.Background(), admin, testUserID); !errors.Is(err, ErrLastOwner) {
+		t.Fatalf("Deactivate answered %v, want ErrLastOwner", err)
+	}
+	if len(states) != 0 {
+		t.Fatalf("the write wrote %v, want nothing", states)
+	}
+
+	svc = adminService(t, oneOwner)
+	if err := svc.Delete(context.Background(), admin, testUserID); !errors.Is(err, ErrLastOwner) {
+		t.Fatalf("Delete answered %v, want ErrLastOwner", err)
+	}
+	if len(deletedUsers) != 0 {
+		t.Fatalf("the write deleted %v, want nothing", deletedUsers)
+	}
+}
+
+// TestActivateNeverReadsTheLocalOwnerGuard proves the new rail sits where the
+// count rail sits, on the deactivate and not on the shared state write.
+// Activating an account is the recovery from the refusal.
+func TestActivateNeverReadsTheLocalOwnerGuard(t *testing.T) {
+	svc := adminService(t, adminDeps{
+		tenantRoles: []string{tenant.RoleIAMOwner},
+		owners:      11,
+		localOwners: []tenant.LocalOwner{localOwner},
+		rows:        []User{seededPerson(testOrgID, StateInactive)},
+	})
+
+	if err := svc.Activate(context.Background(), admin, testUserID); err != nil {
+		t.Fatalf("Activate: %v", err)
+	}
+	if len(states) != 1 || states[0] != StateActive {
+		t.Fatalf("the write wrote %v, want the active state", states)
+	}
+}
+
 // TestDeleteRollsBackAFailedAuditWrite proves the change and the trail land
 // together. A change nobody can audit is not allowed to stand.
 func TestDeleteRollsBackAFailedAuditWrite(t *testing.T) {
@@ -790,8 +951,12 @@ type adminDeps struct {
 	rows         []User
 	// How many people sit as IAM_OWNER of the tenant. Only the writes that can
 	// take an owner out of service read it.
-	owners     int64
-	auditFails bool
+	owners int64
+	// The owners whom the local password compare signs in. The count above
+	// cannot answer for them, because it counts the owners a directory proves
+	// as well.
+	localOwners []tenant.LocalOwner
+	auditFails  bool
 	// weakPassword refuses the password of a create, as the policy of the
 	// organization does when the password fails one of its rules.
 	weakPassword bool
@@ -926,6 +1091,9 @@ func adminService(t *testing.T, d adminDeps) *Service {
 
 		CountTenantOwners: func(context.Context, string) (int64, error) {
 			return d.owners, nil
+		},
+		LocalTenantOwners: func(context.Context, string) ([]tenant.LocalOwner, error) {
+			return d.localOwners, nil
 		},
 		Enrol: enroller(d),
 		SetDI: func(_ context.Context, _, userID, uuid string) error {

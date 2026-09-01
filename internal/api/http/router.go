@@ -593,6 +593,8 @@ func mountAdmin(
 		TenantMember: tenants.FindMember,
 
 		CountTenantOwners: tenants.CountOwners,
+		// The read behind the first guard rail. The count above cannot answer it.
+		LocalTenantOwners: tenants.LocalOwners,
 
 		// A person the tenant provisions is mirrored into the Scan Verifier, so a
 		// later scan resolves to a real account. Both halves stay nil when the

@@ -33,10 +33,10 @@ func init() {
 	response.Map(ErrRegistrableDomain, fiber.StatusConflict, SlugRegistrableDomain,
 		"That host does not share the registrable domain of this tenant.")
 
-	// Two other domains raise this one: the membership write that revokes a
-	// role, and the identity provider write that claims a domain. It is mapped
-	// once, here, because the tenant declares it and no package maps an error it
-	// does not declare.
+	// Other domains raise this one: any write that can take the last local
+	// IAM_OWNER of the tenant out of the local compare. It is mapped once,
+	// here, because the tenant declares it and no package maps an error it does
+	// not declare.
 	response.Map(ErrLastLocalOwner, fiber.StatusConflict, "last_local_owner",
 		"The tenant must keep one IAM_OWNER who signs in with a password this gateway holds. "+
 			"Give the role to such a person first.")
