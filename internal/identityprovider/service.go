@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"alphaomega/identitygateway/internal/actor"
@@ -11,6 +12,7 @@ import (
 	"alphaomega/identitygateway/internal/organization"
 	"alphaomega/identitygateway/internal/platform/db"
 	"alphaomega/identitygateway/internal/platform/logger"
+	"alphaomega/identitygateway/internal/tenant"
 	"alphaomega/identitygateway/internal/utils"
 )
 
@@ -32,6 +34,16 @@ var ErrServerScheme = errors.New("the server does not match the transport")
 // level and an organization. The level decides which organization a bind creates
 // people in, so a move would relocate every person the next bind creates.
 var ErrLevelFixed = errors.New("an identity provider does not move between levels")
+
+// ErrLastLink reports the removal of the last Identity Link of a person who
+// holds no password hash. That person signs in through the directory and through
+// nothing else, so the removal locks them out for ever.
+//
+// It is the second guard rail of docs/specs/0002-directory-sign-in.md. The
+// removal looks like tidy-up, which is why it needs a rail of its own: an
+// administrator who unlinks a person expects the person to keep an account, and
+// password_hash is NULL.
+var ErrLastLink = errors.New("the person would keep no way to sign in")
 
 // ErrUserNotFound reports that the tenant holds no such person. The composition
 // root maps the user domain's own sentinel onto this one, so this package
@@ -97,6 +109,17 @@ type (
 	// role gets an empty answer, not an error.
 	TenantRoleFinder func(ctx context.Context, tenantID, userID string) ([]string, error)
 
+	// LocalOwnerLister reads the people who sit as IAM_OWNER of one tenant and
+	// whom the local password compare still signs in.
+	LocalOwnerLister func(ctx context.Context, tenantID string) ([]tenant.LocalOwner, error)
+
+	// PasswordReporter reports whether one person holds a password hash. A
+	// person the tenant does not hold answers false, because they hold none.
+	//
+	// It is a function value, and not a user model, so this package never
+	// imports the user domain. No caller ever reads the hash itself.
+	PasswordReporter func(ctx context.Context, tenantID, userID string) (bool, error)
+
 	// MembershipLister reads the organization memberships of one person.
 	MembershipLister func(ctx context.Context, tenantID, userID string) ([]organization.Membership, error)
 
@@ -115,7 +138,13 @@ type Deps struct {
 	Domains DomainLister
 	Claim   Claimer
 
-	Links        LinkLister
+	Links LinkLister
+
+	// Linked is the resolver's own read: the live active providers that take a
+	// typed password and that one person holds an Identity Link with. The guard
+	// rail on the unlink counts the links that still sign somebody in, and this
+	// is that count.
+	Linked       LinkedFinder
 	DeleteLink   LinkDeleter
 	WriteLink    LinkWriter
 	CreatePerson PersonCreator
@@ -124,6 +153,13 @@ type Deps struct {
 	UserOrg     UserOrgFinder
 	TenantRoles TenantRoleFinder
 	Memberships MembershipLister
+
+	// The two reads behind the guard rails. LocalOwners refuses a domain claim
+	// that would take the last local IAM_OWNER of the tenant, and HasPassword
+	// refuses the removal of the last Identity Link of a person who holds no
+	// password hash. See docs/specs/0002-directory-sign-in.md.
+	LocalOwners LocalOwnerLister
+	HasPassword PasswordReporter
 
 	// Allow is the connection test budget. It is one of the Redis-only
 	// exceptions to the stateless rule CLAUDE.md lists: no table holds the
@@ -394,6 +430,9 @@ func (s *Service) Unlink(ctx context.Context, a Actor, userID, idpID string) err
 	if !held.CanWrite(orgID) {
 		return s.refuse(a, idpID, "unlink an identity")
 	}
+	if err := s.keepsACredential(ctx, a, userID, idpID); err != nil {
+		return err
+	}
 
 	err = s.deps.InTx(ctx, func(ctx context.Context) error {
 		if err := s.deps.DeleteLink(ctx, a.TenantID, idpID, userID); err != nil {
@@ -438,7 +477,91 @@ func (s *Service) checkBody(ctx context.Context, a Actor, body Body) error {
 			return s.fail(a, "read the organization", err)
 		}
 	}
-	return nil
+	return s.keepsALocalOwner(ctx, a, body)
+}
+
+// keepsALocalOwner refuses a domain claim that would leave the tenant with no
+// IAM_OWNER whom the local password compare signs in.
+//
+// A claim ties people the same way an Identity Link does, and it is the easier
+// one to miss. Provider Resolution case 1 outranks case 3, so claiming
+// corp.example routes every person whose email address carries it to the
+// directory, including the people who hold a local password and no directory
+// account. One directory outage would then lock every administrator out of the
+// console.
+//
+// An inactive provider claims nothing that routes anybody, so the guard reads
+// the state the write stores and not the state the row holds. A write that
+// switches a provider on runs the guard with the claims it switches on.
+//
+// LocalOwners already drops the owners a live active claim routes today, so a
+// write that stores the claims it already holds refuses nothing new.
+func (s *Service) keepsALocalOwner(ctx context.Context, a Actor, body Body) error {
+	claimed := domains(body.Domains)
+	if body.State != StateActive || len(claimed) == 0 {
+		return nil
+	}
+
+	owners, err := s.deps.LocalOwners(ctx, a.TenantID)
+	if err != nil {
+		return s.fail(a, "read the local owners of the tenant", err)
+	}
+	takes := func(owner tenant.LocalOwner) bool {
+		return slices.Contains(claimed, emailDomain(owner.Email))
+	}
+	if !tenant.LastLocalOwner(owners, takes) {
+		return nil
+	}
+
+	s.log.Warn("refused a domain claim that would leave the tenant without a local owner",
+		logger.String("tenant_id", a.TenantID), logger.String("user_id", a.UserID))
+	return fmt.Errorf("%w: tenant %s", tenant.ErrLastLocalOwner, a.TenantID)
+}
+
+// keepsACredential refuses the removal of the last Identity Link of a person who
+// holds no password hash.
+//
+// A person the directory owns holds a NULL password_hash for ever, so the link
+// is the whole of their credential. The removal looks like tidy-up and it locks
+// them out for ever, and no console screen can put the link back.
+//
+// A person who holds a password hash keeps a way in, so the removal goes
+// through. So does the removal of one link out of two, and so does a link the
+// person does not hold at all: DeleteLink answers that miss itself.
+//
+// The read is the resolver's, and not the console list, so it counts the links
+// that still sign somebody in. A link with a provider that is inactive or soft
+// deleted signs nobody in already, and refusing its removal would trap the
+// administrator who is moving those people off a directory that is gone. That is
+// the same reason the delete of a provider is never blocked by its live links.
+func (s *Service) keepsACredential(ctx context.Context, a Actor, userID, idpID string) error {
+	held, err := s.deps.HasPassword(ctx, a.TenantID, userID)
+	if err != nil {
+		return s.fail(a, "read whether the person holds a password", err)
+	}
+	if held {
+		return nil
+	}
+
+	working, err := s.deps.Linked(ctx, a.TenantID, userID)
+	if err != nil {
+		return s.fail(a, "read the linked identity providers of the person", err)
+	}
+	if len(working) == 0 {
+		return nil
+	}
+	for _, linkedIdpID := range working {
+		if linkedIdpID != idpID {
+			return nil
+		}
+	}
+
+	s.log.Warn("refused the removal of the last identity link of a person who holds no password",
+		logger.String("tenant_id", a.TenantID),
+		logger.String("user_id", a.UserID),
+		logger.String("subject_id", userID),
+		logger.String("idp_id", idpID))
+	return fmt.Errorf("%w: tenant %s, user %s", ErrLastLink, a.TenantID, userID)
 }
 
 // withDomains reads one provider and the domains it claims.

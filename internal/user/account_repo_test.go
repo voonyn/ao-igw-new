@@ -147,3 +147,59 @@ func TestSetPassword(t *testing.T) {
 		t.Errorf("err = %v for another tenant, want ErrNoSuchUser", err)
 	}
 }
+
+// TestHasPassword covers the read behind the second guard rail of
+// docs/specs/0002-directory-sign-in.md.
+//
+// The question is what the row holds, not who can sign in, so the read filters
+// neither the state nor the lock. A person the directory owns holds a NULL
+// password_hash, and the removal of their last Identity Link locks them out for
+// ever whatever state the account is in.
+func TestHasPassword(t *testing.T) {
+	repo, ctx := testRepo(t)
+
+	held, err := repo.HasPassword(ctx, testTenantID, testUserID)
+	if err != nil {
+		t.Fatalf("read whether the person holds a password: %v", err)
+	}
+	if !held {
+		t.Error("the seeded person reads no password, want the stored hash")
+	}
+
+	// A locked account still holds the hash it holds.
+	held, err = repo.HasPassword(ctx, testTenantID, lockedUserID)
+	if err != nil {
+		t.Fatalf("read whether the locked person holds a password: %v", err)
+	}
+	if !held {
+		t.Error("the locked person reads no password, want the stored hash")
+	}
+
+	// The shape a first bind writes: an active person with a NULL hash.
+	if _, err := repo.db.ExecContext(ctx,
+		`UPDATE user_humans SET password_hash = NULL WHERE user_id = ?`, testUserID); err != nil {
+		t.Fatalf("clear the stored hash: %v", err)
+	}
+	held, err = repo.HasPassword(ctx, testTenantID, testUserID)
+	if err != nil {
+		t.Fatalf("read whether the person holds a password: %v", err)
+	}
+	if held {
+		t.Error("a NULL hash reads as a password, want none")
+	}
+
+	// A machine account holds no user_humans row, and a soft-deleted account is
+	// no longer live. Neither holds a password.
+	for what, userID := range map[string]string{
+		"a machine account":     machineUserID,
+		"a soft-deleted person": deletedUserID,
+	} {
+		held, err := repo.HasPassword(ctx, testTenantID, userID)
+		if err != nil {
+			t.Fatalf("read whether %s holds a password: %v", what, err)
+		}
+		if held {
+			t.Errorf("%s reads a password, want none", what)
+		}
+	}
+}

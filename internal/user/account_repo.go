@@ -91,6 +91,41 @@ func (r *Repository) FindCredential(ctx context.Context, tenantID, userID string
 	return row, nil
 }
 
+// HasPassword reports whether one live person of a tenant holds a stored
+// password. It answers a boolean and never the hash, so no caller of it handles
+// a credential.
+//
+// It filters neither the state nor the lock, because the question is what the
+// row holds and not who can sign in. The administrative guard that reads it
+// refuses the removal of the last Identity Link of a person whose password_hash
+// is NULL, and a deactivated person of that shape is locked out for ever by the
+// same removal.
+//
+// A machine account and an account the tenant does not hold both answer false.
+// Neither holds a user_humans row, so neither holds a password.
+func (r *Repository) HasPassword(ctx context.Context, tenantID, userID string) (bool, error) {
+	r.log.Debug("read whether the person holds a password",
+		logger.String("tenant_id", tenantID), logger.String("user_id", userID), logger.RequestID(ctx))
+
+	held, err := db.Conn(ctx, r.db).NewSelect().
+		Model((*User)(nil)).
+		Join("JOIN user_humans AS h ON h.user_id = u.id AND h.tenant_id = u.tenant_id").
+		Where("u.tenant_id = ?", tenantID).
+		Where("u.id = ?", userID).
+		Where("h.password_hash IS NOT NULL").
+		Where("h.password_hash <> ''").
+		Exists(ctx)
+	if err != nil {
+		return false, fmt.Errorf("read whether user %s of tenant %s holds a password: %w",
+			userID, tenantID, err)
+	}
+
+	r.log.Debug("read whether the person holds a password",
+		logger.String("tenant_id", tenantID), logger.String("user_id", userID),
+		logger.Bool("held", held), logger.RequestID(ctx))
+	return held, nil
+}
+
 // SetPassword writes the new bcrypt hash of one person, stamps the change, and
 // clears the flag that forces a change at the next sign-in. It runs on the
 // caller's transaction.

@@ -322,6 +322,86 @@ func TestCountOwners(t *testing.T) {
 	}
 }
 
+// TestLocalOwners covers the read behind the first guard rail of
+// docs/specs/0002-directory-sign-in.md: the owners the local password compare
+// still signs in.
+//
+// Each step of the test takes one of the four predicates away and reads the
+// count back, so a predicate that stopped working is named by the step that
+// fails.
+func TestLocalOwners(t *testing.T) {
+	repo, bdb, ctx := testRepoDB(t)
+
+	exec := func(query string, args ...any) {
+		t.Helper()
+		if _, err := bdb.ExecContext(ctx, query, args...); err != nil {
+			t.Fatalf("write %q: %v", query, err)
+		}
+	}
+	read := func(what string) []LocalOwner {
+		t.Helper()
+		rows, err := repo.LocalOwners(ctx, testTenantID)
+		if err != nil {
+			t.Fatalf("read the local owners %s: %v", what, err)
+		}
+		return rows
+	}
+
+	// The seeded owner holds no password hash, so the directory owns them and
+	// the local compare signs nobody in.
+	if rows := read("of the seed"); len(rows) != 0 {
+		t.Fatalf("the seed reads %+v local owners, want none", rows)
+	}
+
+	exec(`UPDATE user_humans SET password_hash = '$2a$10$a-bcrypt-hash' WHERE user_id = ?`, testUserID)
+	rows := read("after the hash")
+	if len(rows) != 1 || rows[0].UserID != testUserID {
+		t.Fatalf("the tenant reads %+v local owners, want the seeded owner", rows)
+	}
+	if rows[0].Email != "owner@acme.com" {
+		t.Errorf("the local owner carries the address %q, want the seeded one", rows[0].Email)
+	}
+
+	// A second owner, on an address of another domain.
+	exec(`INSERT INTO user_humans (user_id, tenant_id, email, password_hash)
+	      VALUES (?, ?, 'second@other.test', '$2a$10$a-bcrypt-hash')`, secondUserID, testTenantID)
+	exec(`UPDATE tenant_members SET roles = '["IAM_OWNER"]' WHERE user_id = ?`, secondUserID)
+	if rows := read("after the second grant"); len(rows) != 2 {
+		t.Fatalf("the tenant reads %+v local owners, want both", rows)
+	}
+
+	// An Identity Link with a live active provider takes the second owner:
+	// Provider Resolution case 2 sends them to that directory.
+	const idpID = "88888888-8888-8888-8888-888888888888"
+	exec(`INSERT INTO identity_providers (id, tenant_id, name, type, state)
+	      VALUES (?, ?, 'Head office', 1, 1)`, idpID, testTenantID)
+	exec(`INSERT INTO identity_provider_user_links (tenant_id, idp_id, external_id, user_id)
+	      VALUES (?, ?, 'a-stable-guid', ?)`, testTenantID, idpID, secondUserID)
+	rows = read("after the link")
+	if len(rows) != 1 || rows[0].UserID != testUserID {
+		t.Fatalf("the tenant reads %+v local owners, want the linked owner dropped", rows)
+	}
+
+	// A claimed domain takes the first owner: case 1 outranks case 3, so the
+	// claim routes them even though they hold a hash.
+	exec(`INSERT INTO identity_provider_domains (tenant_id, domain, idp_id)
+	      VALUES (?, 'acme.com', ?)`, testTenantID, idpID)
+	if rows := read("after the claim"); len(rows) != 0 {
+		t.Fatalf("the tenant reads %+v local owners, want the claimed owner dropped", rows)
+	}
+
+	// An inactive provider routes nobody, and a soft-deleted one behaves alike.
+	// Both give the two owners back.
+	exec(`UPDATE identity_providers SET state = 2 WHERE id = ?`, idpID)
+	if rows := read("after the provider was switched off"); len(rows) != 2 {
+		t.Fatalf("the tenant reads %+v local owners, want both back", rows)
+	}
+	exec(`UPDATE identity_providers SET state = 1, deleted_at = NOW(6) WHERE id = ?`, idpID)
+	if rows := read("after the provider was deleted"); len(rows) != 2 {
+		t.Fatalf("the tenant reads %+v local owners, want both back", rows)
+	}
+}
+
 // TestDeleteMember revokes one tenant membership. The row stays in the
 // database, and every read filters it out. A membership nobody holds answers
 // ErrMemberNotFound.

@@ -299,6 +299,7 @@ func TestUnlinkRecordsTheEventAndNamesThePerson(t *testing.T) {
 	svc := testService(t, deps{
 		tenantRoles: []string{tenant.RoleIAMOwner},
 		userOrg:     testOrgID,
+		hasPassword: true,
 		links:       []Link{{TenantID: testTenantID, IdpID: tenantIdpID, ExternalID: "a-stable-guid", UserID: personID}},
 	})
 
@@ -351,6 +352,17 @@ type deps struct {
 	links       []Link
 	userOrg     string
 	claimTaken  bool
+
+	// localOwners is the IAM_OWNERs the local password compare still signs in.
+	// An empty list is a tenant with none, which the first guard rail leaves
+	// alone. hasPassword is what the person one unlink names holds.
+	//
+	// linked is the providers that still sign that person in. It is not links: a
+	// link with a provider that is inactive or soft deleted is listed and signs
+	// nobody in.
+	localOwners []tenant.LocalOwner
+	hasPassword bool
+	linked      []string
 
 	// What the person creator of a first bind answers. A test that sets it
 	// refuses the create, which is what a username another person of the tenant
@@ -454,6 +466,7 @@ func testService(t *testing.T, d deps) *Service {
 		},
 		Domains: func(context.Context, string, []string) ([]Domain, error) { return nil, nil },
 		Links:   func(context.Context, string, string) ([]Link, error) { return d.links, nil },
+		Linked:  func(context.Context, string, string) ([]string, error) { return d.linked, nil },
 		Org: func(_ context.Context, _, orgID string) (organization.Organization, error) {
 			if orgID == testOrgID || orgID == otherOrgID {
 				return organization.Organization{ID: orgID, TenantID: testTenantID}, nil
@@ -473,6 +486,10 @@ func testService(t *testing.T, d deps) *Service {
 			spends++
 			return !d.budgetSpent, nil
 		},
+		LocalOwners: func(context.Context, string) ([]tenant.LocalOwner, error) {
+			return d.localOwners, nil
+		},
+		HasPassword: func(context.Context, string, string) (bool, error) { return d.hasPassword, nil },
 		TenantRoles: func(context.Context, string, string) ([]string, error) { return d.tenantRoles, nil },
 		Memberships: func(context.Context, string, string) ([]organization.Membership, error) {
 			return d.memberships, nil

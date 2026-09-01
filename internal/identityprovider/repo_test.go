@@ -297,6 +297,40 @@ func TestLinksAreListedAndHardDeleted(t *testing.T) {
 	}
 }
 
+// TestASoftDeletedProviderStillListsThePeopleTiedToIt covers the third guard
+// rail of docs/specs/0002-directory-sign-in.md.
+//
+// The delete of a provider was chosen over a delete blocked by live links, so an
+// administrator whose directory is gone for good is never trapped. The links it
+// leaves behind must therefore stay readable, or nobody could move the people
+// off it.
+//
+// The provider name is joined over the live providers alone, so a deleted
+// provider reads as an empty name and the link is still listed and still
+// unlinkable.
+func TestASoftDeletedProviderStillListsThePeopleTiedToIt(t *testing.T) {
+	repo, ctx := testRepo(t)
+
+	if err := repo.Delete(ctx, testTenantID, tenantIdpID); err != nil {
+		t.Fatalf("delete the provider: %v", err)
+	}
+
+	rows, err := repo.Links(ctx, testTenantID, personID)
+	if err != nil {
+		t.Fatalf("list the links: %v", err)
+	}
+	if len(rows) != 1 || rows[0].IdpID != tenantIdpID {
+		t.Fatalf("the links read %+v, want the link the deleted provider left behind", rows)
+	}
+	if rows[0].ProviderName != "" {
+		t.Errorf("the link names %q, want an empty name for a deleted provider", rows[0].ProviderName)
+	}
+
+	if err := repo.DeleteLink(ctx, testTenantID, tenantIdpID, personID); err != nil {
+		t.Errorf("unlink the person from the deleted provider: %v", err)
+	}
+}
+
 // TestInsertLink covers the write of one first bind, and the two unique keys
 // that bound it: one directory account maps to one person, and one person holds
 // at most one account per provider.

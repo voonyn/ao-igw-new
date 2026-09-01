@@ -34,6 +34,38 @@ type Member struct {
 	UserName string `bun:"user_name,scanonly"`
 }
 
+// LocalOwner is one IAM_OWNER of a tenant whom the local password compare still
+// signs in. It is the row LocalOwners answers with, and it is not a table.
+//
+// Email is the address the person carries, lowercased. The guard that refuses a
+// domain claim matches the claimed domains against it, so the read carries it
+// and no caller reads the person again.
+type LocalOwner struct {
+	UserID string `bun:"user_id"`
+	Email  string `bun:"email"`
+}
+
+// LastLocalOwner reports whether one write empties the local owners of a tenant.
+//
+// owners is what LocalOwners answered before the write. takes reports whether
+// the write takes that owner out of the local compare: a revoked role, or a
+// domain claim that routes their email address to a directory.
+//
+// A tenant that already holds no local owner is not made worse by the write, so
+// it answers false. There is nothing left to protect, and a refusal there would
+// trap an administrator whose directory is gone for good.
+func LastLocalOwner(owners []LocalOwner, takes func(LocalOwner) bool) bool {
+	if len(owners) == 0 {
+		return false
+	}
+	for _, owner := range owners {
+		if !takes(owner) {
+			return false
+		}
+	}
+	return true
+}
+
 // Domain is one row of tenant_domains. The domain is the bare host, lowercased,
 // with a port only for a non-standard listener.
 type Domain struct {

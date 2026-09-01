@@ -82,6 +82,10 @@ type (
 
 	// TenantOwnerCounter reads how many people sit as IAM_OWNER of one tenant.
 	TenantOwnerCounter func(ctx context.Context, tenantID string) (int64, error)
+
+	// LocalOwnerLister reads the people who sit as IAM_OWNER of one tenant and
+	// whom the local password compare still signs in.
+	LocalOwnerLister func(ctx context.Context, tenantID string) ([]tenant.LocalOwner, error)
 )
 
 // MemberDeps is the database side of the members service.
@@ -94,6 +98,7 @@ type MemberDeps struct {
 	DeleteOrgMember    OrgMemberDeleter
 
 	CountTenantOwners TenantOwnerCounter
+	LocalTenantOwners LocalOwnerLister
 
 	Org         Finder
 	TenantRoles TenantRoleFinder
@@ -393,15 +398,45 @@ func (s *MemberService) keepsAnOwner(
 	if err != nil {
 		return s.fail(a, "count the owners of the tenant", err)
 	}
-	if owners > 1 {
+	if owners <= 1 {
+		s.log.Warn("refused a write that would leave the tenant without an owner",
+			logger.String("tenant_id", a.TenantID),
+			logger.String("user_id", a.UserID),
+			logger.String("target_user_id", userID))
+		return fmt.Errorf("%w: tenant %s, user %s", ErrLastOwner, a.TenantID, userID)
+	}
+	return s.keepsALocalOwner(ctx, a, userID)
+}
+
+// keepsALocalOwner refuses a tenant membership write that would leave nobody
+// sitting as IAM_OWNER whom the local password compare signs in.
+//
+// It runs after the count above, and it refuses writes that count passes. A
+// tenant with ten owners a directory proves and one owner this gateway proves
+// counts eleven, so the revoke of the eleventh reads ten and goes through, and
+// the next directory outage locks every administrator out of the console.
+//
+// The caller has already read that this person sits as IAM_OWNER, so the only
+// question left is whether anybody else is a local owner.
+//
+// ponytail: the read runs outside the transaction, the way the count above
+// already does. Two revokes that each take one of the last two local owners can
+// both pass. Take a locking read inside the transaction if an operator ever hits
+// it.
+func (s *MemberService) keepsALocalOwner(ctx context.Context, a Actor, userID string) error {
+	owners, err := s.deps.LocalTenantOwners(ctx, a.TenantID)
+	if err != nil {
+		return s.fail(a, "read the local owners of the tenant", err)
+	}
+	if !tenant.LastLocalOwner(owners, func(o tenant.LocalOwner) bool { return o.UserID == userID }) {
 		return nil
 	}
 
-	s.log.Warn("refused a write that would leave the tenant without an owner",
+	s.log.Warn("refused a write that would leave the tenant without a local owner",
 		logger.String("tenant_id", a.TenantID),
 		logger.String("user_id", a.UserID),
 		logger.String("target_user_id", userID))
-	return fmt.Errorf("%w: tenant %s, user %s", ErrLastOwner, a.TenantID, userID)
+	return fmt.Errorf("%w: tenant %s, user %s", tenant.ErrLastLocalOwner, a.TenantID, userID)
 }
 
 // authorize is the role gate of every membership write.

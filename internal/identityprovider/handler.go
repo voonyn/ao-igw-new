@@ -28,6 +28,8 @@ func init() {
 		"Another identity provider of this tenant already carries that name.")
 	response.Map(ErrLevelFixed, fiber.StatusConflict, "level_fixed",
 		"An identity provider stays at the level it was created at.")
+	response.Map(ErrLastLink, fiber.StatusConflict, "last_identity_link",
+		"That person holds no password here. Removing the last identity link would lock them out.")
 	response.Map(ErrServerScheme, fiber.StatusUnprocessableEntity, "invalid_input",
 		"A server does not match the transport. LDAPS takes ldaps://, and the other two take ldap://.")
 

@@ -632,12 +632,17 @@ func mountAdmin(
 		DeleteTenantMember: tenants.DeleteMember,
 		DeleteOrgMember:    orgs.DeleteMembership,
 		CountTenantOwners:  tenants.CountOwners,
-		Org:                orgs.FindByID,
-		TenantRoles:        tenants.MemberRoles,
-		Memberships:        orgs.ListMemberships,
-		InTx:               tx,
-		Audit:              recorder,
-		Log:                log,
+		// The first guard rail: never leave the tenant with no IAM_OWNER whom
+		// the local password compare signs in. The count above cannot answer it,
+		// because a tenant whose owners a directory proves counts owners it
+		// cannot reach while that directory is off.
+		LocalTenantOwners: tenants.LocalOwners,
+		Org:               orgs.FindByID,
+		TenantRoles:       tenants.MemberRoles,
+		Memberships:       orgs.ListMemberships,
+		InTx:              tx,
+		Audit:             recorder,
+		Log:               log,
 	})
 
 	projects := project.NewRepository(bdb, log)
@@ -807,6 +812,7 @@ func mountAdmin(
 		Claim:   idps.Claim,
 
 		Links:      idps.Links,
+		Linked:     idps.LinkedProviders,
 		DeleteLink: idps.DeleteLink,
 
 		Org: orgs.FindByID,
@@ -826,6 +832,13 @@ func mountAdmin(
 		},
 		TenantRoles: tenants.MemberRoles,
 		Memberships: orgs.ListMemberships,
+
+		// The two reads behind the guard rails. The first refuses a domain claim
+		// that would take the last local IAM_OWNER of the tenant, and the second
+		// refuses the removal of the last Identity Link of a person who holds no
+		// password hash.
+		LocalOwners: tenants.LocalOwners,
+		HasPassword: users.HasPassword,
 
 		// The budget of the connection test. It is an outbound call into a
 		// customer network that any console user of the tenant drives, so the

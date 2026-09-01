@@ -34,10 +34,25 @@ const (
 	DomainStateInactive = 2
 )
 
+// ErrLastLocalOwner reports a write that would leave the tenant with no
+// IAM_OWNER whom the local password compare still signs in.
+//
+// It is not ErrLastOwner. A tenant can hold ten owners a directory proves and
+// one owner this gateway proves, and the count of owners is then never the
+// question: one directory outage takes the ten with it, and the eleventh is the
+// only administrator left. See docs/specs/0002-directory-sign-in.md.
+var ErrLastLocalOwner = errors.New("the tenant would keep no local owner")
+
 // userStateActive is users.state for an account that can sign in. The value is
 // declared in internal/user, and that package imports this one, so the owner
 // count carries its own copy rather than closing the cycle.
 const userStateActive = 1
+
+// idpStateActive is identity_providers.state for a provider that proves a
+// sign-in. The value is declared in internal/identityprovider, and that package
+// imports this one, so the local owner read carries its own copy rather than
+// closing the cycle.
+const idpStateActive = 1
 
 // The tenant roles. A person who holds one of them administers the whole
 // tenant, so the console admits them. The tenant owns tenant membership, so the
@@ -173,6 +188,70 @@ func (r *Repository) CountOwners(ctx context.Context, tenantID string) (int64, e
 		return 0, fmt.Errorf("count the owners of tenant %s: %w", tenantID, err)
 	}
 	return int64(total), nil
+}
+
+// LocalOwners reads every IAM_OWNER of one tenant whom the local password
+// compare still signs in.
+//
+// It is the read behind the first guard rail of docs/specs/0002-directory-sign-in.md:
+// never leave a tenant with zero local IAM_OWNER. CountOwners cannot answer it,
+// because a tenant whose owners a directory proves counts owners it cannot reach
+// while that directory is off.
+//
+// A local owner is an owner that Provider Resolution case 3 answers for. Four
+// predicates say so, and each one matches a case of the resolver:
+//
+//   - The account is live and active, and the membership carries IAM_OWNER. This
+//     is what CountOwners already reads.
+//   - The person holds a password hash. A NULL or empty hash proves nothing, so
+//     that person signs in through a directory or not at all.
+//   - The person holds no Identity Link with a live active provider. Case 2 sends
+//     them to that provider and never to the local compare.
+//   - No live active provider claims the domain of their email address. Case 1
+//     outranks case 3, so a claim routes them even though they hold a hash.
+//
+// The email comes back with the row, lowercased, because the guard that refuses
+// a domain claim matches the claimed domains against it before the claim is
+// written.
+func (r *Repository) LocalOwners(ctx context.Context, tenantID string) ([]LocalOwner, error) {
+	r.log.Debug("read the local owners of the tenant",
+		logger.String("tenant_id", tenantID), logger.RequestID(ctx))
+
+	var rows []LocalOwner
+	err := db.Conn(ctx, r.db).NewSelect().
+		Model((*Member)(nil)).
+		ColumnExpr("m.user_id AS user_id").
+		ColumnExpr("LOWER(IFNULL(h.email, '')) AS email").
+		Join("JOIN users AS u ON u.id = m.user_id AND u.tenant_id = m.tenant_id").
+		Join("JOIN user_humans AS h ON h.user_id = u.id AND h.tenant_id = u.tenant_id").
+		Where("u.deleted_at IS NULL").
+		Where("u.state = ?", userStateActive).
+		Where("m.tenant_id = ?", tenantID).
+		Where("JSON_CONTAINS(m.roles, ?)", `"`+RoleIAMOwner+`"`).
+		Where("h.password_hash IS NOT NULL").
+		Where("h.password_hash <> ''").
+		Where(`NOT EXISTS (
+			SELECT 1 FROM identity_provider_user_links AS l
+			JOIN identity_providers AS lp
+			  ON lp.id = l.idp_id AND lp.tenant_id = l.tenant_id AND lp.deleted_at IS NULL
+			WHERE l.tenant_id = m.tenant_id AND l.user_id = m.user_id AND lp.state = ?
+		)`, idpStateActive).
+		Where(`NOT EXISTS (
+			SELECT 1 FROM identity_provider_domains AS d
+			JOIN identity_providers AS dp
+			  ON dp.id = d.idp_id AND dp.tenant_id = d.tenant_id AND dp.deleted_at IS NULL
+			WHERE d.tenant_id = m.tenant_id AND d.deleted_at IS NULL AND dp.state = ?
+			  AND d.domain = SUBSTRING_INDEX(LOWER(h.email), '@', -1)
+		)`, idpStateActive).
+		Order("m.user_id ASC").
+		Scan(ctx, &rows)
+	if err != nil {
+		return nil, fmt.Errorf("read the local owners of tenant %s: %w", tenantID, err)
+	}
+
+	r.log.Debug("found the local owners of the tenant",
+		logger.String("tenant_id", tenantID), logger.Int("count", len(rows)), logger.RequestID(ctx))
+	return rows, nil
 }
 
 // FindMember reads the live tenant membership of one person. A person with no

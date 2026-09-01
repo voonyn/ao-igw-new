@@ -27,6 +27,10 @@ type memberDeps struct {
 	// revoke of one included.
 	tenantOwners int64
 
+	// localOwners is the owners the local password compare still signs in. An
+	// empty list is a tenant with none, which the first guard rail leaves alone.
+	localOwners []tenant.LocalOwner
+
 	auditFails bool
 }
 
@@ -103,6 +107,9 @@ func testMemberService(t *testing.T, d memberDeps) *MemberService {
 		},
 		CountTenantOwners: func(context.Context, string) (int64, error) {
 			return d.tenantOwners, nil
+		},
+		LocalTenantOwners: func(context.Context, string) ([]tenant.LocalOwner, error) {
+			return d.localOwners, nil
 		},
 		TenantRoles: roles,
 		Memberships: memberships,
@@ -506,6 +513,92 @@ func TestRemoveAllowsAnOwnerWhileAnotherSits(t *testing.T) {
 		t.Fatalf("Remove: %v", err)
 	}
 	if len(memberRevokes) != 1 || memberRevokes[0] != secondUserID {
+		t.Fatalf("the revoke wrote %v, want the named membership", memberRevokes)
+	}
+}
+
+// TestRemoveRefusesTheLastLocalOwner covers the first guard rail of
+// docs/specs/0002-directory-sign-in.md.
+//
+// The tenant counts eleven owners, so the count guard passes. Ten of them are
+// proved by a directory and one is proved here, and the revoke names that one.
+// One directory outage would then leave nobody able to reach the console.
+func TestRemoveRefusesTheLastLocalOwner(t *testing.T) {
+	svc := testMemberService(t, memberDeps{
+		tenantRoles:       []string{tenant.RoleIAMOwner},
+		targetTenantRoles: []string{tenant.RoleIAMOwner},
+		tenantOwners:      11,
+		localOwners:       []tenant.LocalOwner{{UserID: secondUserID, Email: "second@acme.com"}},
+	})
+
+	err := svc.Remove(context.Background(), admin, secondUserID, "")
+	if !errors.Is(err, tenant.ErrLastLocalOwner) {
+		t.Fatalf("err = %v, want tenant.ErrLastLocalOwner", err)
+	}
+	if errors.Is(err, ErrLastOwner) {
+		t.Errorf("err = %v, want the local rail and not the count guard", err)
+	}
+	if wrote() != 0 {
+		t.Errorf("a refused revoke wrote %d rows", wrote())
+	}
+}
+
+// TestRemoveAllowsADirectoryOwnerWhileALocalOwnerSits covers the other side of
+// the same rail. A tenant with one local owner and ten directory owners passes
+// both checks, so the revoke of a directory owner stands.
+func TestRemoveAllowsADirectoryOwnerWhileALocalOwnerSits(t *testing.T) {
+	svc := testMemberService(t, memberDeps{
+		tenantRoles:       []string{tenant.RoleIAMOwner},
+		targetTenantRoles: []string{tenant.RoleIAMOwner},
+		tenantOwners:      11,
+		localOwners:       []tenant.LocalOwner{{UserID: testUserID, Email: "owner@acme.com"}},
+	})
+
+	if err := svc.Remove(context.Background(), admin, secondUserID, ""); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	if len(memberRevokes) != 1 || memberRevokes[0] != secondUserID {
+		t.Fatalf("the revoke wrote %v, want the named membership", memberRevokes)
+	}
+}
+
+// TestUpdateRolesRefusesToStripTheLastLocalOwner covers the same rail through
+// the role change. A membership that keeps IAM_ADMIN alone takes the seat
+// exactly as a revoke does.
+func TestUpdateRolesRefusesToStripTheLastLocalOwner(t *testing.T) {
+	svc := testMemberService(t, memberDeps{
+		tenantRoles:       []string{tenant.RoleIAMOwner},
+		targetTenantRoles: []string{tenant.RoleIAMOwner},
+		tenantOwners:      11,
+		localOwners:       []tenant.LocalOwner{{UserID: secondUserID, Email: "second@acme.com"}},
+	})
+
+	err := svc.UpdateRoles(context.Background(), admin, secondUserID, RolesBody{
+		Roles: []string{tenant.RoleIAMAdmin},
+	})
+	if !errors.Is(err, tenant.ErrLastLocalOwner) {
+		t.Fatalf("err = %v, want tenant.ErrLastLocalOwner", err)
+	}
+	if wrote() != 0 {
+		t.Errorf("a refused role change wrote %d rows", wrote())
+	}
+}
+
+// TestRemoveIgnoresTheLocalRailForATenantWithNoLocalOwner covers a tenant whose
+// owners a directory proves, every one of them. There is no local owner left to
+// protect, so a refusal would only trap an administrator whose directory is gone
+// for good.
+func TestRemoveIgnoresTheLocalRailForATenantWithNoLocalOwner(t *testing.T) {
+	svc := testMemberService(t, memberDeps{
+		tenantRoles:       []string{tenant.RoleIAMOwner},
+		targetTenantRoles: []string{tenant.RoleIAMOwner},
+		tenantOwners:      11,
+	})
+
+	if err := svc.Remove(context.Background(), admin, secondUserID, ""); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	if len(memberRevokes) != 1 {
 		t.Fatalf("the revoke wrote %v, want the named membership", memberRevokes)
 	}
 }
