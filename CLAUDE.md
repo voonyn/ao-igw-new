@@ -101,7 +101,7 @@ No in-process state. Any instance must serve any request.
 - Read: read Redis. On a miss, read the database and refill Redis.
 - Logout: delete from the database and from Redis.
 
-Four exceptions. Each lives only in Redis, no table holds any of them, and a cache
+Five exceptions. Each lives only in Redis, no table holds any of them, and a cache
 failure refuses the request instead of letting it through.
 
 - The Guessing Budget in `totp.Service.spendGuess`. A failure that let the guess
@@ -113,6 +113,11 @@ failure refuses the request instead of letting it through.
 - The challenge budget in `passkey.Service.spendChallenge`. It caps sign-in challenge
   starts on a key of its own, for the same reason: a start proves nothing, and the
   person who cancels it is mid sign-in.
+- The bind budget in `identityprovider.Service.spendBind`. A bind is an outbound call
+  into a customer network that any caller can drive, and a failure that let it through
+  would turn the password step into a lever against that directory. The password step
+  itself carries no budget, so there is nothing weaker to fall back to. See
+  `docs/specs/0002-directory-sign-in.md`.
 - The passkey ceremony in `passkey.Service.store` and `passkey.Service.consume`. A
   ceremony that proceeds without a stored challenge proves nothing, and a challenge
   a table held would outlive the one prompt it belongs to.

@@ -258,6 +258,10 @@ An external service that turns a credential a person presents into a proven
 identity. Digital Identity is the first one, and today the only one.
 _Avoid_: Verifier (unqualified), DI, wallet service, identity provider
 
+Note: the Avoid list above now names a real term. An Identity Provider holds the
+credential of a person and proves it. A Scan Verifier holds no credential of this
+gateway's people, and it answers one scan. The two are never the same word.
+
 **QR Login**:
 The flow where a person proves who they are by presenting a wallet credential,
 instead of typing a password.
@@ -280,3 +284,39 @@ _Avoid_: App, holder, agent, digital wallet
 The account the Scan Verifier keeps for one gateway person, keyed by that person's
 username.
 _Avoid_: Registration, onboarding, enrollment (see Membership), provisioning
+
+### Identity Providers
+
+**Identity Provider**:
+An external system that a tenant trusts to hold the password of its people, and to
+prove it. A tenant registers one for the whole tenant, or one for a single
+organization.
+_Avoid_: IdP, federation, external provider, connection, realm
+
+**Directory**:
+The LDAP or Active Directory server that one Identity Provider names. It is the only
+kind of Identity Provider this deployment serves.
+_Avoid_: LDAP (unqualified), AD, domain controller, server
+
+**Bind**:
+The LDAP operation that proves one password against a Directory. A successful bind
+records the same Factor a local password records, `pwd`.
+_Avoid_: Authenticate, verify, check, login
+
+Note: this is a fourth word in this system that carries more than one meaning. The
+others are enrolment, session, and code. A Bind proves a password. Binding a person to
+a Login Session is a different act, and it needs a different word.
+
+**Identity Link**:
+The row that ties one person here to one account in one Identity Provider. It holds the
+stable identifier that provider issued, so a username changed there never orphans the
+person. One person holds at most one link per provider, and can hold several links.
+_Avoid_: Mapping, binding (see Bind), association, federation link
+
+**Provider Resolution**:
+The step that decides which Identity Provider proves one sign-in, or that no provider
+does. It runs at the identifier step and it discloses nothing.
+_Avoid_: Home realm discovery, realm discovery, routing, IdP discovery
+
+Note: a person the Directory owns holds no password in this gateway. `password_hash` is
+NULL for that person for ever, and the portal refuses every local password change.
