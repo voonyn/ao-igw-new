@@ -74,16 +74,23 @@ type ProviderResolver func(ctx context.Context, tenantID, identifier, userID str
 // ErrDirectoryDisabled, ErrDirectoryUnavailable, or ErrTooManyBinds.
 //
 // userID is the person the login session already names, and it is empty when the
-// identifier named nobody. The answer is that same person when the session named
-// one, and the person the first bind created when it did not. A bind that proved
-// the password of somebody the gateway did not hold therefore creates them, and
-// every later bind of that person creates nothing.
+// identifier named nobody. The answer names that same person when the session
+// named one, and the person the first bind created when it did not. A bind that
+// proved the password of somebody the gateway did not hold therefore creates
+// them, and every later bind of that person creates nothing.
+//
+// The answer carries the email address of the directory entry beside the person
+// id. A first bind names nobody at the identifier step, so the session learns
+// the email here or nowhere. No credential travels with it: the answer holds the
+// person and the email alone.
 //
 // The router composes it, because it reads the provider row, spends the bind
 // budget, dials the directory, and writes the person the first bind creates, and
 // those live in a domain this one must not import. It maps that domain's
 // sentinels onto these four, so the password step reads one vocabulary.
-type Binder func(ctx context.Context, tenantID, idpID, userID, identifier, password string) (string, error)
+type Binder func(
+	ctx context.Context, tenantID, idpID, userID, identifier, password string,
+) (Identity, error)
 
 // PendingSteps names the Pending Steps one person still owes after the password
 // step. It answers an empty list when the sign-in owes nothing.
@@ -240,9 +247,17 @@ func (s *Service) VerifyPassword(
 	// The password step is the first thing that names the person of a directory
 	// sign-in whose identifier the gateway held no row for. Every read below it
 	// takes the person the bind answered.
-	live.UserID, err = s.prove(ctx, live, password)
+	person, err := s.prove(ctx, live, password)
 	if err != nil {
 		return Opened{}, nil, err
+	}
+	live.UserID = person.UserID
+	// A first bind opens a session that names nobody, so the session carries no
+	// email either, and the bind is the only step that learns one. A session that
+	// already carries an email keeps it: a later bind writes no attribute of the
+	// person, so what the directory says now is not what the gateway holds.
+	if live.Email == "" {
+		live.Email = person.Email
 	}
 
 	steps, err := s.deps.Steps(ctx, tenantID, live.UserID)
@@ -301,42 +316,46 @@ func (s *Service) VerifyPassword(
 // they are. The local compare creates nobody, so it answers the person the
 // session named.
 //
+// The email address of that person comes back with the id. The bind reads it off
+// the directory entry, and the local compare answers the one the identifier step
+// already found.
+//
 // Every outcome runs through refuse, so login.failed is written for every
 // failure, a dial that never returned included.
-func (s *Service) prove(ctx context.Context, live LoginSession, password string) (string, error) {
+func (s *Service) prove(ctx context.Context, live LoginSession, password string) (Identity, error) {
 	if live.IdpID == "" {
 		hash, err := s.passwordHash(ctx, live)
 		if err != nil {
-			return "", err
+			return Identity{}, err
 		}
 		if err := aocrypto.VerifyPassword(hash, password); err != nil {
-			return "", s.refuse(ctx, live, "bad_password", err, ErrBadCredentials)
+			return Identity{}, s.refuse(ctx, live, "bad_password", err, ErrBadCredentials)
 		}
-		return live.UserID, nil
+		return Identity{UserID: live.UserID, Email: live.Email}, nil
 	}
 
-	userID, err := s.deps.Bind(ctx, live.TenantID, live.IdpID, live.UserID, live.Identifier, password)
+	person, err := s.deps.Bind(ctx, live.TenantID, live.IdpID, live.UserID, live.Identifier, password)
 	switch {
 	case errors.Is(err, ErrDirectoryDisabled):
-		return "", s.refuse(ctx, live, "directory_disabled", err, ErrDirectoryDisabled)
+		return Identity{}, s.refuse(ctx, live, "directory_disabled", err, ErrDirectoryDisabled)
 	case errors.Is(err, ErrDirectoryUnavailable):
-		return "", s.refuse(ctx, live, "directory_unavailable", err, ErrDirectoryUnavailable)
+		return Identity{}, s.refuse(ctx, live, "directory_unavailable", err, ErrDirectoryUnavailable)
 	case errors.Is(err, ErrTooManyBinds):
-		return "", s.refuse(ctx, live, "too_many_binds", err, ErrTooManyBinds)
+		return Identity{}, s.refuse(ctx, live, "too_many_binds", err, ErrTooManyBinds)
 	case err != nil:
-		return "", s.refuse(ctx, live, "bad_password", err, ErrBadCredentials)
+		return Identity{}, s.refuse(ctx, live, "bad_password", err, ErrBadCredentials)
 	}
 
 	// The bind proved a password and named nobody, so the person the sign-in
 	// would carry on as does not exist. It is a defect of the seam and never an
 	// answer of a directory, and a sign-in that carried on would upgrade a
 	// session that names no person at all.
-	if userID == "" {
-		return "", s.refuse(ctx, live, "no_local_person",
+	if person.UserID == "" {
+		return Identity{}, s.refuse(ctx, live, "no_local_person",
 			errors.New("the bind proved a password and named no person"),
 			ErrBadCredentials)
 	}
-	return userID, nil
+	return person, nil
 }
 
 // floorTheStep holds the answer of the password step until the floor has passed.

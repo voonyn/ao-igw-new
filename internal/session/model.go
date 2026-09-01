@@ -263,7 +263,9 @@ func (s LoginSession) FactorNames() []string {
 	return names
 }
 
-// Identity is what the identifier step learns about a person.
+// Identity is what one step of a sign-in learns about a person. The identifier
+// step reads it off the local row, and the bind reads it off the directory
+// entry, which is where a person the first bind creates is named first.
 type Identity struct {
 	UserID string
 	Email  string

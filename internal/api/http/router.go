@@ -1189,17 +1189,24 @@ func newSessionService(
 		// already names, and the first bind creates them only when neither read
 		// named anybody. A later bind changes no attribute, so a rename in the
 		// directory never arrives here.
-		Bind: func(ctx context.Context, tenantID, idpID, userID, identifier, password string) (string, error) {
+		//
+		// The email address of the directory entry comes back beside the person.
+		// It is the one Provision writes to a person the first bind creates, and
+		// it is what a session that named nobody at the identifier step carries
+		// from there on.
+		Bind: func(
+			ctx context.Context, tenantID, idpID, userID, identifier, password string,
+		) (session.Identity, error) {
 			person, err := prover.Prove(ctx, tenantID, idpID, identifier, password)
 			if err != nil {
-				return "", directoryError(err)
+				return session.Identity{}, directoryError(err)
 			}
 
 			userID, err = prover.PersonOf(ctx, tenantID, idpID, identifier, userID, person)
 			if err != nil {
-				return "", directoryError(err)
+				return session.Identity{}, directoryError(err)
 			}
-			return userID, nil
+			return session.Identity{UserID: userID, Email: person.Email}, nil
 		},
 		// The one credential read of the user domain answers the organization
 		// beside the hash. The sign-in needs the hash only.
