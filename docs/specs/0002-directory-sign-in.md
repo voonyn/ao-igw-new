@@ -257,7 +257,9 @@ any caller can drive with a fresh partial token.
 - A typed form the identifier step cannot resolve keeps a key of its own. Such a form
   still ends at a person, because the Identity Link names them after the bind. A person
   addressable by an unresolvable form therefore keeps a second counter, and the cap on
-  them is twice the number.
+  them is twice the number. That key folds case and outer space before it digests the
+  typed string, because the directory folds both onto one entry. Without the fold, one
+  entry took a fresh counter for every typed form a caller invented.
 
 #### The IP key is not due
 

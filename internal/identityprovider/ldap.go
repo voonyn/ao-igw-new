@@ -81,7 +81,9 @@ var ErrBindUnavailable = errors.New("the bind budget is unavailable")
 // form still ends at a person, because the Identity Link names them after the
 // bind. A person addressable by an unresolvable form therefore keeps a second
 // counter of ten beside the counter of their person, and the cap on them is
-// twenty. Any caller can drive either key. Two things follow. A spray across
+// twenty. The second key folds the typed string, so case and space alone open no
+// third counter. See bindKey for the fold it makes and the fold it does not. Any
+// caller can drive either key. Two things follow. A spray across
 // many identifiers still reaches the directory. Eleven wrong guesses lock one
 // named person out of the directory sign-in for the rest of the window, and out
 // of the portal re-proof with it: both spend the counter of the person. The
@@ -119,6 +121,16 @@ const (
 // Identity Link names after the bind reaches it too, and they hold a counter of
 // their own beside it. See the ceiling on bindLimit.
 //
+// The fallback folds the typed string before it digests it. The directory
+// matches a DirectoryString attribute with caseIgnoreMatch, so it folds case and
+// insignificant space onto one entry, and a key that folded neither gave that
+// entry a fresh counter of ten for every typed form a caller invented.
+//
+// Ceiling: strings.ToLower is not the preparation of RFC 4518. Two forms that
+// differ by a fold the directory makes and Go does not still hold two counters.
+// The upgrade is that preparation, and it is due when a directory in production
+// shows such a pair.
+//
 // The identifier is personal data, so the key carries its digest and never the
 // address itself. A Redis key is read by every operator who lists the keyspace.
 // A user id is not personal data here, and log lines of this package already
@@ -127,7 +139,8 @@ func bindKey(tenantID, userID, identifier string) string {
 	if userID != "" {
 		return fmt.Sprintf("idp_binds:%s:user:%s", tenantID, userID)
 	}
-	return fmt.Sprintf("idp_binds:%s:%s", tenantID, aocrypto.Digest(identifier))
+	folded := strings.ToLower(strings.TrimSpace(identifier))
+	return fmt.Sprintf("idp_binds:%s:%s", tenantID, aocrypto.Digest(folded))
 }
 
 // defaultTimeoutMS bounds a row that carries no timeout. The column defaults to

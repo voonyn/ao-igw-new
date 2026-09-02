@@ -415,6 +415,31 @@ func TestUnnamedBindKeyCarriesNoIdentifier(t *testing.T) {
 	}
 }
 
+// TestUnnamedBindKeyFoldsTheIdentifier covers the multiplication a raw digest
+// left open. The directory matches a DirectoryString attribute with
+// caseIgnoreMatch, so it folds case and insignificant space onto one entry. A
+// key that folded neither gave one entry a fresh counter of ten for every typed
+// form a caller invented. See .scratch/directory-sign-in/issues/34.
+func TestUnnamedBindKeyFoldsTheIdentifier(t *testing.T) {
+	key := bindKey(testTenantID, "", "alice@corp.example")
+
+	forms := []string{
+		"Alice@corp.example",
+		"ALICE@CORP.EXAMPLE",
+		" alice@corp.example",
+		"alice@corp.example\t",
+	}
+	for _, form := range forms {
+		if bindKey(testTenantID, "", form) != key {
+			t.Errorf("the form %q holds a budget of its own, want one counter for one entry", form)
+		}
+	}
+
+	if bindKey(testTenantID, "", "bob@corp.example") == key {
+		t.Error("two entries share one budget key, want one key each")
+	}
+}
+
 // TestBindKeyNamesThePerson covers the key of a named person. A tenant matches
 // a username and an email address, so a key of the typed string gave one person
 // two counters of ten, and the real cap was twenty.
