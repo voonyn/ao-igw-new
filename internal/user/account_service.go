@@ -38,10 +38,11 @@ var ErrDirectoryUnavailable = errors.New("the directory did not answer")
 
 // ErrDirectoryNoEntry reports a person whom no single directory entry proves.
 //
-// Four states reach it: the person holds no live active Identity Link, the
-// person holds more than one, the search matched no entry, and the search
-// matched two. Each one is an answer, and each one stays until somebody edits
-// the links or the directory.
+// Five states reach it: the person holds no live active Identity Link, the
+// person holds more than one, the search matched no entry, the search matched
+// two, and the row of a directory-owned person carries no username. The last one
+// names no entry to search for. Each one is an answer, and each one stays until
+// somebody edits the links, the row, or the directory.
 //
 // It is not a directory that could not answer, and it must never read as one. A
 // person who meets it holds a broken account, nothing they do makes the next try

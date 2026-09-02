@@ -5,6 +5,8 @@ import (
 	"errors"
 	"testing"
 
+	"alphaomega/identitygateway/internal/identityprovider"
+	"alphaomega/identitygateway/internal/platform/logger"
 	"alphaomega/identitygateway/internal/user"
 )
 
@@ -126,5 +128,80 @@ func TestDirectoryOfCarriesABrokenRead(t *testing.T) {
 	)
 	if _, _, err := brokenResolve(t.Context(), reproveTenantID, reproveUserID); !errors.Is(err, broken) {
 		t.Errorf("a broken resolver read answered %v, want %v", err, broken)
+	}
+}
+
+// TestDirectoryReProverRefusals proves the three refusals the re-proof makes
+// before any bind runs, and the state each one names.
+//
+// The empty username is the point. A directory owns the person, the row carries
+// no username, and the bind has no search value. No retry mends that, so the
+// answer is the permanent one and never `directory_unavailable`. See
+// .scratch/directory-sign-in/issues/25.
+func TestDirectoryReProverRefusals(t *testing.T) {
+	broken := errors.New("the read failed")
+
+	cases := []struct {
+		name     string
+		idpID    string
+		username string
+		read     error
+		want     error
+	}{
+		{"a broken read", "", "", broken, user.ErrDirectoryUnavailable},
+		{"no single directory", "", "alice", nil, user.ErrDirectoryNoEntry},
+		{"a person who holds no username", "idp-one", "", nil, user.ErrDirectoryNoEntry},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			reprove := directoryReProver(
+				func(context.Context, string, string) (string, string, error) {
+					return c.idpID, c.username, c.read
+				},
+				func(context.Context, string, string, string, string, string) (identityprovider.Identity, error) {
+					t.Error("the bind ran on a re-proof the guard must refuse")
+					return identityprovider.Identity{}, nil
+				},
+				logger.New(),
+			)
+
+			err := reprove(t.Context(), reproveTenantID, reproveUserID, "the typed password")
+			if !errors.Is(err, c.want) {
+				t.Errorf("the re-proof answered %v, want %v", err, c.want)
+			}
+		})
+	}
+}
+
+// TestDirectoryReProverBindsOnTheUsername proves the one path that binds. The
+// username the person holds reaches the bind as the search value, and the typed
+// password travels with it.
+func TestDirectoryReProverBindsOnTheUsername(t *testing.T) {
+	var asked []string
+	reprove := directoryReProver(
+		func(context.Context, string, string) (string, string, error) {
+			return "idp-one", "alice", nil
+		},
+		func(_ context.Context, tenantID, idpID, userID, identifier, password string) (identityprovider.Identity, error) {
+			asked = append(asked, tenantID, idpID, userID, identifier, password)
+			return identityprovider.Identity{}, nil
+		},
+		logger.New(),
+	)
+
+	if err := reprove(t.Context(), reproveTenantID, reproveUserID, "the typed password"); err != nil {
+		t.Fatalf("a proved re-proof answered %v, want nil", err)
+	}
+
+	want := []string{reproveTenantID, "idp-one", reproveUserID, "alice", "the typed password"}
+	if len(asked) != len(want) {
+		t.Fatalf("the bind was asked %v, want %v", asked, want)
+	}
+	for i := range want {
+		if asked[i] != want[i] {
+			t.Errorf("the bind was asked %v, want %v", asked, want)
+			break
+		}
 	}
 }

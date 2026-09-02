@@ -1266,8 +1266,8 @@ func newSessionService(
 // customer network unmetered. See CLAUDE.md.
 //
 // The bind searches on the username the person holds, so the entry it proves is
-// the entry the sign-in proves. A person who holds none is refused here, and no
-// search runs on an empty identifier.
+// the entry the sign-in proves. A person who holds none is refused as a person
+// no entry proves, and no search runs on an empty identifier.
 //
 // The budget is keyed on the person, so a re-proof and a sign-in of the same
 // person spend one counter.
@@ -1297,7 +1297,26 @@ func directoryReProof(
 		return idpID != "", err
 	}
 
-	reprove := func(ctx context.Context, tenantID, userID, plain string) error {
+	return owns, directoryReProver(directory, prover.Prove, log)
+}
+
+// directoryReProver builds the bind that re-proves one person, from the read
+// that names their Directory and the bind itself. Both are function values, so
+// the three refusals below are testable without a database and without a
+// directory.
+//
+// Two of the three are permanent. A person whom no single directory proves, and
+// a person a directory owns whose row carries no username, each hold an account
+// that only an administrator can mend. Both answer ErrDirectoryNoEntry, and
+// neither says "try again". See .scratch/directory-sign-in/issues/25.
+//
+// A read that broke is the transient one.
+func directoryReProver(
+	directory func(ctx context.Context, tenantID, userID string) (string, string, error),
+	prove func(ctx context.Context, tenantID, idpID, userID, identifier, plain string) (identityprovider.Identity, error),
+	log logger.Logger,
+) user.DirectoryProver {
+	return func(ctx context.Context, tenantID, userID, plain string) error {
 		idpID, username, err := directory(ctx, tenantID, userID)
 		if err != nil {
 			// The read stops here, so it is logged here. Without this the user
@@ -1316,12 +1335,11 @@ func directoryReProof(
 		if username == "" {
 			log.Warn("refused a directory re-proof of a person who holds no username",
 				logger.String("tenant_id", tenantID), logger.String("user_id", userID))
-			return user.ErrDirectoryUnavailable
+			return user.ErrDirectoryNoEntry
 		}
-		_, err = prover.Prove(ctx, tenantID, idpID, userID, username, plain)
+		_, err = prove(ctx, tenantID, idpID, userID, username, plain)
 		return accountDirectoryError(err)
 	}
-	return owns, reprove
 }
 
 // accountDirectoryError turns one outcome of a portal re-proof bind into the
@@ -1333,6 +1351,10 @@ func directoryReProof(
 // live active link, more than one link, a search that matched no entry, and a
 // search that matched two. All four stay until somebody edits the links or the
 // directory, so the answer says the account is broken and never "try again".
+//
+// directoryReProver answers the same sentinel for the one permanent state that
+// never reaches a bind: a person a directory owns whose row carries no username.
+// The gateway cannot name the entry, and only an administrator mends that.
 //
 // Everything else — a directory that is switched off, a spent bind budget, a
 // budget nobody could read, a dial that never returned — says that the directory
