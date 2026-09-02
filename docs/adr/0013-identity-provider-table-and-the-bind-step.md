@@ -47,10 +47,13 @@ person can hold several links, one per provider.
 cannot carry a unique key, and two administrators can otherwise claim one domain for
 two providers at the same moment.
 
-**The bind runs at the password step.** The identifier step resolves the provider and
-records it on the Login Session. It is one of four cases:
+**The bind runs at the password step.** The identifier step names the person first, then
+resolves the provider and records it on the Login Session. It is one of four cases:
 
-1. The identifier carries a domain the Tenant claims.
+1. A domain the Tenant claims. Two strings carry that domain, and case 1 reads both:
+   the identifier the person typed, and the email address of the person the identifier
+   step named. A person whose username carries no domain is routed by the second string
+   alone. See `docs/specs/0002-directory-sign-in.md`.
 2. The person holds exactly one Identity Link whose provider accepts a typed password.
 3. The person holds a password hash, which is the local compare of today.
 4. No local person, and the Tenant holds exactly one live active provider.
