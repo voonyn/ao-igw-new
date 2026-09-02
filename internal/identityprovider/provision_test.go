@@ -237,7 +237,7 @@ func aliceLink() Link {
 func TestPersonOfAnswersTheLinkedPerson(t *testing.T) {
 	svc := testService(t, deps{rows: []Provider{storedProvider(testOrgID)}, links: []Link{aliceLink()}})
 
-	userID, err := svc.PersonOf(context.Background(), testTenantID, tenantIdpID, typed, "", alice)
+	userID, err := svc.PersonOf(context.Background(), testTenantID, tenantIdpID, "", typed, alice)
 	if err != nil {
 		t.Fatalf("PersonOf: %v", err)
 	}
@@ -270,7 +270,7 @@ func TestPersonOfAnswersOnePersonWhateverTheIdentifier(t *testing.T) {
 				links: []Link{aliceLink()},
 			})
 
-			userID, err := svc.PersonOf(context.Background(), testTenantID, tenantIdpID, typed, c.session, alice)
+			userID, err := svc.PersonOf(context.Background(), testTenantID, tenantIdpID, c.session, typed, alice)
 			if err != nil {
 				t.Fatalf("PersonOf: %v", err)
 			}
@@ -290,7 +290,7 @@ func TestPersonOfAnswersOnePersonWhateverTheIdentifier(t *testing.T) {
 func TestPersonOfAnswersTheSessionPerson(t *testing.T) {
 	svc := testService(t, deps{rows: []Provider{storedProvider(testOrgID)}})
 
-	userID, err := svc.PersonOf(context.Background(), testTenantID, tenantIdpID, typed, testUserID, alice)
+	userID, err := svc.PersonOf(context.Background(), testTenantID, tenantIdpID, testUserID, typed, alice)
 	if err != nil {
 		t.Fatalf("PersonOf: %v", err)
 	}
@@ -310,7 +310,7 @@ func TestPersonOfProvisionsWhenNoLinkHoldsTheExternalID(t *testing.T) {
 	other.ExternalID = "a-stable-id-of-somebody-else"
 	svc := testService(t, deps{rows: []Provider{storedProvider(testOrgID)}, links: []Link{other}})
 
-	userID, err := svc.PersonOf(context.Background(), testTenantID, tenantIdpID, typed, "", alice)
+	userID, err := svc.PersonOf(context.Background(), testTenantID, tenantIdpID, "", typed, alice)
 	if err != nil {
 		t.Fatalf("PersonOf: %v", err)
 	}
@@ -331,7 +331,7 @@ func TestPersonOfRefusesABrokenLinkRead(t *testing.T) {
 		findLinkFails: errors.New("the database is down"),
 	})
 
-	if _, err := svc.PersonOf(context.Background(), testTenantID, tenantIdpID, typed, "", alice); err == nil {
+	if _, err := svc.PersonOf(context.Background(), testTenantID, tenantIdpID, "", typed, alice); err == nil {
 		t.Fatal("PersonOf answered a person, want the failed read")
 	}
 	if len(people) != 0 || len(linked) != 0 {
@@ -353,7 +353,7 @@ func TestPersonOfRefusesAnOffboardedLinkedPerson(t *testing.T) {
 		personOffboarded: true,
 	})
 
-	_, err := svc.PersonOf(context.Background(), testTenantID, tenantIdpID, typed, "", alice)
+	_, err := svc.PersonOf(context.Background(), testTenantID, tenantIdpID, "", typed, alice)
 	if !errors.Is(err, ErrDirectory) {
 		t.Fatalf("err = %v, want ErrDirectory", err)
 	}
@@ -394,7 +394,7 @@ func TestProvisionRefusesAnAccountTheTenantHolds(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			svc := testService(t, deps{rows: []Provider{storedProvider(testOrgID)}, held: held})
 
-			_, err := svc.PersonOf(context.Background(), testTenantID, tenantIdpID, typed, "", alice)
+			_, err := svc.PersonOf(context.Background(), testTenantID, tenantIdpID, "", typed, alice)
 			if !errors.Is(err, ErrDirectory) {
 				t.Fatalf("err = %v, want ErrDirectory", err)
 			}
@@ -482,7 +482,7 @@ func TestPersonOfRefusesAnEntryAnotherLinkNames(t *testing.T) {
 		linked: []string{tenantIdpID},
 	})
 
-	_, err := svc.PersonOf(context.Background(), testTenantID, tenantIdpID, typed, testUserID, alice)
+	_, err := svc.PersonOf(context.Background(), testTenantID, tenantIdpID, testUserID, typed, alice)
 	if !errors.Is(err, ErrDirectory) {
 		t.Fatalf("err = %v, want ErrDirectory", err)
 	}
@@ -504,7 +504,7 @@ func TestPersonOfAnswersTheSessionPersonLinkedElsewhere(t *testing.T) {
 		linked: []string{otherIdpID},
 	})
 
-	userID, err := svc.PersonOf(context.Background(), testTenantID, tenantIdpID, typed, testUserID, alice)
+	userID, err := svc.PersonOf(context.Background(), testTenantID, tenantIdpID, testUserID, typed, alice)
 	if err != nil {
 		t.Fatalf("PersonOf: %v", err)
 	}
@@ -521,7 +521,7 @@ func TestPersonOfRefusesABrokenLinkedRead(t *testing.T) {
 	broken := errors.New("the database is down")
 	svc.deps.Linked = func(context.Context, string, string) ([]string, error) { return nil, broken }
 
-	if _, err := svc.PersonOf(context.Background(), testTenantID, tenantIdpID, typed, testUserID, alice); !errors.Is(err, broken) {
+	if _, err := svc.PersonOf(context.Background(), testTenantID, tenantIdpID, testUserID, typed, alice); !errors.Is(err, broken) {
 		t.Fatalf("err = %v, want the failed read", err)
 	}
 }

@@ -1225,7 +1225,7 @@ func newSessionService(
 				return session.Identity{}, directoryError(err)
 			}
 
-			userID, err = prover.PersonOf(ctx, tenantID, idpID, identifier, userID, person)
+			userID, err = prover.PersonOf(ctx, tenantID, idpID, userID, identifier, person)
 			if err != nil {
 				return session.Identity{}, directoryError(err)
 			}

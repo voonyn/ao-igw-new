@@ -63,7 +63,7 @@ type Person struct {
 // here reads it: the guard of the first bind asks whether the tenant already
 // holds an account for it, and the identifier step could not have found one.
 func (s *Service) PersonOf(
-	ctx context.Context, tenantID, idpID, identifier, userID string, identity Identity,
+	ctx context.Context, tenantID, idpID, userID, identifier string, identity Identity,
 ) (string, error) {
 	s.log.Debug("name the person the directory proved",
 		logger.String("tenant_id", tenantID), logger.String("idp_id", idpID), logger.RequestID(ctx))
@@ -125,9 +125,20 @@ func (s *Service) PersonOf(
 				logger.String("user_id", userID))
 			return "", fmt.Errorf("%w: tenant %s, provider %s", ErrDirectory, tenantID, idpID)
 		}
+		s.log.Debug("the login session names the person of this sign-in",
+			logger.String("tenant_id", tenantID), logger.String("idp_id", idpID),
+			logger.String("user_id", userID), logger.RequestID(ctx))
 		return userID, nil
 	}
-	return s.Provision(ctx, tenantID, idpID, identifier, identity)
+
+	created, err := s.Provision(ctx, tenantID, idpID, identifier, identity)
+	if err != nil {
+		return "", err
+	}
+	s.log.Debug("the first bind created the person of this sign-in",
+		logger.String("tenant_id", tenantID), logger.String("idp_id", idpID),
+		logger.String("user_id", created), logger.RequestID(ctx))
+	return created, nil
 }
 
 // Provision creates the person one directory account names, and writes the
