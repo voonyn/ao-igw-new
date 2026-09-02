@@ -139,6 +139,10 @@ type (
 	// RateLimiter records one hit against key and reports whether the trailing
 	// window is still within limit. cache.Client.AllowInWindow satisfies it.
 	RateLimiter func(ctx context.Context, key string, limit int, window time.Duration) (bool, error)
+
+	// RateReleaser gives one hit of key back. cache.Client.ReleaseInWindow
+	// satisfies it. See Service.releaseBind.
+	RateReleaser func(ctx context.Context, key string) error
 )
 
 // Deps is the database side of the service.
@@ -187,11 +191,17 @@ type Deps struct {
 	LocalOwners LocalOwnerLister
 	HasPassword PasswordReporter
 
-	// Allow is the connection test budget. It is one of the Redis-only
-	// exceptions to the stateless rule CLAUDE.md lists: no table holds the
-	// counter, and a cache failure refuses the test instead of letting an
-	// outbound call through. See Service.spendTest.
-	Allow RateLimiter
+	// Allow is the connection test budget and the sign-in bind budget. Both are
+	// Redis-only exceptions to the stateless rule CLAUDE.md lists: no table holds
+	// either counter, and a cache failure refuses the call instead of letting an
+	// outbound call through. See Service.spendTest and Service.spendBind.
+	//
+	// Release gives one bind back when the directory did not answer, so an outage
+	// costs the person nothing. Only Service.Prove releases: the connection test
+	// meters a call its own administrator drove, and a refund there would leave
+	// that call unmetered. See Service.releaseBind.
+	Allow   RateLimiter
+	Release RateReleaser
 
 	InTx  db.TxRunner
 	Audit *audit.Recorder

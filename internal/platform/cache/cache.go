@@ -45,6 +45,21 @@ type Client interface {
 	// limit and a window, and get a decision.
 	AllowInWindow(ctx context.Context, key string, limit int, window time.Duration) (bool, error)
 
+	// ReleaseInWindow gives one hit of key back, so the trailing window counts one
+	// less. A key that holds no hit is left alone.
+	//
+	// It is the refund of AllowInWindow, and it is for a caller who spends the
+	// budget on the way in and learns only afterwards that the attempt cost
+	// nothing: a bind against a directory that never answered. The spend has to
+	// stay on the way in, because that is what bounds an outbound call.
+	//
+	// It drops the newest hit of the window, not the hit the caller recorded. Two
+	// callers that release at once therefore give back two hits and not one hit
+	// twice, which is what the counter needs. A refund that raced a third
+	// caller's spend returns that caller's hit instead, and the window stays
+	// within one of the truth either way.
+	ReleaseInWindow(ctx context.Context, key string) error
+
 	// Del removes one or more keys. Non-existent keys are silently ignored.
 	Del(ctx context.Context, keys ...string) error
 

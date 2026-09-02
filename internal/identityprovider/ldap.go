@@ -269,16 +269,20 @@ func (s *Service) Bind(ctx context.Context, p Provider, identifier, password str
 //  3. Spend one bind of the budget. Nothing above this line reaches the network,
 //     so a refused provider and an empty password each cost none of it.
 //  4. Bind.
+//  5. Give the bind back if the directory did not answer.
 //
 // The budget is spent before the bind and not after it, because the budget
-// bounds the outbound call and not the answer. A directory that does not answer
-// therefore spends one bind, which the spec asks it not to: the only atomic
-// primitive the cache offers is count-and-test on the way in, and a bind that
-// spent nothing until it came back would leave a black-holing host reachable as
-// often as a caller likes.
+// bounds the outbound call and not the answer. The refund is what keeps that
+// order from charging a person for an outage. A directory that does not answer
+// therefore costs no bind, and a wrong password and an unknown entry each cost
+// one.
 //
-// ponytail: no refund. Give the cache a release primitive when a directory
-// outage costing a person their budget is worth the second round trip.
+// ponytail: the refund buys the person their budget back and gives a host that
+// never answers a caller who reaches it as often as they like. The trade is
+// deliberate: one outage otherwise locks every person out for the rest of the
+// window, and the lockout outlives the outage. A budget keyed by caller address
+// is the upgrade, it meters the loop the refund opens, and the spec names it as
+// the ceiling of this key. See docs/specs/0002-directory-sign-in.md.
 //
 // userID is the person the sign-in already named at the identifier step, and it
 // keys the budget. An identifier step that named nobody passes an empty string,
@@ -319,7 +323,40 @@ func (s *Service) Prove(
 	if err := s.spendBind(ctx, tenantID, idpID, userID, identifier); err != nil {
 		return Identity{}, err
 	}
-	return s.Bind(ctx, row, identifier, password)
+
+	person, err := s.Bind(ctx, row, identifier, password)
+	if errors.Is(err, ErrDirectory) {
+		s.releaseBind(ctx, tenantID, idpID, userID, identifier)
+	}
+	return person, err
+}
+
+// releaseBind gives one spent bind back, and it runs on the answers of
+// ErrDirectory alone. A wrong password and an unknown entry are answers the
+// person drove, and both keep the spend, which is what makes the cap reachable.
+//
+// Four of the refunded faults are the ones the spec names: a dial failure, a
+// timeout, a TLS failure, and a bind failure of the service credential. Two more
+// are the provider row that carries no bind credential and the one that maps no
+// user filter. Those two are permanent, and refunding them costs nothing that
+// the budget bounds: both refuse before the dial, so the loop they open reaches
+// no directory, the same way the empty-password guard does.
+//
+// The three permanent refusals of provision.go reuse ErrDirectory and never
+// reach this line. Prove calls Bind, and Bind answers none of them.
+//
+// Deps.Release is required wherever Prove is reachable. Both services that call
+// Prove set it, and the console build of this service reaches neither.
+//
+// A failed release writes one error line and changes nothing else. The person
+// keeps the answer they earned, and the counter drifts high by one and never
+// low.
+func (s *Service) releaseBind(ctx context.Context, tenantID, idpID, userID, identifier string) {
+	if err := s.deps.Release(ctx, bindKey(tenantID, userID, identifier)); err != nil {
+		s.log.Error("give back the bind of a directory that did not answer",
+			logger.String("tenant_id", tenantID), logger.String("idp_id", idpID),
+			logger.String("user_id", userID), logger.Err(err))
+	}
 }
 
 // spendBind spends one bind of the person's trailing-window budget, and refuses

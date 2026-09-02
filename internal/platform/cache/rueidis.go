@@ -124,6 +124,17 @@ func (c *rueidisClient) AllowInWindow(ctx context.Context, key string, limit int
 	return n == 1, nil
 }
 
+// ReleaseInWindow drops the newest hit of the window, which is one ZREMRANGEBYRANK
+// on the sorted set AllowInWindow writes. A key that expired or that holds no hit
+// removes nothing and answers no error.
+func (c *rueidisClient) ReleaseInWindow(ctx context.Context, key string) error {
+	cmd := c.r.B().Zremrangebyrank().Key(key).Start(-1).Stop(-1).Build()
+	if err := c.r.Do(ctx, cmd).Error(); err != nil {
+		return fmt.Errorf("cache: release in window %q: %w", key, err)
+	}
+	return nil
+}
+
 func (c *rueidisClient) Del(ctx context.Context, keys ...string) error {
 	if len(keys) == 0 {
 		return nil

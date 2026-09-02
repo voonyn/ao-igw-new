@@ -387,27 +387,32 @@ type deps struct {
 	held       []string
 	heldBroken bool
 
-	// The connection test budget. A test that sets neither field runs with a
-	// budget that allows everything.
-	budgetSpent  bool
-	budgetBroken bool
+	// The connection test budget and the sign-in bind budget. A test that sets
+	// none of the three fields runs with a budget that allows everything and
+	// that takes every refund. releaseBroken breaks the refund alone, which is
+	// what a Redis that answered the spend and then went down does.
+	budgetSpent   bool
+	budgetBroken  bool
+	releaseBroken bool
 }
 
 // What the writes of one test did. testService clears them, and the tests of one
 // package run one after another, so each test reads its own writes.
 var (
-	written    []Provider
-	updated    []Provider
-	deleted    []string
-	claimed    []string
-	unlinked   []string
-	people     []Person
-	linked     []Link
-	events     []audit.Event
-	rolledBack bool
-	spends     int
-	spentKeys  []string
-	logs       *observer.ObservedLogs
+	written      []Provider
+	updated      []Provider
+	deleted      []string
+	claimed      []string
+	unlinked     []string
+	people       []Person
+	linked       []Link
+	events       []audit.Event
+	rolledBack   bool
+	spends       int
+	spentKeys    []string
+	releases     int
+	releasedKeys []string
+	logs         *observer.ObservedLogs
 )
 
 func testService(t *testing.T, d deps) *Service {
@@ -417,6 +422,7 @@ func testService(t *testing.T, d deps) *Service {
 	written, updated, deleted, claimed, unlinked, events, rolledBack = nil, nil, nil, nil, nil, nil, false
 	people, linked = nil, nil
 	spends, spentKeys = 0, nil
+	releases, releasedKeys = 0, nil
 
 	countWrites := func() int {
 		return len(written) + len(updated) + len(deleted) + len(claimed) +
@@ -525,6 +531,14 @@ func testService(t *testing.T, d deps) *Service {
 			spends++
 			spentKeys = append(spentKeys, key)
 			return !d.budgetSpent, nil
+		},
+		Release: func(_ context.Context, key string) error {
+			if d.releaseBroken {
+				return errors.New("the cache is down")
+			}
+			releases++
+			releasedKeys = append(releasedKeys, key)
+			return nil
 		},
 		LocalOwners: func(context.Context, string) ([]tenant.LocalOwner, error) {
 			return d.localOwners, nil

@@ -65,8 +65,9 @@ func (f *fakeCache) SetNX(context.Context, string, string, time.Duration) (bool,
 func (f *fakeCache) AllowInWindow(context.Context, string, int, time.Duration) (bool, error) {
 	return true, nil
 }
-func (f *fakeCache) Ping(context.Context) error { return nil }
-func (f *fakeCache) Close() error               { return nil }
+func (f *fakeCache) ReleaseInWindow(context.Context, string) error { return nil }
+func (f *fakeCache) Ping(context.Context) error                    { return nil }
+func (f *fakeCache) Close() error                                  { return nil }
 
 // liveSession is a session that still has hours to run, so the TTL of a cache
 // write is a positive number the test can assert on.

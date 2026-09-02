@@ -1161,11 +1161,12 @@ func newSessionService(
 	// of the same service, in mountAdmin, carries the rest.
 	//
 	// The budget lives in Redis alone. A cache failure refuses the sign-in
-	// instead of leaving an outbound call into a customer network unmetered. See
-	// CLAUDE.md.
+	// instead of leaving an outbound call into a customer network unmetered, and
+	// a directory that did not answer gives its bind back. See CLAUDE.md.
 	prover := identityprovider.NewService(identityprovider.Deps{
 		Find:      idps.FindByID,
 		Allow:     rdb.AllowInWindow,
+		Release:   rdb.ReleaseInWindow,
 		WriteLink: idps.InsertLink,
 		FindLink:  idps.LinkedUser,
 		// The links the person the session names already holds. A bind whose
@@ -1289,9 +1290,10 @@ func directoryReProof(
 		Log:         log,
 	})
 	prover := identityprovider.NewService(identityprovider.Deps{
-		Find:  idps.FindByID,
-		Allow: rdb.AllowInWindow,
-		Log:   log,
+		Find:    idps.FindByID,
+		Allow:   rdb.AllowInWindow,
+		Release: rdb.ReleaseInWindow,
+		Log:     log,
 	})
 	return directoryOf(users.FindByID, resolver.Resolve), directoryReProver(prover.Prove, log)
 }

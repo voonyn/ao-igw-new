@@ -17,7 +17,9 @@ import (
 	"testing"
 	"time"
 
+	ber "github.com/go-asn1-ber/asn1-ber"
 	"github.com/go-ldap/ldap/v3"
+	"go.uber.org/zap/zapcore"
 )
 
 // TestSearchFilter covers the filter the search is built from. The object
@@ -367,7 +369,8 @@ func TestProveRefusesABindBudgetNobodyCouldRead(t *testing.T) {
 
 // TestProveSpendsOneBindOnALiveProvider covers the order the budget is spent in.
 // It is spent on the way in, because it bounds the outbound call and not the
-// answer, so a directory that never answered has spent one bind.
+// answer. The directory here never answers, so the spend is given back and the
+// counter ends where it started.
 func TestProveSpendsOneBindOnALiveProvider(t *testing.T) {
 	svc := testService(t, deps{rows: []Provider{failingProvider(t)}})
 
@@ -376,8 +379,204 @@ func TestProveSpendsOneBindOnALiveProvider(t *testing.T) {
 		t.Fatalf("err = %v, want ErrDirectory", err)
 	}
 	if spends != 1 {
-		t.Errorf("the sign-in spent %d binds, want one", spends)
+		t.Errorf("the sign-in spent %d binds, want one on the way in", spends)
 	}
+	if releases != 1 {
+		t.Errorf("the sign-in gave back %d binds, want the one it spent", releases)
+	}
+}
+
+// TestProveGivesTheBindBackWhenTheDirectoryDoesNotAnswer covers the refund. The
+// budget bounds the outbound call, so it is spent before the dial. A directory
+// that does not answer must not cost the person one of ten: without the refund,
+// a host that black-holes traffic locks every person out for the rest of the
+// window, and the lockout outlives the outage.
+//
+// The four faults are the ones the spec names. See
+// docs/specs/0002-directory-sign-in.md.
+func TestProveGivesTheBindBackWhenTheDirectoryDoesNotAnswer(t *testing.T) {
+	cases := []struct {
+		name string
+		row  func(t *testing.T) Provider
+	}{
+		{"a dial failure", failingProvider},
+		{"a timeout", func(t *testing.T) Provider {
+			p := storedProvider(testOrgID)
+			p.Mode, p.Servers, p.TimeoutMS = ModePlain, []string{"ldap://" + silentDirectory(t)}, 200
+			return p
+		}},
+		{"a TLS failure", func(t *testing.T) Provider {
+			p := storedProvider(testOrgID)
+			p.Mode = ModeLDAPS
+			p.Servers = []string{"ldaps://" + directory(t, ldap.LDAPResultSuccess, 0, ldap.LDAPResultSuccess)}
+			p.TimeoutMS = 2000
+			return p
+		}},
+		{"a bind failure of the service credential", func(t *testing.T) Provider {
+			p := storedProvider(testOrgID)
+			p.Mode = ModePlain
+			p.Servers = []string{"ldap://" + directory(t, ldap.LDAPResultInvalidCredentials, 0, 0)}
+			p.TimeoutMS = 2000
+			return p
+		}},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			svc := testService(t, deps{rows: []Provider{c.row(t)}})
+
+			_, err := svc.Prove(
+				context.Background(), testTenantID, tenantIdpID, personID, "alice", "the-typed-password",
+			)
+			if !errors.Is(err, ErrDirectory) {
+				t.Fatalf("err = %v, want ErrDirectory", err)
+			}
+			if spends-releases != 0 {
+				t.Fatalf("the sign-in spent %d binds and gave back %d, want the counter unchanged",
+					spends, releases)
+			}
+			if len(releasedKeys) != 1 || releasedKeys[0] != spentKeys[0] {
+				t.Fatalf("the refund named %v, want the key the spend named", releasedKeys)
+			}
+		})
+	}
+}
+
+// TestProveKeepsTheBindOnACredentialFailure covers the other side of the refund.
+// A wrong password and an entry the search did not match are both answers the
+// person drove, and the budget exists to bound how often they can drive them. A
+// refund on either one would make the cap unreachable.
+func TestProveKeepsTheBindOnACredentialFailure(t *testing.T) {
+	cases := []struct {
+		name    string
+		address string
+		want    error
+	}{
+		{"a wrong password", provingDirectory(t, ldap.LDAPResultInvalidCredentials), ErrWrongPassword},
+		{"an unknown entry", directory(t, ldap.LDAPResultSuccess, 0, ldap.LDAPResultSuccess), ErrNoEntry},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			p := storedProvider(testOrgID)
+			p.Mode, p.Servers, p.TimeoutMS = ModePlain, []string{"ldap://" + c.address}, 2000
+			svc := testService(t, deps{rows: []Provider{p}})
+
+			_, err := svc.Prove(
+				context.Background(), testTenantID, tenantIdpID, personID, "alice", "the-typed-password",
+			)
+			if !errors.Is(err, c.want) {
+				t.Fatalf("err = %v, want %v", err, c.want)
+			}
+			if spends != 1 || releases != 0 {
+				t.Fatalf("the sign-in spent %d binds and gave back %d, want one spent and none back",
+					spends, releases)
+			}
+		})
+	}
+}
+
+// TestProveAnswersTheDirectoryWhenTheRefundFails covers the refund that could not
+// be written. The person keeps the answer they earned, and the counter drifts
+// high by one and never low. One error line records the drift.
+func TestProveAnswersTheDirectoryWhenTheRefundFails(t *testing.T) {
+	svc := testService(t, deps{rows: []Provider{failingProvider(t)}, releaseBroken: true})
+
+	_, err := svc.Prove(context.Background(), testTenantID, tenantIdpID, personID, "alice", "the-typed-password")
+	if !errors.Is(err, ErrDirectory) {
+		t.Fatalf("err = %v, want ErrDirectory", err)
+	}
+
+	lines := logs.FilterMessageSnippet("give back the bind").All()
+	if len(lines) != 1 {
+		t.Fatalf("the failed refund wrote %d lines, want one", len(lines))
+	}
+	if lines[0].Level != zapcore.ErrorLevel {
+		t.Fatalf("the failed refund wrote a %s line, want an error line", lines[0].Level)
+	}
+}
+
+// provingDirectory answers a directory that completes the service bind and the
+// search, and that answers the second bind with the code the test names. The
+// fake of test_test.go answers every bind alike, so no test could reach the bind
+// that proves the password with it.
+func provingDirectory(t *testing.T, personCode int) string {
+	t.Helper()
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() { ln.Close() })
+
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go serveProof(conn, personCode)
+		}
+	}()
+	return ln.Addr().String()
+}
+
+// serveProof answers the requests of one connection. The first bind is the
+// service account and always succeeds, and every later bind is the person.
+func serveProof(conn net.Conn, personCode int) {
+	defer conn.Close()
+
+	binds := 0
+	for {
+		req, err := ber.ReadPacket(conn)
+		if err != nil || len(req.Children) < 2 {
+			return
+		}
+		id, ok := req.Children[0].Value.(int64)
+		if !ok {
+			return
+		}
+
+		switch req.Children[1].Tag {
+		case ldap.ApplicationBindRequest:
+			code := ldap.LDAPResultSuccess
+			if binds > 0 {
+				code = personCode
+			}
+			binds++
+			if _, err := conn.Write(result(id, ldap.ApplicationBindResponse, code)); err != nil {
+				return
+			}
+		case ldap.ApplicationSearchRequest:
+			if _, err := conn.Write(namedEntry(id)); err != nil {
+				return
+			}
+			if _, err := conn.Write(result(id, ldap.ApplicationSearchResultDone, ldap.LDAPResultSuccess)); err != nil {
+				return
+			}
+		default:
+			return
+		}
+	}
+}
+
+// namedEntry is one search result that carries the id attribute the provider
+// maps. Without it the entry names nobody, and the bind that proves the password
+// is never reached.
+func namedEntry(id int64) []byte {
+	op := ber.Encode(ber.ClassApplication, ber.TypeConstructed, ber.Tag(ldap.ApplicationSearchResultEntry), nil, "Entry")
+	op.AppendChild(ber.NewString(ber.ClassUniversal, ber.TypePrimitive, ber.TagOctetString,
+		"uid=alice,dc=corp,dc=example", "objectName"))
+
+	values := ber.Encode(ber.ClassUniversal, ber.TypeConstructed, ber.TagSet, nil, "values")
+	values.AppendChild(ber.NewString(ber.ClassUniversal, ber.TypePrimitive, ber.TagOctetString, "alice-guid", "value"))
+	attr := ber.Encode(ber.ClassUniversal, ber.TypeConstructed, ber.TagSequence, nil, "attribute")
+	attr.AppendChild(ber.NewString(ber.ClassUniversal, ber.TypePrimitive, ber.TagOctetString, "objectGUID", "type"))
+	attr.AppendChild(values)
+	attrs := ber.Encode(ber.ClassUniversal, ber.TypeConstructed, ber.TagSequence, nil, "attributes")
+	attrs.AppendChild(attr)
+	op.AppendChild(attrs)
+	return message(id, op)
 }
 
 // TestProveSpendsNothingOnAnEmptyPassword covers the value that costs the

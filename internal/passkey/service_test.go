@@ -42,6 +42,8 @@ func (c errCache) AllowInWindow(context.Context, string, int, time.Duration) (bo
 	return false, c.err
 }
 
+func (c errCache) ReleaseInWindow(context.Context, string) error { return c.err }
+
 func (c errCache) Del(context.Context, ...string) error { return c.err }
 
 func (c errCache) Ping(context.Context) error { return c.err }
