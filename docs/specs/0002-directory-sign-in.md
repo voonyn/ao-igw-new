@@ -244,14 +244,16 @@ That gap is a defect of the local password path, and this spec does not fix it. 
 refuse to inherit it, because a bind is an outbound call into a customer network that
 any caller can drive with a fresh partial token.
 
-- **A bind budget**, keyed by Tenant and identifier, on a Redis key of its own. Copy
+- **A bind budget**, keyed by Tenant and person, on a Redis key of its own. A first
+  bind names no person, and that one is keyed by Tenant and identifier. Copy
   `totp.Service.spendGuess`, `internal/totp/service.go:656-695`, including its refusal
   on a Redis error.
 - This is a **fifth** Redis-only exception to the stateless rule, and `CLAUDE.md` is
   amended in the same change. A budget that a table held would let a cache failure pass
   the request through, and an unmetered bind is a lever against a customer directory.
-- Ceiling: an identifier key caps one person. A spray across many identifiers still
-  reaches the directory. An IP key is the upgrade, and it is not built here.
+- Ceiling: the key caps one person, so both forms of one identifier spend one counter.
+  A spray across many identifiers still reaches the directory. An IP key is the
+  upgrade, and it is not built here.
 - The connection test carries a budget of its own, keyed by Tenant. It is an outbound
   call that an authenticated Console user drives.
 

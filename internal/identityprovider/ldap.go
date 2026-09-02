@@ -54,8 +54,9 @@ var ErrDirectory = errors.New("the directory did not answer")
 // the caller is already authenticated. See docs/specs/0002-directory-sign-in.md.
 var ErrDisabled = errors.New("the identity provider is disabled")
 
-// ErrTooManyBinds reports an identifier that spent its whole bind budget. The
-// directory is not dialled, and the caller waits out the window.
+// ErrTooManyBinds reports a person who spent their whole bind budget, or, on a
+// first bind, the typed identifier that spent it. The directory is not dialled,
+// and the caller waits out the window.
 var ErrTooManyBinds = errors.New("too many directory binds")
 
 // ErrBindUnavailable reports a bind budget nobody could read. Redis holds the
@@ -67,21 +68,27 @@ var ErrTooManyBinds = errors.New("too many directory binds")
 // call at all.
 var ErrBindUnavailable = errors.New("the bind budget is unavailable")
 
-// bindLimit and bindWindow cap how many binds one identifier of one tenant
-// drives.
+// bindLimit and bindWindow cap how many binds one person of one tenant drives.
 //
 // A bind is an outbound call into a customer network that any caller drives with
 // a fresh partial token, and it is the only password guess this gateway meters.
 // The number is small, because a person who types their own password needs a
 // handful of tries and nobody needs thirty.
 //
-// Ceiling: an identifier key caps one person, and any caller can drive it. Two
-// things follow. A spray across many identifiers still reaches the directory,
-// and eleven wrong guesses lock one named person out of the directory sign-in
-// for the rest of the window. The local password path has no budget, so this is
-// the one credential of this gateway that a stranger can spend. The refusal
-// answers what a wrong password answers, so the lockout says nothing about who
-// the tenant holds.
+// Ceiling: the key names the person the session already named, so both forms of
+// one identifier spend one counter. A first bind names nobody, and that one key
+// counts the typed string instead. Any caller can drive either key. Two things
+// follow. A spray across many identifiers still reaches the directory. Eleven
+// wrong guesses lock one named person out of the directory sign-in for the rest
+// of the window, and out of the portal re-proof with it: both spend the counter
+// of the person. The local password path has no budget, so this is the one
+// credential of this gateway that a stranger can spend. The refusal answers what
+// a wrong password answers, so the lockout says nothing about who the tenant
+// holds.
+//
+// The key changed shape once, from the identifier to the person. The counters of
+// the old shape are stranded, and no migration reads them: each one expires
+// inside the window.
 //
 // An IP key is the upgrade, and it is not built here. See
 // docs/specs/0002-directory-sign-in.md.
@@ -93,12 +100,24 @@ const (
 	bindWindow = 15 * time.Minute
 )
 
-// bindKey names the bind budget of one identifier of one tenant.
+// bindKey names the bind budget of one person of one tenant, and falls back to
+// the identifier they typed when the sign-in names no person.
+//
+// The person is the cap. A tenant that lets one person type either a username or
+// an email address gave that person two identifier keys, and the real cap was
+// twice the number the comment above states.
+//
+// A first bind names nobody, so that path keeps the digest of the typed string.
+// It is the only stable handle that path holds.
 //
 // The identifier is personal data, so the key carries its digest and never the
-// address itself. A Redis key is read by every operator who lists the keyspace,
-// and the counter needs a stable name and nothing more.
-func bindKey(tenantID, identifier string) string {
+// address itself. A Redis key is read by every operator who lists the keyspace.
+// A user id is not personal data here, and log lines of this package already
+// carry it.
+func bindKey(tenantID, userID, identifier string) string {
+	if userID != "" {
+		return fmt.Sprintf("idp_binds:%s:user:%s", tenantID, userID)
+	}
 	return fmt.Sprintf("idp_binds:%s:%s", tenantID, aocrypto.Digest(identifier))
 }
 
@@ -239,10 +258,14 @@ func (s *Service) Bind(ctx context.Context, p Provider, identifier, password str
 // ponytail: no refund. Give the cache a release primitive when a directory
 // outage costing a person their budget is worth the second round trip.
 //
+// userID is the person the sign-in already named at the identifier step, and it
+// keys the budget. A first bind names nobody and passes an empty string. The
+// value never reaches the directory: the search runs on the identifier.
+//
 // The typed password reaches Bind and nothing else. No log line of this method
 // carries it, or the identifier, or the bind credential of the provider.
 func (s *Service) Prove(
-	ctx context.Context, tenantID, idpID, identifier, password string,
+	ctx context.Context, tenantID, idpID, userID, identifier, password string,
 ) (Identity, error) {
 	s.log.Debug("prove a password against the directory",
 		logger.String("tenant_id", tenantID), logger.String("idp_id", idpID),
@@ -270,14 +293,15 @@ func (s *Service) Prove(
 		return Identity{}, fmt.Errorf("%w: the password is empty", ErrWrongPassword)
 	}
 
-	if err := s.spendBind(ctx, tenantID, idpID, identifier); err != nil {
+	if err := s.spendBind(ctx, tenantID, idpID, userID, identifier); err != nil {
 		return Identity{}, err
 	}
 	return s.Bind(ctx, row, identifier, password)
 }
 
-// spendBind spends one bind of the identifier's trailing-window budget, and
-// refuses the sign-in when nothing is left.
+// spendBind spends one bind of the person's trailing-window budget, and refuses
+// the sign-in when nothing is left. A first bind names no person, and that one
+// spends the budget of the identifier they typed. See bindKey.
 //
 // A cache failure refuses the bind. Redis is only a cache elsewhere in this
 // gateway, and here it is the whole budget: a failure that let the bind through
@@ -288,19 +312,23 @@ func (s *Service) Prove(
 // ponytail: a refused read costs every directory-owned person their sign-in
 // while Redis is down. The local password path keeps working, because it spends
 // nothing.
-func (s *Service) spendBind(ctx context.Context, tenantID, idpID, identifier string) error {
-	allowed, err := s.deps.Allow(ctx, bindKey(tenantID, identifier), bindLimit, bindWindow)
+func (s *Service) spendBind(ctx context.Context, tenantID, idpID, userID, identifier string) error {
+	allowed, err := s.deps.Allow(ctx, bindKey(tenantID, userID, identifier), bindLimit, bindWindow)
 	if err != nil {
 		s.log.Error("read the directory bind budget",
-			logger.String("tenant_id", tenantID), logger.String("idp_id", idpID), logger.Err(err))
+			logger.String("tenant_id", tenantID), logger.String("idp_id", idpID),
+			logger.String("user_id", userID), logger.Err(err))
 		return fmt.Errorf("%w: tenant %s", ErrBindUnavailable, tenantID)
 	}
 	if allowed {
 		return nil
 	}
 
+	// user_id is empty on a first bind, which names nobody. The identifier that
+	// keyed that counter is personal data and stays out of the line.
 	s.log.Warn("refused a directory bind over the budget",
-		logger.String("tenant_id", tenantID), logger.String("idp_id", idpID))
+		logger.String("tenant_id", tenantID), logger.String("idp_id", idpID),
+		logger.String("user_id", userID))
 	return fmt.Errorf("%w: tenant %s", ErrTooManyBinds, tenantID)
 }
 

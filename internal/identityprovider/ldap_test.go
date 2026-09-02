@@ -311,7 +311,7 @@ func TestProveRefusesAnInactiveProvider(t *testing.T) {
 	off.State = StateInactive
 	svc := testService(t, deps{rows: []Provider{off}})
 
-	_, err := svc.Prove(context.Background(), testTenantID, tenantIdpID, "alice", "the-typed-password")
+	_, err := svc.Prove(context.Background(), testTenantID, tenantIdpID, personID, "alice", "the-typed-password")
 	if !errors.Is(err, ErrDisabled) {
 		t.Fatalf("err = %v, want ErrDisabled", err)
 	}
@@ -326,7 +326,7 @@ func TestProveRefusesAnInactiveProvider(t *testing.T) {
 func TestProveRefusesAProviderNobodyHolds(t *testing.T) {
 	svc := testService(t, deps{})
 
-	_, err := svc.Prove(context.Background(), testTenantID, deadIdpID, "alice", "the-typed-password")
+	_, err := svc.Prove(context.Background(), testTenantID, deadIdpID, personID, "alice", "the-typed-password")
 	if !errors.Is(err, ErrDisabled) {
 		t.Fatalf("err = %v, want ErrDisabled", err)
 	}
@@ -341,7 +341,7 @@ func TestProveRefusesAProviderNobodyHolds(t *testing.T) {
 func TestProveRefusesASpentBindBudget(t *testing.T) {
 	svc := testService(t, deps{rows: []Provider{failingProvider(t)}, budgetSpent: true})
 
-	_, err := svc.Prove(context.Background(), testTenantID, tenantIdpID, "alice", "the-typed-password")
+	_, err := svc.Prove(context.Background(), testTenantID, tenantIdpID, personID, "alice", "the-typed-password")
 	if !errors.Is(err, ErrTooManyBinds) {
 		t.Fatalf("err = %v, want ErrTooManyBinds", err)
 	}
@@ -356,7 +356,7 @@ func TestProveRefusesASpentBindBudget(t *testing.T) {
 func TestProveRefusesABindBudgetNobodyCouldRead(t *testing.T) {
 	svc := testService(t, deps{rows: []Provider{failingProvider(t)}, budgetBroken: true})
 
-	_, err := svc.Prove(context.Background(), testTenantID, tenantIdpID, "alice", "the-typed-password")
+	_, err := svc.Prove(context.Background(), testTenantID, tenantIdpID, personID, "alice", "the-typed-password")
 	if !errors.Is(err, ErrBindUnavailable) {
 		t.Fatalf("err = %v, want ErrBindUnavailable", err)
 	}
@@ -371,7 +371,7 @@ func TestProveRefusesABindBudgetNobodyCouldRead(t *testing.T) {
 func TestProveSpendsOneBindOnALiveProvider(t *testing.T) {
 	svc := testService(t, deps{rows: []Provider{failingProvider(t)}})
 
-	_, err := svc.Prove(context.Background(), testTenantID, tenantIdpID, "alice", "the-typed-password")
+	_, err := svc.Prove(context.Background(), testTenantID, tenantIdpID, personID, "alice", "the-typed-password")
 	if !errors.Is(err, ErrDirectory) {
 		t.Fatalf("err = %v, want ErrDirectory", err)
 	}
@@ -388,7 +388,7 @@ func TestProveSpendsOneBindOnALiveProvider(t *testing.T) {
 func TestProveSpendsNothingOnAnEmptyPassword(t *testing.T) {
 	svc := testService(t, deps{rows: []Provider{failingProvider(t)}})
 
-	_, err := svc.Prove(context.Background(), testTenantID, tenantIdpID, "alice", "")
+	_, err := svc.Prove(context.Background(), testTenantID, tenantIdpID, personID, "alice", "")
 	if !errors.Is(err, ErrWrongPassword) {
 		t.Fatalf("err = %v, want ErrWrongPassword", err)
 	}
@@ -397,20 +397,63 @@ func TestProveSpendsNothingOnAnEmptyPassword(t *testing.T) {
 	}
 }
 
-// TestBindKeyNamesNoIdentifier proves that the budget key carries the digest of
-// the identifier and never the address itself. Every operator who lists the
-// keyspace reads these keys.
-func TestBindKeyNamesNoIdentifier(t *testing.T) {
-	key := bindKey(testTenantID, "alice@corp.example")
+// TestFirstBindKeyNamesNoIdentifier covers the first bind, which names no
+// person. The key carries the digest of the identifier and never the address
+// itself, because every operator who lists the keyspace reads these keys.
+func TestFirstBindKeyNamesNoIdentifier(t *testing.T) {
+	key := bindKey(testTenantID, "", "alice@corp.example")
 
 	if strings.Contains(key, "alice") || strings.Contains(key, "corp.example") {
 		t.Fatalf("bindKey = %q, want no identifier in it", key)
 	}
-	if key == bindKey(testTenantID, "bob@corp.example") {
+	if key == bindKey(testTenantID, "", "bob@corp.example") {
 		t.Fatal("two identifiers share one budget key, want one key each")
 	}
-	if key != bindKey(testTenantID, "alice@corp.example") {
+	if key != bindKey(testTenantID, "", "alice@corp.example") {
 		t.Fatal("the key of one identifier changed between two reads")
+	}
+}
+
+// TestBindKeyNamesThePerson covers the key of a named person. A tenant matches
+// a username and an email address, so a key of the typed string gave one person
+// two counters of ten, and the real cap was twenty.
+func TestBindKeyNamesThePerson(t *testing.T) {
+	byUsername := bindKey(testTenantID, personID, "alice")
+
+	if byUsername != bindKey(testTenantID, personID, "alice@corp.example") {
+		t.Fatalf("bindKey = %q, want both forms of one identifier on one key", byUsername)
+	}
+	if byUsername == bindKey(testTenantID, testUserID, "alice") {
+		t.Fatal("two people share one budget key, want one key each")
+	}
+	if byUsername == bindKey(otherTenant, personID, "alice") {
+		t.Fatal("two tenants share one budget key, want one key each")
+	}
+	if byUsername == bindKey(testTenantID, "", "alice") {
+		t.Fatal("a named person and a first bind share one key, want one key each")
+	}
+}
+
+// TestProveSpendsOneBudgetForBothIdentifierForms covers the cap end to end. The
+// person types their username and then their email address, and the two binds
+// spend one counter.
+func TestProveSpendsOneBudgetForBothIdentifierForms(t *testing.T) {
+	svc := testService(t, deps{rows: []Provider{failingProvider(t)}})
+
+	for _, identifier := range []string{"alice", "alice@corp.example"} {
+		_, err := svc.Prove(
+			context.Background(), testTenantID, tenantIdpID, personID, identifier, "the-typed-password",
+		)
+		if !errors.Is(err, ErrDirectory) {
+			t.Fatalf("err = %v, want ErrDirectory", err)
+		}
+	}
+
+	if len(spentKeys) != 2 {
+		t.Fatalf("the two sign-ins spent %d binds, want two", len(spentKeys))
+	}
+	if spentKeys[0] != spentKeys[1] {
+		t.Fatalf("the two forms spent %q and %q, want one counter", spentKeys[0], spentKeys[1])
 	}
 }
 
@@ -420,7 +463,7 @@ func TestProveLogsNoPassword(t *testing.T) {
 	svc := testService(t, deps{rows: []Provider{failingProvider(t)}})
 
 	if _, err := svc.Prove(
-		context.Background(), testTenantID, tenantIdpID, "alice", "the-typed-password",
+		context.Background(), testTenantID, tenantIdpID, personID, "alice", "the-typed-password",
 	); err == nil {
 		t.Fatal("Prove answered no error, want a directory that refused the connection")
 	}

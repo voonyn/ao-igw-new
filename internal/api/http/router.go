@@ -1206,6 +1206,11 @@ func newSessionService(
 		// named anybody. A later bind changes no attribute, so a rename in the
 		// directory never arrives here.
 		//
+		// The session carries the person the identifier step named, and that id
+		// keys the bind budget. Both forms of one identifier therefore spend one
+		// counter. A first bind names nobody and passes an empty id, which the
+		// budget keys on the typed string instead. See identityprovider.bindKey.
+		//
 		// The email address of the directory entry comes back beside the person.
 		// It is the one Provision writes to a person the first bind creates, and
 		// it is what a session that named nobody at the identifier step carries
@@ -1213,7 +1218,7 @@ func newSessionService(
 		Bind: func(
 			ctx context.Context, tenantID, idpID, userID, identifier, password string,
 		) (session.Identity, error) {
-			person, err := prover.Prove(ctx, tenantID, idpID, identifier, password)
+			person, err := prover.Prove(ctx, tenantID, idpID, userID, identifier, password)
 			if err != nil {
 				return session.Identity{}, directoryError(err)
 			}
@@ -1262,6 +1267,9 @@ func newSessionService(
 // the entry the sign-in proves. A person who holds none is refused here, and no
 // search runs on an empty identifier.
 //
+// The budget is keyed on the person, so a re-proof and a sign-in of the same
+// person spend one counter.
+//
 // The typed password reaches Prove and nothing else.
 func directoryReProof(
 	bdb *bun.DB, rdb cache.Client, cipher *crypto.Cipher,
@@ -1308,7 +1316,7 @@ func directoryReProof(
 				logger.String("tenant_id", tenantID), logger.String("user_id", userID))
 			return user.ErrDirectoryUnavailable
 		}
-		_, err = prover.Prove(ctx, tenantID, idpID, username, plain)
+		_, err = prover.Prove(ctx, tenantID, idpID, userID, username, plain)
 		return accountDirectoryError(err)
 	}
 	return owns, reprove

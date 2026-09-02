@@ -406,6 +406,7 @@ var (
 	events     []audit.Event
 	rolledBack bool
 	spends     int
+	spentKeys  []string
 	logs       *observer.ObservedLogs
 )
 
@@ -415,7 +416,7 @@ func testService(t *testing.T, d deps) *Service {
 	log, logs = logger.NewObserved()
 	written, updated, deleted, claimed, unlinked, events, rolledBack = nil, nil, nil, nil, nil, nil, false
 	people, linked = nil, nil
-	spends = 0
+	spends, spentKeys = 0, nil
 
 	countWrites := func() int {
 		return len(written) + len(updated) + len(deleted) + len(claimed) +
@@ -517,11 +518,12 @@ func testService(t *testing.T, d deps) *Service {
 			}
 			return d.userOrg, nil
 		},
-		Allow: func(context.Context, string, int, time.Duration) (bool, error) {
+		Allow: func(_ context.Context, key string, _ int, _ time.Duration) (bool, error) {
 			if d.budgetBroken {
 				return false, errors.New("the cache is down")
 			}
 			spends++
+			spentKeys = append(spentKeys, key)
 			return !d.budgetSpent, nil
 		},
 		LocalOwners: func(context.Context, string) ([]tenant.LocalOwner, error) {
