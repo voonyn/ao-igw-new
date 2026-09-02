@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 
+import { accountMessage } from "@/lib/account-messages";
 import { Icon } from "../icons";
 import { Modal } from "../primitives";
 import { RecoveryCodesModal } from "./recovery-codes";
@@ -167,22 +168,14 @@ export function MfaManageModal({
 // manageMessage says why a change was refused. The view branches on the gateway
 // slug, never on its message, so a reworded message never changes what is shown.
 //
-// invalid_credentials is the wrong password, and it arrives as a 401. It is read
-// before the status, because a 401 here does not mean the portal session ended.
+// invalid_credentials is the wrong password, and it arrives as a 401. The shared
+// map is read before the status, because a 401 here does not mean the portal
+// session ended.
 function manageMessage(status: number, code: unknown): string {
-  if (code === "invalid_credentials") return "Current password is incorrect.";
-  // A person their organization's directory owns re-proves with a bind, so a
-  // directory that did not answer refuses the change. It is never a wrong
-  // password, and it must not read as one.
-  if (code === "directory_unavailable") {
-    return "Your organization's directory did not respond. Please try again in a moment.";
-  }
-  // No single directory entry proves the person. The state stays until somebody
-  // edits the directory, so the copy never asks them to try again.
-  if (code === "directory_no_entry") {
-    return "Your account is not linked to a single directory entry. Please tell your administrator.";
-  }
   if (code === "no_active_factor") return "Two-step verification is already off for this account.";
+  // The refusals of the re-proof step, shared with the passkey screen.
+  const shared = accountMessage(code);
+  if (shared) return shared;
   if (code === "invalid_input") return "Enter your current password.";
   if (status === 401) return "Your session is no longer valid.";
   if (status === 429) return "Too many attempts. Please wait a minute and try again.";

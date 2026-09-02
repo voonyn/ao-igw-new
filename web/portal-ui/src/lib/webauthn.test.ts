@@ -100,6 +100,14 @@ test("a broken directory account is not told to try again", function () {
   assert.doesNotMatch(message, /try again/i)
 })
 
+// The shared map is an object, and the slug arrives in a gateway body. A plain
+// index read would answer a function for a name every object inherits, and the
+// screen would render it.
+test("a slug every object inherits reads as unknown", function () {
+  assert.equal(passkeyMessage(400, "constructor"), "Something went wrong. Please try again.")
+  assert.equal(passkeyMessage(400, "toString"), "Something went wrong. Please try again.")
+})
+
 test("a status with no slug still maps", function () {
   assert.match(passkeyMessage(429, undefined), /wait/i)
   assert.match(passkeyMessage(404, undefined), /not available/i)

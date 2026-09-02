@@ -1,10 +1,15 @@
 // The browser half of the Passkey registration ceremony, and the copy for every
 // way it can fail.
 //
+// The import carries its explicit .ts extension, because `webauthn.test.ts` runs
+// this file under Node with no bundler.
+//
 // Nothing here reads inside the options or inside the answer. The options are
 // what the device signs over, so a field this file picked out and rebuilt would
 // change what the signature covers. The platform parses the one and serialises
 // the other, and this file carries both across whole.
+
+import { accountMessage } from "./account-messages.ts"
 
 // passkeysSupported says whether this browser can run the ceremony at all.
 //
@@ -75,21 +80,12 @@ export function passkeyMessage(status: number, code: unknown): string {
   }
   if (code === "passkey_duplicate") return "This device already has a passkey here."
   if (code === "passkey_not_found") return "That passkey is already gone. The list has been refreshed."
-  // The wrong password on a removal. It arrives as a 401 and does not mean the
-  // portal session ended, which is why it is read before the status.
-  if (code === "invalid_credentials") return "Current password is incorrect."
-  // A person their organization's directory owns re-proves with a bind, so a
-  // directory that did not answer refuses the removal. It is never a wrong
-  // password, and it must not read as one.
-  if (code === "directory_unavailable") {
-    return "Your organization's directory did not respond. Please try again in a moment."
-  }
-  // No single directory entry proves the person. The state stays until somebody
-  // edits the directory, so the copy never asks them to try again.
-  if (code === "directory_no_entry") {
-    return "Your account is not linked to a single directory entry. Please tell your administrator."
-  }
   if (code === "mfa_unavailable") return "Two-step verification is unavailable right now. Please try again in a moment."
+  // The refusals of the re-proof step, shared with every other screen that
+  // re-proves the person. They are read before the status, because
+  // `invalid_credentials` arrives as a 401 and the portal session is still good.
+  const shared = accountMessage(code)
+  if (shared) return shared
   // One helper serves the add, the rename and the removal, and each dialog caps
   // its own field in the browser. A gateway that still refuses the body means
   // something the person can see and fix, so the copy names no one field.
