@@ -54,6 +54,13 @@ export function messageForError(code: unknown): string {
       return "Please sign in again to continue."
     case "insufficient_factors":
       return "Additional verification is required."
+    // The directory that owns the identifier did not answer, so the password was
+    // never put to it. The state is transient, and the slug is paid for at the
+    // gateway so that this copy can name the directory: the person waits, and the
+    // one helpdesk that can tell them more is their organization's. The default
+    // below names nobody, and it is what this case exists to avoid.
+    case "directory_unavailable":
+      return "Your organization's directory did not respond. Please try again in a moment."
     // The password was proved, and the directory cannot create the account it
     // proved: the provider names no organization, or the entry carries no
     // username. Only an administrator can mend it, so the copy never says "try
