@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -13,8 +14,10 @@ import (
 
 	"github.com/gofiber/fiber/v3"
 
+	"alphaomega/identitygateway/internal/api/http/middlewares"
 	"alphaomega/identitygateway/internal/api/http/response"
 	"alphaomega/identitygateway/internal/audit"
+	"alphaomega/identitygateway/internal/oidc"
 	aocrypto "alphaomega/identitygateway/internal/platform/crypto"
 	"alphaomega/identitygateway/internal/platform/logger"
 	"alphaomega/identitygateway/internal/user"
@@ -1270,12 +1273,12 @@ func TestVerifyPassword_FirstBindCarriesTheEmail(t *testing.T) {
 		t.Fatalf("verify password: %v", err)
 	}
 
-	live, err := svc.Resolve(context.Background(), "tenant-1", upgraded.Token)
-	if err != nil {
-		t.Fatalf("resolve: %v", err)
+	status := sessionStatus(t, loginApp(t, svc), upgraded.Token)
+	if !status.Active {
+		t.Fatal("the status route answers a session that is not active")
 	}
-	if live.Email != directoryIdentifier {
-		t.Errorf("the session status answers %q, want %q", live.Email, directoryIdentifier)
+	if status.Email != directoryIdentifier {
+		t.Errorf("the session status answers %q, want %q", status.Email, directoryIdentifier)
 	}
 	// No credential travels with the email. The bind proved the password, and no
 	// field of the session holds it. The value is not printed on a failure.
@@ -1427,4 +1430,85 @@ func TestDirectoryRefusalsAnswerOneSlug(t *testing.T) {
 	if unavailable := answer(fmt.Errorf("%w: session s-1", ErrDirectoryUnavailable)); unavailable == wrong {
 		t.Fatal("a directory that did not answer reads as a wrong password, want a slug of its own")
 	}
+}
+
+// TestVerifyPassword_BindNamingAnotherPersonReplacesTheEmail covers a bind that
+// names somebody other than the person the identifier step found.
+//
+// The identifier step finds a person by username and writes their email onto the
+// session. The bind proves a directory entry whose Identity Link names another
+// person, and the sign-in carries on as the person the proof named. The session
+// must then carry the email of that person, because a session that named one
+// person and showed the address of another is what every screen below it reads.
+func TestVerifyPassword_BindNamingAnotherPersonReplacesTheEmail(t *testing.T) {
+	const linked = "linked@corp.example"
+	svc, st := directoryService(t, boundAs("user-a", linked))
+	opened := signedInAgainst(t, svc)
+
+	if _, _, err := svc.VerifyPassword(
+		context.Background(), "tenant-1", opened.Token, "the-directory-password"); err != nil {
+		t.Fatalf("verify password: %v", err)
+	}
+	if st.saved.UserID != "user-a" {
+		t.Fatalf("the session names %q, want the person the bind named", st.saved.UserID)
+	}
+	if st.saved.Email != linked {
+		t.Errorf("the session carries %q, want %q, the email of the person it names", st.saved.Email, linked)
+	}
+}
+
+// statusHost is the host the login routes of the test app answer on. The tenant
+// middleware refuses a host the issuer does not name, so the two agree.
+const statusHost = "login.example"
+
+// loginApp mounts the login routes over one service, the way the server mounts
+// them: the tenant middleware resolves the tenant of every request below.
+//
+// The consent screen and the finalize step are not driven here, so the seams
+// they read are nil.
+func loginApp(t *testing.T, svc *Service) *fiber.App {
+	t.Helper()
+
+	log, _ := logger.NewObserved()
+	lookup := func(context.Context, string) (middlewares.TenantContext, error) {
+		return middlewares.TenantContext{
+			TenantID: "tenant-1",
+			Config:   oidc.ProviderConfig{TenantID: "tenant-1", Issuer: "https://" + statusHost},
+		}, nil
+	}
+
+	app := fiber.New()
+	group := app.Group("/login/v1", middlewares.Tenant(lookup, "", log))
+	Routes(group, NewHandler(svc, nil, nil, log))
+	return app
+}
+
+// sessionStatus runs GET /session with one token and returns what the route
+// answered.
+func sessionStatus(t *testing.T, app *fiber.App, token string) StatusResponse {
+	t.Helper()
+
+	req := httptest.NewRequest(fiber.MethodGet, "http://"+statusHost+"/login/v1/session", nil)
+	req.Header.Set(fiber.HeaderAuthorization, "Bearer "+token)
+
+	res, err := app.Test(req)
+	if err != nil {
+		t.Fatalf("test request: %v", err)
+	}
+	defer res.Body.Close() //nolint:errcheck
+
+	if res.StatusCode != fiber.StatusOK {
+		t.Fatalf("the status route answers %d, want %d", res.StatusCode, fiber.StatusOK)
+	}
+	body, err := io.ReadAll(res.Body)
+	if err != nil {
+		t.Fatalf("read the answer: %v", err)
+	}
+	var envelope struct {
+		Data StatusResponse `json:"data"`
+	}
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		t.Fatalf("decode %s: %v", body, err)
+	}
+	return envelope.Data
 }

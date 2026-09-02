@@ -260,14 +260,28 @@ func (s *Service) VerifyPassword(
 	if err != nil {
 		return Opened{}, nil, err
 	}
-	live.UserID = person.UserID
-	// A first bind opens a session that names nobody, so the session carries no
-	// email either, and the bind is the only step that learns one. A session that
-	// already carries an email keeps it: a later bind writes no attribute of the
-	// person, so what the directory says now is not what the gateway holds.
-	if live.Email == "" {
+	// The email travels with the id, because a session that names one person and
+	// shows the address of another is what every screen below this step reads.
+	//
+	// A bind that changed the person writes their email too. The identifier step
+	// finds a person by username and writes their email, and the bind then proves
+	// a directory entry whose Identity Link names somebody else. A first bind is
+	// the same case with nobody on the left: the session carries no email, and the
+	// bind is the only step that learns one.
+	//
+	// A bind that named the person the session already held writes no email. It
+	// writes no attribute of the person, so what the directory says now is not
+	// what the gateway holds.
+	//
+	// A directory entry that carries no mail leaves the session with no email at
+	// all, and that is the answer. The address the session held belongs to the
+	// person the bind replaced, so keeping it is the fault this rule closes. A
+	// session that shows no address is the same state a first bind of such an
+	// entry already reaches.
+	if live.UserID != person.UserID || live.Email == "" {
 		live.Email = person.Email
 	}
+	live.UserID = person.UserID
 
 	steps, err := s.deps.Steps(ctx, tenantID, live.UserID)
 	if err != nil {
