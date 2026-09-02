@@ -176,9 +176,9 @@ var ErrDirectoryUnavailable = errors.New("the directory did not answer")
 // ErrDirectoryUnavailable.
 var ErrDirectoryMisconfigured = errors.New("the directory cannot create the person")
 
-// ErrTooManyBinds reports a person who spent their whole bind budget, or, on a
-// first bind, the typed identifier that spent it. The person waits out the
-// window, and the directory is not dialled.
+// ErrTooManyBinds reports a person who spent their whole bind budget, or the
+// typed identifier that spent it when the identifier step named nobody. The
+// person waits out the window, and the directory is not dialled.
 var ErrTooManyBinds = errors.New("too many directory binds")
 
 // LoginSession is the authority on one person's login. It is what the sealed

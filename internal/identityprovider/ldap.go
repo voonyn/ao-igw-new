@@ -54,9 +54,9 @@ var ErrDirectory = errors.New("the directory did not answer")
 // the caller is already authenticated. See docs/specs/0002-directory-sign-in.md.
 var ErrDisabled = errors.New("the identity provider is disabled")
 
-// ErrTooManyBinds reports a person who spent their whole bind budget, or, on a
-// first bind, the typed identifier that spent it. The directory is not dialled,
-// and the caller waits out the window.
+// ErrTooManyBinds reports a person who spent their whole bind budget, or the
+// typed identifier that spent it when the identifier step named nobody. The
+// directory is not dialled, and the caller waits out the window.
 var ErrTooManyBinds = errors.New("too many directory binds")
 
 // ErrBindUnavailable reports a bind budget nobody could read. Redis holds the
@@ -76,15 +76,18 @@ var ErrBindUnavailable = errors.New("the bind budget is unavailable")
 // handful of tries and nobody needs thirty.
 //
 // Ceiling: the key names the person the session already named, so both forms of
-// one identifier spend one counter. A first bind names nobody, and that one key
-// counts the typed string instead. Any caller can drive either key. Two things
-// follow. A spray across many identifiers still reaches the directory. Eleven
-// wrong guesses lock one named person out of the directory sign-in for the rest
-// of the window, and out of the portal re-proof with it: both spend the counter
-// of the person. The local password path has no budget, so this is the one
-// credential of this gateway that a stranger can spend. The refusal answers what
-// a wrong password answers, so the lockout says nothing about who the tenant
-// holds.
+// one identifier spend one counter. A typed form the identifier step cannot
+// resolve names nobody, and that one key counts the typed string instead. Such a
+// form still ends at a person, because the Identity Link names them after the
+// bind. A person addressable by an unresolvable form therefore keeps a second
+// counter of ten beside the counter of their person, and the cap on them is
+// twenty. Any caller can drive either key. Two things follow. A spray across
+// many identifiers still reaches the directory. Eleven wrong guesses lock one
+// named person out of the directory sign-in for the rest of the window, and out
+// of the portal re-proof with it: both spend the counter of the person. The
+// local password path has no budget, so this is the one credential of this
+// gateway that a stranger can spend. The refusal answers what a wrong password
+// answers, so the lockout says nothing about who the tenant holds.
 //
 // The key changed shape once, from the identifier to the person. The counters of
 // the old shape are stranded, and no migration reads them: each one expires
@@ -107,8 +110,14 @@ const (
 // an email address gave that person two identifier keys, and the real cap was
 // twice the number the comment above states.
 //
-// A first bind names nobody, so that path keeps the digest of the typed string.
-// It is the only stable handle that path holds.
+// A typed form the identifier step cannot resolve names nobody, so that path
+// keeps the digest of the typed string. It is the only stable handle that path
+// holds: the budget is spent before the bind, and the bind is the only step that
+// names this person.
+//
+// A first bind is one caller of the fallback and not the only one. A person the
+// Identity Link names after the bind reaches it too, and they hold a counter of
+// their own beside it. See the ceiling on bindLimit.
 //
 // The identifier is personal data, so the key carries its digest and never the
 // address itself. A Redis key is read by every operator who lists the keyspace.
@@ -259,8 +268,9 @@ func (s *Service) Bind(ctx context.Context, p Provider, identifier, password str
 // outage costing a person their budget is worth the second round trip.
 //
 // userID is the person the sign-in already named at the identifier step, and it
-// keys the budget. A first bind names nobody and passes an empty string. The
-// value never reaches the directory: the search runs on the identifier.
+// keys the budget. An identifier step that named nobody passes an empty string,
+// and the budget keys on the typed identifier instead. See bindKey. The value
+// never reaches the directory: the search runs on the identifier.
 //
 // The typed password reaches Bind and nothing else. No log line of this method
 // carries it, or the identifier, or the bind credential of the provider.
@@ -300,8 +310,8 @@ func (s *Service) Prove(
 }
 
 // spendBind spends one bind of the person's trailing-window budget, and refuses
-// the sign-in when nothing is left. A first bind names no person, and that one
-// spends the budget of the identifier they typed. See bindKey.
+// the sign-in when nothing is left. A sign-in whose identifier step named no
+// person spends the budget of the identifier they typed. See bindKey.
 //
 // A cache failure refuses the bind. Redis is only a cache elsewhere in this
 // gateway, and here it is the whole budget: a failure that let the bind through
@@ -324,8 +334,8 @@ func (s *Service) spendBind(ctx context.Context, tenantID, idpID, userID, identi
 		return nil
 	}
 
-	// user_id is empty on a first bind, which names nobody. The identifier that
-	// keyed that counter is personal data and stays out of the line.
+	// user_id is empty when the identifier step named nobody. The identifier
+	// that keyed that counter is personal data and stays out of the line.
 	s.log.Warn("refused a directory bind over the budget",
 		logger.String("tenant_id", tenantID), logger.String("idp_id", idpID),
 		logger.String("user_id", userID))

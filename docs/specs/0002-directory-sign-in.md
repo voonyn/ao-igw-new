@@ -254,6 +254,30 @@ any caller can drive with a fresh partial token.
 - Ceiling: the key caps one person, so both forms of one identifier spend one counter.
   A spray across many identifiers still reaches the directory. An IP key is the
   upgrade, and it is not built here.
+- A typed form the identifier step cannot resolve keeps a key of its own. Such a form
+  still ends at a person, because the Identity Link names them after the bind. A person
+  addressable by an unresolvable form therefore keeps a second counter, and the cap on
+  them is twice the number.
+
+#### The IP key is not due
+
+The IP key is the only key that caps the residual above, and it is still not built. The
+decision is recorded here so that a later reader does not re-open it without a new fact.
+
+- The residual doubles one counter. It does not uncap the path. A person addressable by
+  an unresolvable typed form holds two counters instead of one, and each one is small.
+- The cost is a whole office. A directory sign-in is the deployment shape where every
+  person of one Tenant leaves through one corporate egress address. An IP key of the
+  same size would refuse the eleventh bind of that address, so one person who typed a
+  wrong password would lock out every colleague behind the proxy.
+- No key available before the bind ties the unresolvable form to the person. The budget
+  is spent before the bind, and the bind is the only step that names them. Clearing the
+  counter after a bind that succeeded would not help, because a guesser never reaches
+  the bind.
+- What would change the decision: a real spray across many identifiers in production
+  logs, or a trusted client address the gateway can read per person rather than per
+  office. An IP key that ships must carry a limit of its own, far above the bind limit,
+  and it must be measured against one Tenant before it refuses anything.
 - The connection test carries a budget of its own, keyed by Tenant. It is an outbound
   call that an authenticated Console user drives.
 
@@ -476,7 +500,7 @@ above. This is a known gap.
 - Group membership, nested groups, and any Role that a directory decides.
 - The missing account lockout. It belongs to the local password path and it needs its
   own ticket.
-- An IP-keyed budget.
+- An IP-keyed budget. See "The IP key is not due" above for the decision and its cost.
 - An outbound agent for a directory that refuses to open a port.
 - Any change to `user_humans.di_user_uuid`. A Scan Verifier is not an Identity Provider.
 - Any change to `acr`, to the Assurance Level, or to the finalize gate.

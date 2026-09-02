@@ -397,10 +397,11 @@ func TestProveSpendsNothingOnAnEmptyPassword(t *testing.T) {
 	}
 }
 
-// TestFirstBindKeyNamesNoIdentifier covers the first bind, which names no
-// person. The key carries the digest of the identifier and never the address
-// itself, because every operator who lists the keyspace reads these keys.
-func TestFirstBindKeyNamesNoIdentifier(t *testing.T) {
+// TestUnnamedBindKeyCarriesNoIdentifier covers the fallback, which a sign-in
+// takes whenever the identifier step named no person. The key carries the digest
+// of the identifier and never the address itself, because every operator who
+// lists the keyspace reads these keys.
+func TestUnnamedBindKeyCarriesNoIdentifier(t *testing.T) {
 	key := bindKey(testTenantID, "", "alice@corp.example")
 
 	if strings.Contains(key, "alice") || strings.Contains(key, "corp.example") {
@@ -454,6 +455,36 @@ func TestProveSpendsOneBudgetForBothIdentifierForms(t *testing.T) {
 	}
 	if spentKeys[0] != spentKeys[1] {
 		t.Fatalf("the two forms spent %q and %q, want one counter", spentKeys[0], spentKeys[1])
+	}
+}
+
+// TestProveKeepsASecondCounterForAnUnresolvableForm pins the residual the person
+// key leaves. The person types a User Principal Name the identifier step cannot
+// resolve, so the bind names nobody and the budget keys on the typed string. The
+// Identity Link names the same person after that bind, and their next sign-in
+// spends the counter of the person. The two counters are separate, and no key
+// available before the bind can join them. See the ceiling on bindLimit and
+// docs/specs/0002-directory-sign-in.md.
+func TestProveKeepsASecondCounterForAnUnresolvableForm(t *testing.T) {
+	svc := testService(t, deps{rows: []Provider{failingProvider(t)}})
+
+	for _, c := range []struct{ userID, identifier string }{
+		{"", "alice@corp.example"},
+		{personID, "alice"},
+	} {
+		_, err := svc.Prove(
+			context.Background(), testTenantID, tenantIdpID, c.userID, c.identifier, "the-typed-password",
+		)
+		if !errors.Is(err, ErrDirectory) {
+			t.Fatalf("err = %v, want ErrDirectory", err)
+		}
+	}
+
+	if len(spentKeys) != 2 {
+		t.Fatalf("the two sign-ins spent %d binds, want two", len(spentKeys))
+	}
+	if spentKeys[0] == spentKeys[1] {
+		t.Fatalf("both sign-ins spent %q, want a counter each", spentKeys[0])
 	}
 }
 

@@ -1208,8 +1208,10 @@ func newSessionService(
 		//
 		// The session carries the person the identifier step named, and that id
 		// keys the bind budget. Both forms of one identifier therefore spend one
-		// counter. A first bind names nobody and passes an empty id, which the
-		// budget keys on the typed string instead. See identityprovider.bindKey.
+		// counter. An identifier step that named nobody passes an empty id, which
+		// the budget keys on the typed string instead. That form still ends at a
+		// person when the Identity Link names one, so such a person keeps a
+		// second counter. See identityprovider.bindKey.
 		//
 		// The email address of the directory entry comes back beside the person.
 		// It is the one Provision writes to a person the first bind creates, and
