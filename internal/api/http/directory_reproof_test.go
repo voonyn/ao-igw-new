@@ -131,7 +131,7 @@ func TestDirectoryOfCarriesABrokenRead(t *testing.T) {
 	}
 }
 
-// TestDirectoryReProverRefusals proves the three refusals the re-proof makes
+// TestDirectoryReProverRefusals proves the two refusals the re-proof makes
 // before any bind runs, and the state each one names.
 //
 // The empty username is the point. A directory owns the person, the row carries
@@ -139,26 +139,19 @@ func TestDirectoryOfCarriesABrokenRead(t *testing.T) {
 // answer is the permanent one and never `directory_unavailable`. See
 // .scratch/directory-sign-in/issues/25.
 func TestDirectoryReProverRefusals(t *testing.T) {
-	broken := errors.New("the read failed")
-
 	cases := []struct {
 		name     string
 		idpID    string
 		username string
-		read     error
 		want     error
 	}{
-		{"a broken read", "", "", broken, user.ErrDirectoryUnavailable},
-		{"no single directory", "", "alice", nil, user.ErrDirectoryNoEntry},
-		{"a person who holds no username", "idp-one", "", nil, user.ErrDirectoryNoEntry},
+		{"no single directory", "", "alice", user.ErrDirectoryNoEntry},
+		{"a person who holds no username", "idp-one", "", user.ErrDirectoryNoEntry},
 	}
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			reprove := directoryReProver(
-				func(context.Context, string, string) (string, string, error) {
-					return c.idpID, c.username, c.read
-				},
 				func(context.Context, string, string, string, string, string) (identityprovider.Identity, error) {
 					t.Error("the bind ran on a re-proof the guard must refuse")
 					return identityprovider.Identity{}, nil
@@ -166,11 +159,58 @@ func TestDirectoryReProverRefusals(t *testing.T) {
 				logger.New(),
 			)
 
-			err := reprove(t.Context(), reproveTenantID, reproveUserID, "the typed password")
+			err := reprove(t.Context(),
+				reproveTenantID, c.idpID, reproveUserID, c.username, "the typed password")
 			if !errors.Is(err, c.want) {
 				t.Errorf("the re-proof answered %v, want %v", err, c.want)
 			}
 		})
+	}
+}
+
+// TestOnePasswordProofResolvesTheDirectoryOnce proves the fix of ticket 28. One
+// portal password check reads the person row once and runs Provider Resolution
+// once.
+//
+// The predicate that decides the credential already names the Directory and the
+// username, so the re-proof resolves nothing. It binds on the answer that read
+// found.
+func TestOnePasswordProofResolvesTheDirectoryOnce(t *testing.T) {
+	var finds, resolves int
+	directory := directoryOf(
+		func(context.Context, string, string) (user.User, error) {
+			finds++
+			return claimedPerson(), nil
+		},
+		func(context.Context, string, string, string, string) (string, error) {
+			resolves++
+			return "idp-one", nil
+		},
+	)
+	account := user.NewAccountService(user.AccountDeps{
+		Credential: func(context.Context, string, string) (user.User, error) {
+			return claimedPerson(), nil
+		},
+		Directory: directory,
+		ProveDirectory: directoryReProver(
+			func(context.Context, string, string, string, string, string) (identityprovider.Identity, error) {
+				return identityprovider.Identity{}, nil
+			},
+			logger.New(),
+		),
+		Log: logger.New(),
+	})
+
+	actor := user.Actor{TenantID: reproveTenantID, UserID: reproveUserID}
+	if err := account.VerifyPassword(t.Context(), actor, "the typed password"); err != nil {
+		t.Fatalf("VerifyPassword: %v", err)
+	}
+
+	if finds != 1 {
+		t.Errorf("one password check read the person row %d times, want 1", finds)
+	}
+	if resolves != 1 {
+		t.Errorf("one password check ran Provider Resolution %d times, want 1", resolves)
 	}
 }
 
@@ -180,9 +220,6 @@ func TestDirectoryReProverRefusals(t *testing.T) {
 func TestDirectoryReProverBindsOnTheUsername(t *testing.T) {
 	var asked []string
 	reprove := directoryReProver(
-		func(context.Context, string, string) (string, string, error) {
-			return "idp-one", "alice", nil
-		},
 		func(_ context.Context, tenantID, idpID, userID, identifier, password string) (identityprovider.Identity, error) {
 			asked = append(asked, tenantID, idpID, userID, identifier, password)
 			return identityprovider.Identity{}, nil
@@ -190,7 +227,9 @@ func TestDirectoryReProverBindsOnTheUsername(t *testing.T) {
 		logger.New(),
 	)
 
-	if err := reprove(t.Context(), reproveTenantID, reproveUserID, "the typed password"); err != nil {
+	err := reprove(t.Context(),
+		reproveTenantID, "idp-one", reproveUserID, "alice", "the typed password")
+	if err != nil {
 		t.Fatalf("a proved re-proof answered %v, want nil", err)
 	}
 

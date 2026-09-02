@@ -322,11 +322,13 @@ func TestAccountRemove_CarriesTheBrokenAccountOfADirectoryPerson(t *testing.T) {
 		Credential: func(_ context.Context, tenantID, userID string) (user.User, error) {
 			return user.User{ID: userID, TenantID: tenantID, PasswordHash: ""}, nil
 		},
-		ProveDirectory: func(context.Context, string, string, string) error {
+		ProveDirectory: func(context.Context, string, string, string, string, string) error {
 			return user.ErrDirectoryNoEntry
 		},
-		DirectoryOwns: func(context.Context, string, string) (bool, error) { return true, nil },
-		Log:           log,
+		Directory: func(context.Context, string, string) (string, string, error) {
+			return "idp-one", "alice", nil
+		},
+		Log: log,
 	})
 
 	svc := NewService(Deps{
@@ -371,12 +373,14 @@ func TestAccountRemove_BindsForAClaimedPersonWhoKeepsAStaleHash(t *testing.T) {
 		Credential: func(_ context.Context, tenantID, userID string) (user.User, error) {
 			return user.User{ID: userID, TenantID: tenantID, PasswordHash: stale}, nil
 		},
-		ProveDirectory: func(_ context.Context, _, _, plain string) error {
+		ProveDirectory: func(_ context.Context, _, _, _, _, plain string) error {
 			bound = plain
 			return nil
 		},
-		DirectoryOwns: func(context.Context, string, string) (bool, error) { return true, nil },
-		Log:           log,
+		Directory: func(context.Context, string, string) (string, string, error) {
+			return "idp-one", "alice", nil
+		},
+		Log: log,
 	})
 
 	deleted := false

@@ -258,11 +258,11 @@ func mountMFA(
 	// Directory owns with the bind that signs them in. Such a person holds no
 	// local password hash, so a build without the re-proof would close both
 	// addresses to every one of them.
-	directoryOwns, reprove := directoryReProof(bdb, rdb, cipher, users, log)
+	directory, reprove := directoryReProof(bdb, rdb, cipher, users, log)
 	passwords := user.NewAccountService(user.AccountDeps{
 		Credential:     users.FindCredential,
 		ProveDirectory: reprove,
-		DirectoryOwns:  directoryOwns,
+		Directory:      directory,
 		Log:            log,
 	})
 
@@ -934,14 +934,14 @@ func mountAccount(
 	// one transaction, and the transaction runner joins the one already open.
 	users := user.NewRepository(bdb, log)
 
-	directoryOwns, reprove := directoryReProof(bdb, rdb, cipher, users, log)
+	directory, reprove := directoryReProof(bdb, rdb, cipher, users, log)
 	accountSvc := user.NewAccountService(user.AccountDeps{
 		UpdateProfile:  users.UpdateProfile,
 		Credential:     users.FindCredential,
 		SetPassword:    users.SetPassword,
 		CheckPassword:  policySvc.Enforce,
 		ProveDirectory: reprove,
-		DirectoryOwns:  directoryOwns,
+		Directory:      directory,
 		RevokeOthers: func(ctx context.Context, a user.Actor, exceptID string) error {
 			_, err := sessionSvc.RevokeOthers(ctx, session.Actor(a), exceptID)
 			return err
@@ -1247,12 +1247,15 @@ func newSessionService(
 }
 
 // directoryReProof composes the two answers the portal takes about the Directory
-// that proves one person: whether one does, and the bind that re-proves them.
+// that proves one person: which Directory does, and the bind that re-proves them.
 //
-// Both read one resolver, and that is the point. Provider Resolution decides the
+// One read answers both, and that is the point. Provider Resolution decides the
 // credential, and the two answers must never disagree: a person the first answer
 // sends to the bind, and the second refuses, holds four portal routes that are
-// shut on them for ever. See .scratch/directory-sign-in/issues/21.
+// shut on them for ever. The read names the provider and the username, and the
+// bind takes both from the caller, so a second resolution can never contradict
+// the first and never costs a second pair of reads. See
+// .scratch/directory-sign-in/issues/21 and issues/28.
 //
 // Two mounts build a user.AccountService. mountAccount serves the password
 // change and the Passkey removal, and mountMFA serves the TOTP disable and the
@@ -1290,43 +1293,26 @@ func directoryReProof(
 		Allow: rdb.AllowInWindow,
 		Log:   log,
 	})
-	directory := directoryOf(users.FindByID, resolver.Resolve)
-
-	owns := func(ctx context.Context, tenantID, userID string) (bool, error) {
-		idpID, _, err := directory(ctx, tenantID, userID)
-		return idpID != "", err
-	}
-
-	return owns, directoryReProver(directory, prover.Prove, log)
+	return directoryOf(users.FindByID, resolver.Resolve), directoryReProver(prover.Prove, log)
 }
 
-// directoryReProver builds the bind that re-proves one person, from the read
-// that names their Directory and the bind itself. Both are function values, so
-// the three refusals below are testable without a database and without a
-// directory.
+// directoryReProver builds the bind that re-proves one person, from the bind
+// itself. It is a function value, so the two refusals below are testable
+// without a directory.
 //
-// Two of the three are permanent. A person whom no single directory proves, and
-// a person a directory owns whose row carries no username, each hold an account
+// The user domain names the provider and the username, because the predicate
+// that decided the credential already read both. Nothing is resolved here. See
+// .scratch/directory-sign-in/issues/28.
+//
+// Both refusals are permanent. A person whom no single directory proves, and a
+// person a directory owns whose row carries no username, each hold an account
 // that only an administrator can mend. Both answer ErrDirectoryNoEntry, and
 // neither says "try again". See .scratch/directory-sign-in/issues/25.
-//
-// A read that broke is the transient one.
 func directoryReProver(
-	directory func(ctx context.Context, tenantID, userID string) (string, string, error),
 	prove func(ctx context.Context, tenantID, idpID, userID, identifier, plain string) (identityprovider.Identity, error),
 	log logger.Logger,
 ) user.DirectoryProver {
-	return func(ctx context.Context, tenantID, userID, plain string) error {
-		idpID, username, err := directory(ctx, tenantID, userID)
-		if err != nil {
-			// The read stops here, so it is logged here. Without this the user
-			// domain would read a database failure as a refused password and
-			// write a line that blames the directory for it.
-			log.Error("read the directory of a re-proof",
-				logger.String("tenant_id", tenantID),
-				logger.String("user_id", userID), logger.Err(err))
-			return user.ErrDirectoryUnavailable
-		}
+	return func(ctx context.Context, tenantID, idpID, userID, username, plain string) error {
 		if idpID == "" {
 			log.Warn("refused a re-proof that no single directory proves",
 				logger.String("tenant_id", tenantID), logger.String("user_id", userID))
@@ -1337,7 +1323,7 @@ func directoryReProver(
 				logger.String("tenant_id", tenantID), logger.String("user_id", userID))
 			return user.ErrDirectoryNoEntry
 		}
-		_, err = prove(ctx, tenantID, idpID, userID, username, plain)
+		_, err := prove(ctx, tenantID, idpID, userID, username, plain)
 		return accountDirectoryError(err)
 	}
 }

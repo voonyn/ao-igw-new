@@ -265,12 +265,14 @@ func TestAccountRemoveTakesTheBindOfAPersonTheDirectoryOwns(t *testing.T) {
 		Credential: func(_ context.Context, tenantID, userID string) (user.User, error) {
 			return user.User{ID: userID, TenantID: tenantID, PasswordHash: ""}, nil
 		},
-		ProveDirectory: func(_ context.Context, _, userID, plain string) error {
+		ProveDirectory: func(_ context.Context, _, _, userID, _, plain string) error {
 			bound = userID + ":" + plain
 			return nil
 		},
-		DirectoryOwns: func(context.Context, string, string) (bool, error) { return true, nil },
-		Log:           log,
+		Directory: func(context.Context, string, string) (string, string, error) {
+			return "idp-one", "alice", nil
+		},
+		Log: log,
 	})
 
 	svc, calls := manageService(active(), nil, nil)
@@ -307,11 +309,13 @@ func TestTheTwoRoutesCarryTheBrokenAccountOfADirectoryPerson(t *testing.T) {
 			Credential: func(_ context.Context, tenantID, userID string) (user.User, error) {
 				return user.User{ID: userID, TenantID: tenantID, PasswordHash: ""}, nil
 			},
-			ProveDirectory: func(context.Context, string, string, string) error {
+			ProveDirectory: func(context.Context, string, string, string, string, string) error {
 				return user.ErrDirectoryNoEntry
 			},
-			DirectoryOwns: func(context.Context, string, string) (bool, error) { return true, nil },
-			Log:           logger.New(),
+			Directory: func(context.Context, string, string) (string, string, error) {
+				return "idp-one", "alice", nil
+			},
+			Log: logger.New(),
 		})
 		return account.VerifyPassword(ctx,
 			user.Actor{TenantID: tenantID, UserID: userID}, plain)
@@ -367,12 +371,14 @@ func TestTheTwoRoutesBindForAClaimedPersonWhoKeepsAStaleHash(t *testing.T) {
 		Credential: func(_ context.Context, tenantID, userID string) (user.User, error) {
 			return user.User{ID: userID, TenantID: tenantID, PasswordHash: stale}, nil
 		},
-		ProveDirectory: func(_ context.Context, _, _, plain string) error {
+		ProveDirectory: func(_ context.Context, _, _, _, _, plain string) error {
 			bound = plain
 			return nil
 		},
-		DirectoryOwns: func(context.Context, string, string) (bool, error) { return true, nil },
-		Log:           logger.New(),
+		Directory: func(context.Context, string, string) (string, string, error) {
+			return "idp-one", "alice", nil
+		},
+		Log: logger.New(),
 	})
 	prove := func(ctx context.Context, tenantID, userID, plain string) error {
 		return account.VerifyPassword(ctx,

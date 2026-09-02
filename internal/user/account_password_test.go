@@ -245,7 +245,7 @@ func passwordService(t *testing.T, d passwordDeps) *AccountService {
 		CheckPassword: func(context.Context, string, string, string) error { return d.policyErr },
 		// No Directory proves this person, so the local compare answers every
 		// proof below. The directory re-proof has tests of its own.
-		DirectoryOwns: func(context.Context, string, string) (bool, error) { return false, nil },
+		Directory: func(context.Context, string, string) (string, string, error) { return "", "", nil },
 		RevokeOthers: func(_ context.Context, _ Actor, exceptID string) error {
 			if d.revokeErr != nil {
 				return d.revokeErr

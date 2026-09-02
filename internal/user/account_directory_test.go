@@ -76,13 +76,16 @@ func directoryService(t *testing.T, d directoryDeps) *AccountService {
 			revokedExcepts = append(revokedExcepts, exceptID)
 			return nil
 		},
-		ProveDirectory: func(_ context.Context, _, userID, plain string) error {
+		ProveDirectory: func(_ context.Context, _, _, userID, _, plain string) error {
 			provedUsers = append(provedUsers, userID)
 			provedPasswords = append(provedPasswords, plain)
 			return d.proveErr
 		},
-		DirectoryOwns: func(context.Context, string, string) (bool, error) {
-			return d.claimed, nil
+		Directory: func(context.Context, string, string) (string, string, error) {
+			if d.claimed {
+				return "idp-one", "alice", nil
+			}
+			return "", "", nil
 		},
 		InTx: func(ctx context.Context, fn func(context.Context) error) error {
 			if err := fn(ctx); err != nil {
@@ -344,8 +347,8 @@ func TestPasswordLocalSaysWhichCredentialThePersonHolds(t *testing.T) {
 func TestABrokenResolverReadStopsThePasswordProof(t *testing.T) {
 	broken := errors.New("the read of the identity providers failed")
 	svc := directoryService(t, directoryDeps{hash: localHash(t)})
-	svc.deps.DirectoryOwns = func(context.Context, string, string) (bool, error) {
-		return false, broken
+	svc.deps.Directory = func(context.Context, string, string) (string, string, error) {
+		return "", "", broken
 	}
 
 	if err := svc.VerifyPassword(t.Context(), person, currentPassword); !errors.Is(err, broken) {

@@ -76,18 +76,27 @@ type (
 	PasswordChecker func(ctx context.Context, tenantID, orgID, plain string) error
 
 	// DirectoryProver proves one password against the Directory that owns a
-	// person. identityprovider.Service.Prove has this shape, once the
-	// composition root names the provider and the username the bind searches on.
+	// person. identityprovider.Service.Prove has this shape, and the strings run
+	// in that order.
+	//
+	// The caller names the provider and the username, because DirectoryResolver
+	// already found both. A prover that resolved them again would read the person
+	// and the providers a second time on every password check, for the answer the
+	// first read gave. See .scratch/directory-sign-in/issues/28.
 	//
 	// It answers nil on a match, ErrDirectoryUnavailable when no directory could
 	// answer, ErrDirectoryNoEntry when no single directory entry proves the
 	// person, and any other error for a refusal. The password never reaches a log
 	// line of this domain.
-	DirectoryProver func(ctx context.Context, tenantID, userID, plain string) error
+	DirectoryProver func(ctx context.Context, tenantID, idpID, userID, username, plain string) error
 
-	// DirectoryResolver reports whether a Directory proves one person. Provider
-	// Resolution answers it, and the composition root runs the same resolver the
-	// sign-in runs, so one question decides the credential in both places.
+	// DirectoryResolver names the Directory that proves one person, beside the
+	// username the bind searches on. Provider Resolution answers it, and the
+	// composition root runs the same resolver the sign-in runs, so one question
+	// decides the credential in both places.
+	//
+	// An empty provider id means that no single Directory proves the person, which
+	// is what a local account answers.
 	//
 	// It reads the person and never a typed string. The portal holds no typed
 	// identifier: the access token named the person, and the resolver matches the
@@ -96,7 +105,7 @@ type (
 	// A read that broke is an error. It stops the request, the way a broken read
 	// of the same resolver stops the sign-in, so no re-proof ever falls back to a
 	// local hash that a domain claim took out of service.
-	DirectoryResolver func(ctx context.Context, tenantID, userID string) (bool, error)
+	DirectoryResolver func(ctx context.Context, tenantID, userID string) (string, string, error)
 
 	// SessionRevoker ends every login session of one person except the one
 	// named, and the grants those sessions fanned out to.
@@ -118,13 +127,13 @@ type AccountDeps struct {
 	// wherever the local password does not prove the person. See passwordLocal.
 	ProveDirectory DirectoryProver
 
-	// DirectoryOwns says whether a Directory proves the person, which is what
-	// decides the credential every password proof of this service runs.
+	// Directory names the Directory that proves the person, which is what decides
+	// the credential every password proof of this service runs.
 	//
 	// The stored hash cannot decide it. A domain claim routes a person the tenant
 	// already held, and the claim writes no row, so that person keeps the hash
 	// the claim retired. See passwordLocal.
-	DirectoryOwns DirectoryResolver
+	Directory DirectoryResolver
 
 	InTx  db.TxRunner
 	Audit *audit.Recorder
@@ -208,7 +217,7 @@ func (s *AccountService) ChangePassword(
 	if err != nil {
 		return s.readCredential(a, err)
 	}
-	local, err := s.passwordLocal(ctx, a, row.PasswordHash)
+	local, _, _, err := s.passwordLocal(ctx, a, row.PasswordHash)
 	if err != nil {
 		return err
 	}
@@ -296,15 +305,22 @@ func (s *AccountService) PasswordLocal(ctx context.Context, a Actor) (bool, erro
 	if err != nil {
 		return false, s.readCredential(a, err)
 	}
-	return s.passwordLocal(ctx, a, row.PasswordHash)
+	local, _, _, err := s.passwordLocal(ctx, a, row.PasswordHash)
+	return local, err
 }
 
-// passwordLocal reports whether the local password proves this person.
+// passwordLocal reports whether the local password proves this person, beside
+// the Directory that proves them and the username a bind searches on.
 //
 // One predicate answers three questions: which control the portal renders,
 // which password change the service refuses, and which proof a re-proof runs.
 // Three copies of it would drift, and the portal would render a control that
 // always refuses.
+//
+// It carries the provider id and the username out, so the re-proof binds on the
+// answer this read found. A re-proof that resolved them again would read the
+// person and the providers twice for one password check. See
+// .scratch/directory-sign-in/issues/28.
 //
 // Two states answer false. A Directory proves the person, whatever the
 // password_hash column holds: Provider Resolution case 1 routes a person whose
@@ -315,12 +331,14 @@ func (s *AccountService) PasswordLocal(ctx context.Context, a Actor) (bool, erro
 // The second state keeps the empty value away from bcrypt. It would trip
 // crypto.ErrMalformedHash and write an error line that says the stored hash
 // cannot be read, when nothing is wrong with it.
-func (s *AccountService) passwordLocal(ctx context.Context, a Actor, hash string) (bool, error) {
-	owned, err := s.deps.DirectoryOwns(ctx, a.TenantID, a.UserID)
+func (s *AccountService) passwordLocal(
+	ctx context.Context, a Actor, hash string,
+) (bool, string, string, error) {
+	idpID, username, err := s.deps.Directory(ctx, a.TenantID, a.UserID)
 	if err != nil {
-		return false, s.fail(a.TenantID, a.UserID, "read the directory that owns the person", err)
+		return false, "", "", s.fail(a.TenantID, a.UserID, "read the directory that owns the person", err)
 	}
-	return !owned && hash != "", nil
+	return idpID == "" && hash != "", idpID, username, nil
 }
 
 // readCredential answers a failed credential read.
@@ -344,12 +362,12 @@ func (s *AccountService) readCredential(a Actor, err error) error {
 //
 // The password never reaches a log line.
 func (s *AccountService) checkPassword(ctx context.Context, a Actor, hash, plain string) error {
-	local, err := s.passwordLocal(ctx, a, hash)
+	local, idpID, username, err := s.passwordLocal(ctx, a, hash)
 	if err != nil {
 		return err
 	}
 	if !local {
-		return s.proveDirectory(ctx, a, plain)
+		return s.proveDirectory(ctx, a, idpID, username, plain)
 	}
 	return s.compareLocal(a, hash, plain)
 }
@@ -387,10 +405,17 @@ func (s *AccountService) compareLocal(a Actor, hash, plain string) error {
 // that. Neither ever reads as a wrong password. Every other failure reads as a
 // refused password, which is what a wrong bind is.
 //
+// The provider id and the username come from the predicate that decided the
+// credential, so nothing is resolved again here. An empty provider id reaches
+// the prover as it is, and the prover refuses it: the person holds no local
+// hash, and no single Directory proves them either.
+//
 // The password never reaches a log line, and the directory layer already logged
 // whatever it saw.
-func (s *AccountService) proveDirectory(ctx context.Context, a Actor, plain string) error {
-	err := s.deps.ProveDirectory(ctx, a.TenantID, a.UserID, plain)
+func (s *AccountService) proveDirectory(
+	ctx context.Context, a Actor, idpID, username, plain string,
+) error {
+	err := s.deps.ProveDirectory(ctx, a.TenantID, idpID, a.UserID, username, plain)
 	switch {
 	case err == nil:
 		return nil
