@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"alphaomega/identitygateway/internal/audit"
+	"alphaomega/identitygateway/internal/platform/crypto"
 	"alphaomega/identitygateway/internal/platform/logger"
 	"alphaomega/identitygateway/internal/user"
 )
@@ -324,7 +325,8 @@ func TestAccountRemove_CarriesTheBrokenAccountOfADirectoryPerson(t *testing.T) {
 		ProveDirectory: func(context.Context, string, string, string) error {
 			return user.ErrDirectoryNoEntry
 		},
-		Log: log,
+		DirectoryOwns: func(context.Context, string, string) (bool, error) { return true, nil },
+		Log:           log,
 	})
 
 	svc := NewService(Deps{
@@ -343,5 +345,64 @@ func TestAccountRemove_CarriesTheBrokenAccountOfADirectoryPerson(t *testing.T) {
 	err := svc.AccountRemove(t.Context(), testTenantID, who, "AQID", "the-directory-password")
 	if !errors.Is(err, user.ErrDirectoryNoEntry) {
 		t.Fatalf("the removal answered %v, want %v", err, user.ErrDirectoryNoEntry)
+	}
+}
+
+// TestAccountRemove_BindsForAClaimedPersonWhoKeepsAStaleHash proves the seam for
+// the second person the Directory owns: the one a domain claim routes.
+//
+// Provider Resolution case 1 claims the email domain of a person the tenant
+// already held. The claim writes no row, so password_hash keeps the value it
+// held, and the bind signs the person in from that moment. A compare against the
+// stale hash would refuse the password that signs them in, and this removal
+// would shut on them.
+//
+// See .scratch/directory-sign-in/issues/21.
+func TestAccountRemove_BindsForAClaimedPersonWhoKeepsAStaleHash(t *testing.T) {
+	stale, err := crypto.HashPassword("the-retired-local-password")
+	if err != nil {
+		t.Fatalf("hash the retired local password: %v", err)
+	}
+
+	log := logger.New()
+	bound := ""
+	account := user.NewAccountService(user.AccountDeps{
+		// The person keeps every column they had, the hash included.
+		Credential: func(_ context.Context, tenantID, userID string) (user.User, error) {
+			return user.User{ID: userID, TenantID: tenantID, PasswordHash: stale}, nil
+		},
+		ProveDirectory: func(_ context.Context, _, _, plain string) error {
+			bound = plain
+			return nil
+		},
+		DirectoryOwns: func(context.Context, string, string) (bool, error) { return true, nil },
+		Log:           log,
+	})
+
+	deleted := false
+	svc := NewService(Deps{
+		VerifyPassword: func(ctx context.Context, tenantID, userID, plain string) error {
+			return account.VerifyPassword(ctx,
+				user.Actor{TenantID: tenantID, UserID: userID}, plain)
+		},
+		Delete: func(context.Context, string, string, []byte) error {
+			deleted = true
+			return nil
+		},
+		InTx:  func(ctx context.Context, run func(context.Context) error) error { return run(ctx) },
+		Audit: audit.NewRecorder(func(context.Context, audit.Event) error { return nil }, log),
+		Log:   log,
+	})
+
+	who := Principal{UserID: testUserID}
+	if err := svc.AccountRemove(
+		t.Context(), testTenantID, who, "AQID", "the-directory-password"); err != nil {
+		t.Fatalf("the removal answered %v", err)
+	}
+	if bound != "the-directory-password" {
+		t.Errorf("the directory was asked %q, want the password the person typed", bound)
+	}
+	if !deleted {
+		t.Error("the passkey was not removed")
 	}
 }

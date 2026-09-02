@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"alphaomega/identitygateway/internal/audit"
+	"alphaomega/identitygateway/internal/platform/crypto"
 	"alphaomega/identitygateway/internal/platform/logger"
 	"alphaomega/identitygateway/internal/user"
 )
@@ -268,7 +269,8 @@ func TestAccountRemoveTakesTheBindOfAPersonTheDirectoryOwns(t *testing.T) {
 			bound = userID + ":" + plain
 			return nil
 		},
-		Log: log,
+		DirectoryOwns: func(context.Context, string, string) (bool, error) { return true, nil },
+		Log:           log,
 	})
 
 	svc, calls := manageService(active(), nil, nil)
@@ -308,7 +310,8 @@ func TestTheTwoRoutesCarryTheBrokenAccountOfADirectoryPerson(t *testing.T) {
 			ProveDirectory: func(context.Context, string, string, string) error {
 				return user.ErrDirectoryNoEntry
 			},
-			Log: logger.New(),
+			DirectoryOwns: func(context.Context, string, string) (bool, error) { return true, nil },
+			Log:           logger.New(),
 		})
 		return account.VerifyPassword(ctx,
 			user.Actor{TenantID: tenantID, UserID: userID}, plain)
@@ -338,6 +341,75 @@ func TestTheTwoRoutesCarryTheBrokenAccountOfADirectoryPerson(t *testing.T) {
 		}
 		if calls.saved != nil {
 			t.Error("the codes were replaced for an account no directory entry proves")
+		}
+	})
+}
+
+// TestTheTwoRoutesBindForAClaimedPersonWhoKeepsAStaleHash proves the seam for
+// the second person the Directory owns: the one a domain claim routes.
+//
+// Provider Resolution case 1 claims the email domain of a person the tenant
+// already held. The claim writes no row, so password_hash keeps the value it
+// held, and the bind signs the person in from that moment. A compare against the
+// stale hash would refuse the password that signs them in, and both destructive
+// addresses of this module would shut on them.
+//
+// See .scratch/directory-sign-in/issues/21.
+func TestTheTwoRoutesBindForAClaimedPersonWhoKeepsAStaleHash(t *testing.T) {
+	stale, err := crypto.HashPassword("the-retired-local-password")
+	if err != nil {
+		t.Fatalf("hash the retired local password: %v", err)
+	}
+
+	bound := ""
+	account := user.NewAccountService(user.AccountDeps{
+		// The person keeps every column they had, the hash included.
+		Credential: func(_ context.Context, tenantID, userID string) (user.User, error) {
+			return user.User{ID: userID, TenantID: tenantID, PasswordHash: stale}, nil
+		},
+		ProveDirectory: func(_ context.Context, _, _, plain string) error {
+			bound = plain
+			return nil
+		},
+		DirectoryOwns: func(context.Context, string, string) (bool, error) { return true, nil },
+		Log:           logger.New(),
+	})
+	prove := func(ctx context.Context, tenantID, userID, plain string) error {
+		return account.VerifyPassword(ctx,
+			user.Actor{TenantID: tenantID, UserID: userID}, plain)
+	}
+
+	t.Run("the second factor disable", func(t *testing.T) {
+		bound = ""
+		svc, calls := manageService(active(), nil, nil)
+		svc.deps.VerifyPassword = prove
+
+		if err := svc.AccountRemove(
+			t.Context(), statusTenantID, manager(), "the-directory-password"); err != nil {
+			t.Fatalf("AccountRemove: %v", err)
+		}
+		if bound != "the-directory-password" {
+			t.Errorf("the directory was asked %q, want the password the person typed", bound)
+		}
+		if !calls.cleared {
+			t.Error("the factor was not cleared")
+		}
+	})
+
+	t.Run("the recovery code regeneration", func(t *testing.T) {
+		bound = ""
+		svc, calls := manageService(active(), nil, nil)
+		svc.deps.VerifyPassword = prove
+
+		if _, err := svc.AccountReplaceRecoveryCodes(
+			t.Context(), statusTenantID, manager(), "the-directory-password"); err != nil {
+			t.Fatalf("AccountReplaceRecoveryCodes: %v", err)
+		}
+		if bound != "the-directory-password" {
+			t.Errorf("the directory was asked %q, want the password the person typed", bound)
+		}
+		if calls.saved == nil {
+			t.Error("the codes were not replaced")
 		}
 	})
 }

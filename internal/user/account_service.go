@@ -19,8 +19,11 @@ import (
 var ErrBadPassword = errors.New("current password is wrong")
 
 // ErrPasswordNotLocal reports a password change on an account the Directory
-// owns. Such an account holds no local password hash, and the directory holds
-// the rules, so nothing this gateway writes would reach the credential.
+// owns. The directory holds the credential and the rules, so nothing this
+// gateway writes would reach the password that signs the person in.
+//
+// A stale hash changes nothing. A domain claim routes a person the tenant
+// already held, and the column that claim retired is not a password to replace.
 //
 // The portal reads the same fact from PasswordLocal and hides the control, so a
 // person meets this refusal only when the account changed under an open screen.
@@ -72,14 +75,27 @@ type (
 	PasswordChecker func(ctx context.Context, tenantID, orgID, plain string) error
 
 	// DirectoryProver proves one password against the Directory that owns a
-	// person. identityprovider.Service.ProveOwner has this shape, once the
-	// composition root reads the username the bind searches on.
+	// person. identityprovider.Service.Prove has this shape, once the
+	// composition root names the provider and the username the bind searches on.
 	//
 	// It answers nil on a match, ErrDirectoryUnavailable when no directory could
 	// answer, ErrDirectoryNoEntry when no single directory entry proves the
 	// person, and any other error for a refusal. The password never reaches a log
 	// line of this domain.
 	DirectoryProver func(ctx context.Context, tenantID, userID, plain string) error
+
+	// DirectoryResolver reports whether a Directory proves one person. Provider
+	// Resolution answers it, and the composition root runs the same resolver the
+	// sign-in runs, so one question decides the credential in both places.
+	//
+	// It reads the person and never a typed string. The portal holds no typed
+	// identifier: the access token named the person, and the resolver matches the
+	// claimed domains against the email address the tenant holds for them.
+	//
+	// A read that broke is an error. It stops the request, the way a broken read
+	// of the same resolver stops the sign-in, so no re-proof ever falls back to a
+	// local hash that a domain claim took out of service.
+	DirectoryResolver func(ctx context.Context, tenantID, userID string) (bool, error)
 
 	// SessionRevoker ends every login session of one person except the one
 	// named, and the grants those sessions fanned out to.
@@ -98,8 +114,16 @@ type AccountDeps struct {
 	RevokeOthers  SessionRevoker
 
 	// ProveDirectory is the re-proof of a person the Directory owns. It runs
-	// wherever the stored hash is empty, which is what such a person holds.
+	// wherever the local password does not prove the person. See passwordLocal.
 	ProveDirectory DirectoryProver
+
+	// DirectoryOwns says whether a Directory proves the person, which is what
+	// decides the credential every password proof of this service runs.
+	//
+	// The stored hash cannot decide it. A domain claim routes a person the tenant
+	// already held, and the claim writes no row, so that person keeps the hash
+	// the claim retired. See passwordLocal.
+	DirectoryOwns DirectoryResolver
 
 	InTx  db.TxRunner
 	Audit *audit.Recorder
@@ -183,16 +207,23 @@ func (s *AccountService) ChangePassword(
 	if err != nil {
 		return s.readCredential(a, err)
 	}
+	local, err := s.passwordLocal(ctx, a, row.PasswordHash)
+	if err != nil {
+		return err
+	}
 	// The Directory owns the credential and the rules that govern it, so there is
 	// no local password to replace and no policy of this gateway that applies.
 	// The refusal comes before the proof, because a person who cannot change a
 	// password here must not be asked to prove one first.
-	if row.PasswordHash == "" {
+	//
+	// A person a domain claim routes reads it too, stale hash and all. Writing
+	// that column would leave them a password no sign-in ever reads.
+	if !local {
 		s.log.Warn("refused a password change on an account the directory owns",
 			logger.String("tenant_id", a.TenantID), logger.String("user_id", a.UserID))
 		return fmt.Errorf("%w: tenant %s, user %s", ErrPasswordNotLocal, a.TenantID, a.UserID)
 	}
-	if err := s.checkPassword(ctx, a, row.PasswordHash, body.CurrentPassword); err != nil {
+	if err := s.compareLocal(a, row.PasswordHash, body.CurrentPassword); err != nil {
 		return err
 	}
 
@@ -264,7 +295,31 @@ func (s *AccountService) PasswordLocal(ctx context.Context, a Actor) (bool, erro
 	if err != nil {
 		return false, s.readCredential(a, err)
 	}
-	return row.PasswordHash != "", nil
+	return s.passwordLocal(ctx, a, row.PasswordHash)
+}
+
+// passwordLocal reports whether the local password proves this person.
+//
+// One predicate answers three questions: which control the portal renders,
+// which password change the service refuses, and which proof a re-proof runs.
+// Three copies of it would drift, and the portal would render a control that
+// always refuses.
+//
+// Two states answer false. A Directory proves the person, whatever the
+// password_hash column holds: Provider Resolution case 1 routes a person whose
+// email domain a live active provider claims, the claim writes no row, and the
+// hash it retired stays behind. And the person holds no hash at all, which is
+// what the first bind creates.
+//
+// The second state keeps the empty value away from bcrypt. It would trip
+// crypto.ErrMalformedHash and write an error line that says the stored hash
+// cannot be read, when nothing is wrong with it.
+func (s *AccountService) passwordLocal(ctx context.Context, a Actor, hash string) (bool, error) {
+	owned, err := s.deps.DirectoryOwns(ctx, a.TenantID, a.UserID)
+	if err != nil {
+		return false, s.fail(a.TenantID, a.UserID, "read the directory that owns the person", err)
+	}
+	return !owned && hash != "", nil
 }
 
 // readCredential answers a failed credential read.
@@ -279,23 +334,34 @@ func (s *AccountService) readCredential(a Actor, err error) error {
 	return s.fail(a.TenantID, a.UserID, "read the credential", err)
 }
 
-// checkPassword proves plain against the credential the account holds now.
+// checkPassword proves plain against the credential that signs this person in.
 //
-// An empty hash is not a broken hash. A person the Directory owns holds no local
-// password, so an empty hash is what such a person stores, and the bind proves
-// them. Without this branch the empty value reaches bcrypt, trips
-// ErrMalformedHash, and writes an error line that says the stored hash cannot be
-// read when nothing is wrong with it.
+// Provider Resolution decides which credential that is, and the stored hash
+// never does. A domain claim routes a person the tenant already held, and it
+// writes no row, so that person keeps a hash no sign-in reads. A compare against
+// it would refuse the very password that signs them in.
+//
+// The password never reaches a log line.
+func (s *AccountService) checkPassword(ctx context.Context, a Actor, hash, plain string) error {
+	local, err := s.passwordLocal(ctx, a, hash)
+	if err != nil {
+		return err
+	}
+	if !local {
+		return s.proveDirectory(ctx, a, plain)
+	}
+	return s.compareLocal(a, hash, plain)
+}
+
+// compareLocal proves plain against the stored hash of a person the local
+// password signs in.
 //
 // A stored hash that cannot be parsed is a defect of the credential, not a wrong
 // password. The caller reads the same refusal either way, and the log is where
 // the two are told apart.
 //
 // The password never reaches a log line.
-func (s *AccountService) checkPassword(ctx context.Context, a Actor, hash, plain string) error {
-	if hash == "" {
-		return s.proveDirectory(ctx, a, plain)
-	}
+func (s *AccountService) compareLocal(a Actor, hash, plain string) error {
 	if err := crypto.VerifyPassword(hash, plain); err != nil {
 		if errors.Is(err, crypto.ErrMalformedHash) {
 			s.log.Error("the stored password hash of the account cannot be read",
@@ -310,10 +376,10 @@ func (s *AccountService) checkPassword(ctx context.Context, a Actor, hash, plain
 // proveDirectory re-proves a person the Directory owns, with the bind that signs
 // them in.
 //
-// The rule is one rule: prove the credential that signs you in. A person the
-// Directory owns holds no local password, so a bcrypt compare here would refuse
-// every one of them, and the destructive portal routes would be closed to them
-// for ever.
+// The rule is one rule: prove the credential that signs you in. A bcrypt compare
+// here would refuse every person the Directory owns, and the destructive portal
+// routes would be closed to them for ever: one such person holds no local hash,
+// and the next holds the hash a domain claim retired.
 //
 // Two states travel back as themselves. A directory that could not answer says
 // service unavailable, and a person whom no single directory entry proves says

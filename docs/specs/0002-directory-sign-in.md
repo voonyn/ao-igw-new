@@ -336,11 +336,17 @@ owner. The first one runs in three places, and the bullet under it says why.
   passkey removal at `internal/passkey/account_service.go:147`.
 - A person the directory owns re-proves with a **bind**, the same credential they signed
   in with. One rule serves everybody: prove the credential that signs you in.
-- **Add the missing empty-hash guard to `checkPassword` in any case.** It has none
-  today, so an empty hash reaches bcrypt, trips `crypto.ErrMalformedHash`, writes an
-  `error` line that says the stored hash cannot be read, and answers 401. The sign-in
-  path guards exactly this at `internal/session/service.go:237-239`. One line in the
-  shared function beats four call-site guards.
+- **Provider Resolution decides the credential, and the stored hash never does.**
+  Case 1 routes a person whose email domain a live active provider claims, and the
+  claim writes no row, so that person keeps the hash the claim retired. A compare
+  against it would refuse the password that signs them in. `passwordLocal` asks the
+  resolver the question the sign-in asks.
+- **An empty hash routes to the bind as well.** It is what the person the first bind
+  created holds. Without that guard the empty value reaches bcrypt, trips
+  `crypto.ErrMalformedHash`, writes an `error` line that says the stored hash cannot
+  be read, and answers 401. The sign-in path guards exactly this at
+  `internal/session/service.go:237-239`. One predicate in the shared function beats
+  four call-site guards.
 - The password change and the forgotten-password flow refuse for that person, with a
   slug of their own.
 - The password policy knobs govern nothing for a person the directory owns. The
@@ -446,7 +452,8 @@ the fake instead of the wire behaviour that carries every real defect.
   Identity Link, and no `idp.linked` row.
 - The three guard rails, each with the row it refuses to leave behind, and the domain
   claim that would take the last local `IAM_OWNER` with it.
-- The portal: the bind re-proof on TOTP disable, and the empty-hash guard.
+- The portal: the bind re-proof on TOTP disable, the empty hash, and the person a
+  domain claim routes with a stale hash.
 - A person the directory owns is offered and challenged for the same Second Factors.
 - The repository, on the existing integration-tagged tests: the cipher round trip, the
   two-level resolution, the domain unique key, and the tenant scope.

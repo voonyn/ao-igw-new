@@ -258,9 +258,11 @@ func mountMFA(
 	// Directory owns with the bind that signs them in. Such a person holds no
 	// local password hash, so a build without the re-proof would close both
 	// addresses to every one of them.
+	directoryOwns, reprove := directoryReProof(bdb, rdb, cipher, users, log)
 	passwords := user.NewAccountService(user.AccountDeps{
 		Credential:     users.FindCredential,
-		ProveDirectory: directoryReProof(bdb, rdb, cipher, users, log),
+		ProveDirectory: reprove,
+		DirectoryOwns:  directoryOwns,
 		Log:            log,
 	})
 
@@ -932,12 +934,14 @@ func mountAccount(
 	// one transaction, and the transaction runner joins the one already open.
 	users := user.NewRepository(bdb, log)
 
+	directoryOwns, reprove := directoryReProof(bdb, rdb, cipher, users, log)
 	accountSvc := user.NewAccountService(user.AccountDeps{
 		UpdateProfile:  users.UpdateProfile,
 		Credential:     users.FindCredential,
 		SetPassword:    users.SetPassword,
 		CheckPassword:  policySvc.Enforce,
-		ProveDirectory: directoryReProof(bdb, rdb, cipher, users, log),
+		ProveDirectory: reprove,
+		DirectoryOwns:  directoryOwns,
 		RevokeOthers: func(ctx context.Context, a user.Actor, exceptID string) error {
 			_, err := sessionSvc.RevokeOthers(ctx, session.Actor(a), exceptID)
 			return err
@@ -1235,8 +1239,13 @@ func newSessionService(
 	})
 }
 
-// directoryReProof composes the re-proof of a person the Directory owns: the
-// bind the four portal routes run wherever the stored password hash is empty.
+// directoryReProof composes the two answers the portal takes about the Directory
+// that proves one person: whether one does, and the bind that re-proves them.
+//
+// Both read one resolver, and that is the point. Provider Resolution decides the
+// credential, and the two answers must never disagree: a person the first answer
+// sends to the bind, and the second refuses, holds four portal routes that are
+// shut on them for ever. See .scratch/directory-sign-in/issues/21.
 //
 // Two mounts build a user.AccountService. mountAccount serves the password
 // change and the Passkey removal, and mountMFA serves the TOTP disable and the
@@ -1244,47 +1253,65 @@ func newSessionService(
 // that ran on one of them and panicked on the other is exactly the drift two
 // builds invite.
 //
-// The provider service carries the three reads a re-proof takes and nothing
-// else: the provider row, the links of the person, and the bind budget. The
-// budget lives in Redis alone, and a cache failure refuses the re-proof instead
-// of leaving an outbound call into a customer network unmetered. See CLAUDE.md.
+// The provider service carries the two reads a bind takes and nothing else: the
+// provider row and the bind budget. The budget lives in Redis alone, and a cache
+// failure refuses the re-proof instead of leaving an outbound call into a
+// customer network unmetered. See CLAUDE.md.
 //
-// The bind searches on the username the first bind wrote from the directory, so
-// the entry it proves is the entry the sign-in proves. A person who holds none
-// is refused here, and no search runs on an empty identifier.
+// The bind searches on the username the person holds, so the entry it proves is
+// the entry the sign-in proves. A person who holds none is refused here, and no
+// search runs on an empty identifier.
 //
-// The typed password reaches ProveOwner and nothing else.
+// The typed password reaches Prove and nothing else.
 func directoryReProof(
 	bdb *bun.DB, rdb cache.Client, cipher *crypto.Cipher,
 	users *user.Repository, log logger.Logger,
-) user.DirectoryProver {
+) (user.DirectoryResolver, user.DirectoryProver) {
 	idps := identityprovider.NewRepository(bdb, cipher, log)
-	prover := identityprovider.NewService(identityprovider.Deps{
-		Find:   idps.FindByID,
-		Linked: idps.LinkedProviders,
-		Allow:  rdb.AllowInWindow,
-		Log:    log,
+	resolver := identityprovider.NewResolver(identityprovider.ResolverDeps{
+		DomainOwner: idps.FindByDomain,
+		Linked:      idps.LinkedProviders,
+		Active:      idps.ActiveIDs,
+		Held:        users.HoldsIdentifier,
+		Log:         log,
 	})
+	prover := identityprovider.NewService(identityprovider.Deps{
+		Find:  idps.FindByID,
+		Allow: rdb.AllowInWindow,
+		Log:   log,
+	})
+	directory := directoryOf(users.FindByID, resolver.Resolve)
 
-	return func(ctx context.Context, tenantID, userID, plain string) error {
-		person, err := users.FindByID(ctx, tenantID, userID)
+	owns := func(ctx context.Context, tenantID, userID string) (bool, error) {
+		idpID, _, err := directory(ctx, tenantID, userID)
+		return idpID != "", err
+	}
+
+	reprove := func(ctx context.Context, tenantID, userID, plain string) error {
+		idpID, username, err := directory(ctx, tenantID, userID)
 		if err != nil {
 			// The read stops here, so it is logged here. Without this the user
 			// domain would read a database failure as a refused password and
 			// write a line that blames the directory for it.
-			log.Error("read the person of a directory re-proof",
+			log.Error("read the directory of a re-proof",
 				logger.String("tenant_id", tenantID),
 				logger.String("user_id", userID), logger.Err(err))
 			return user.ErrDirectoryUnavailable
 		}
-		if person.Username == "" {
+		if idpID == "" {
+			log.Warn("refused a re-proof that no single directory proves",
+				logger.String("tenant_id", tenantID), logger.String("user_id", userID))
+			return user.ErrDirectoryNoEntry
+		}
+		if username == "" {
 			log.Warn("refused a directory re-proof of a person who holds no username",
 				logger.String("tenant_id", tenantID), logger.String("user_id", userID))
 			return user.ErrDirectoryUnavailable
 		}
-		return accountDirectoryError(
-			prover.ProveOwner(ctx, tenantID, userID, person.Username, plain))
+		_, err = prover.Prove(ctx, tenantID, idpID, username, plain)
+		return accountDirectoryError(err)
 	}
+	return owns, reprove
 }
 
 // accountDirectoryError turns one outcome of a portal re-proof bind into the
@@ -1315,6 +1342,42 @@ func accountDirectoryError(err error) error {
 		return user.ErrDirectoryNoEntry
 	default:
 		return user.ErrDirectoryUnavailable
+	}
+}
+
+// directoryOf names the Directory that proves one person, beside the username
+// the bind searches on. It answers an empty id when the local password compare
+// proves them, which is what Provider Resolution answers for a local person.
+//
+// The portal asks Provider Resolution, and never the stored hash. Case 1 routes
+// a person whose email domain a live active provider claims, and the claim
+// writes no row: the person keeps the hash it retired, and holds no Identity
+// Link. A re-proof that read either column would answer that person wrong. See
+// .scratch/directory-sign-in/issues/21.
+//
+// The identifier is empty, because the portal holds no typed string: the access
+// token named the person, and the resolver matches the claimed domains against
+// the email address the tenant holds for them. Case 4 never runs here for the
+// same reason. It answers an identifier that named nobody, and this one named
+// somebody.
+//
+// Two links, and two live active providers, answer an empty id as well. Neither
+// names a single directory to prove against, which is the refusal the search
+// itself makes on two matched entries.
+//
+// Nothing is logged here. The resolver logs its own broken reads, and each
+// caller logs the error where it stops bubbling up.
+func directoryOf(
+	find func(ctx context.Context, tenantID, userID string) (user.User, error),
+	resolve func(ctx context.Context, tenantID, identifier, userID, email string) (string, error),
+) func(ctx context.Context, tenantID, userID string) (string, string, error) {
+	return func(ctx context.Context, tenantID, userID string) (string, string, error) {
+		person, err := find(ctx, tenantID, userID)
+		if err != nil {
+			return "", "", err
+		}
+		idpID, err := resolve(ctx, tenantID, "", userID, person.Email)
+		return idpID, person.Username, err
 	}
 }
 
