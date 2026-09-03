@@ -1235,12 +1235,24 @@ func newSessionService(
 		Bind: func(
 			ctx context.Context, tenantID, idpID, userID, identifier, password string,
 		) (session.Identity, error) {
-			person, err := prover.Prove(ctx, tenantID, idpID, userID, identifier, password)
+			// The four strings the login session hands over are named here once,
+			// and the two calls below carry that one value. This closure is the
+			// last place a swap of them can hide, because the login session
+			// domain must not import this one and takes them loose. See
+			// identityprovider.Attempt.
+			attempt := identityprovider.Attempt{
+				TenantID:   tenantID,
+				IdpID:      idpID,
+				UserID:     userID,
+				Identifier: identifier,
+			}
+
+			person, err := prover.Prove(ctx, attempt, password)
 			if err != nil {
 				return session.Identity{}, directoryError(err)
 			}
 
-			userID, err = prover.PersonOf(ctx, tenantID, idpID, userID, identifier, person)
+			userID, err = prover.PersonOf(ctx, attempt, person)
 			if err != nil {
 				return session.Identity{}, directoryError(err)
 			}
@@ -1325,7 +1337,7 @@ func directoryReProof(
 // that only an administrator can mend. Both answer ErrDirectoryNoEntry, and
 // neither says "try again". See .scratch/directory-sign-in/issues/25.
 func directoryReProver(
-	prove func(ctx context.Context, tenantID, idpID, userID, identifier, plain string) (identityprovider.Identity, error),
+	prove func(ctx context.Context, a identityprovider.Attempt, plain string) (identityprovider.Identity, error),
 	log logger.Logger,
 ) user.DirectoryProver {
 	return func(ctx context.Context, tenantID, idpID, userID, username, plain string) error {
@@ -1339,7 +1351,15 @@ func directoryReProver(
 				logger.String("tenant_id", tenantID), logger.String("user_id", userID))
 			return user.ErrDirectoryNoEntry
 		}
-		_, err := prove(ctx, tenantID, idpID, userID, username, plain)
+		// The username the user domain holds is the identifier the search runs
+		// on. Naming the fields here is what keeps a swap of the four a compile
+		// error. See identityprovider.Attempt.
+		_, err := prove(ctx, identityprovider.Attempt{
+			TenantID:   tenantID,
+			IdpID:      idpID,
+			UserID:     userID,
+			Identifier: username,
+		}, plain)
 		return accountDirectoryError(err)
 	}
 }

@@ -71,6 +71,29 @@ var ErrTooManyBinds = errors.New("too many directory binds")
 // call at all.
 var ErrBindUnavailable = errors.New("the bind budget is unavailable")
 
+// Attempt is the one bind a caller is making: the tenant, the provider, the
+// person the identifier step named, and the string the person typed. The four
+// travel together through the whole bind path, and every one of them is a
+// string, so a positional list lets the compiler take them in any order.
+//
+// A swap is silent. It misroutes the bind and no test fails, because every test
+// calls the method correctly by hand. Three tickets fixed one mistake of that
+// class before this type existed. Name each field at the call site, and a swap
+// is a compile error instead.
+//
+// UserID is empty when the identifier step named nobody. Provision reads none of
+// it, because a first bind names no person yet.
+//
+// The type is exported because the portal re-proof of internal/api/http names it
+// in a function value. It carries no credential: the typed password is a
+// parameter of its own.
+type Attempt struct {
+	TenantID   string
+	IdpID      string
+	UserID     string
+	Identifier string
+}
+
 // bindLimit and bindWindow cap how many binds one person of one tenant drives.
 //
 // A bind is an outbound call into a customer network that any caller drives with
@@ -138,12 +161,12 @@ const (
 // address itself. A Redis key is read by every operator who lists the keyspace.
 // A user id is not personal data here, and log lines of this package already
 // carry it.
-func bindKey(tenantID, userID, identifier string) string {
-	if userID != "" {
-		return fmt.Sprintf("idp_binds:%s:user:%s", tenantID, userID)
+func bindKey(a Attempt) string {
+	if a.UserID != "" {
+		return fmt.Sprintf("idp_binds:%s:user:%s", a.TenantID, a.UserID)
 	}
-	folded := strings.ToLower(strings.TrimSpace(identifier))
-	return fmt.Sprintf("idp_binds:%s:%s", tenantID, aocrypto.Digest(folded))
+	folded := strings.ToLower(strings.TrimSpace(a.Identifier))
+	return fmt.Sprintf("idp_binds:%s:%s", a.TenantID, aocrypto.Digest(folded))
 }
 
 // defaultTimeoutMS bounds a row that carries no timeout. The column defaults to
@@ -287,33 +310,31 @@ func (s *Service) Bind(ctx context.Context, p Provider, identifier, password str
 // is the upgrade, it meters the loop the refund opens, and the spec names it as
 // the ceiling of this key. See docs/specs/0002-directory-sign-in.md.
 //
-// userID is the person the sign-in already named at the identifier step, and it
-// keys the budget. An identifier step that named nobody passes an empty string,
-// and the budget keys on the typed identifier instead. See bindKey. The value
-// never reaches the directory: the search runs on the identifier.
+// a.UserID is the person the sign-in already named at the identifier step, and
+// it keys the budget. An identifier step that named nobody carries an empty
+// string, and the budget keys on the typed identifier instead. See bindKey. The
+// value never reaches the directory: the search runs on a.Identifier.
 //
 // The typed password reaches Bind and nothing else. No log line of this method
 // carries it, or the identifier, or the bind credential of the provider.
-func (s *Service) Prove(
-	ctx context.Context, tenantID, idpID, userID, identifier, password string,
-) (Identity, error) {
+func (s *Service) Prove(ctx context.Context, a Attempt, password string) (Identity, error) {
 	s.log.Debug("prove a password against the directory",
-		logger.String("tenant_id", tenantID), logger.String("idp_id", idpID),
+		logger.String("tenant_id", a.TenantID), logger.String("idp_id", a.IdpID),
 		logger.RequestID(ctx))
 
-	row, err := s.deps.Find(ctx, tenantID, idpID)
+	row, err := s.deps.Find(ctx, a.TenantID, a.IdpID)
 	if errors.Is(err, ErrNotFound) {
-		return Identity{}, fmt.Errorf("%w: tenant %s, provider %s", ErrDisabled, tenantID, idpID)
+		return Identity{}, fmt.Errorf("%w: tenant %s, provider %s", ErrDisabled, a.TenantID, a.IdpID)
 	}
 	if err != nil {
 		s.log.Error("read the identity provider of the sign-in",
-			logger.String("tenant_id", tenantID), logger.String("idp_id", idpID), logger.Err(err))
+			logger.String("tenant_id", a.TenantID), logger.String("idp_id", a.IdpID), logger.Err(err))
 		return Identity{}, err
 	}
 	if row.State != StateActive {
 		s.log.Warn("refused a sign-in against a disabled directory",
-			logger.String("tenant_id", tenantID), logger.String("idp_id", idpID))
-		return Identity{}, fmt.Errorf("%w: tenant %s, provider %s", ErrDisabled, tenantID, idpID)
+			logger.String("tenant_id", a.TenantID), logger.String("idp_id", a.IdpID))
+		return Identity{}, fmt.Errorf("%w: tenant %s, provider %s", ErrDisabled, a.TenantID, a.IdpID)
 	}
 
 	// The guard is in Bind as well, where it is what keeps an unauthenticated
@@ -323,13 +344,13 @@ func (s *Service) Prove(
 		return Identity{}, fmt.Errorf("%w: the password is empty", ErrWrongPassword)
 	}
 
-	if err := s.spendBind(ctx, tenantID, idpID, userID, identifier); err != nil {
+	if err := s.spendBind(ctx, a); err != nil {
 		return Identity{}, err
 	}
 
-	person, err := s.Bind(ctx, row, identifier, password)
+	person, err := s.Bind(ctx, row, a.Identifier, password)
 	if errors.Is(err, ErrDirectory) {
-		s.releaseBind(ctx, tenantID, idpID, userID, identifier)
+		s.releaseBind(ctx, a)
 	}
 	return person, err
 }
@@ -354,11 +375,11 @@ func (s *Service) Prove(
 // A failed release writes one error line and changes nothing else. The person
 // keeps the answer they earned, and the counter drifts high by one and never
 // low.
-func (s *Service) releaseBind(ctx context.Context, tenantID, idpID, userID, identifier string) {
-	if err := s.deps.Release(ctx, bindKey(tenantID, userID, identifier)); err != nil {
+func (s *Service) releaseBind(ctx context.Context, a Attempt) {
+	if err := s.deps.Release(ctx, bindKey(a)); err != nil {
 		s.log.Error("give back the bind of a directory that did not answer",
-			logger.String("tenant_id", tenantID), logger.String("idp_id", idpID),
-			logger.String("user_id", userID), logger.Err(err))
+			logger.String("tenant_id", a.TenantID), logger.String("idp_id", a.IdpID),
+			logger.String("user_id", a.UserID), logger.Err(err))
 	}
 }
 
@@ -375,13 +396,13 @@ func (s *Service) releaseBind(ctx context.Context, tenantID, idpID, userID, iden
 // ponytail: a refused read costs every directory-owned person their sign-in
 // while Redis is down. The local password path keeps working, because it spends
 // nothing.
-func (s *Service) spendBind(ctx context.Context, tenantID, idpID, userID, identifier string) error {
-	allowed, err := s.deps.Allow(ctx, bindKey(tenantID, userID, identifier), bindLimit, bindWindow)
+func (s *Service) spendBind(ctx context.Context, a Attempt) error {
+	allowed, err := s.deps.Allow(ctx, bindKey(a), bindLimit, bindWindow)
 	if err != nil {
 		s.log.Error("read the directory bind budget",
-			logger.String("tenant_id", tenantID), logger.String("idp_id", idpID),
-			logger.String("user_id", userID), logger.Err(err))
-		return fmt.Errorf("%w: tenant %s", ErrBindUnavailable, tenantID)
+			logger.String("tenant_id", a.TenantID), logger.String("idp_id", a.IdpID),
+			logger.String("user_id", a.UserID), logger.Err(err))
+		return fmt.Errorf("%w: tenant %s", ErrBindUnavailable, a.TenantID)
 	}
 	if allowed {
 		return nil
@@ -390,9 +411,9 @@ func (s *Service) spendBind(ctx context.Context, tenantID, idpID, userID, identi
 	// user_id is empty when the identifier step named nobody. The identifier
 	// that keyed that counter is personal data and stays out of the line.
 	s.log.Warn("refused a directory bind over the budget",
-		logger.String("tenant_id", tenantID), logger.String("idp_id", idpID),
-		logger.String("user_id", userID))
-	return fmt.Errorf("%w: tenant %s", ErrTooManyBinds, tenantID)
+		logger.String("tenant_id", a.TenantID), logger.String("idp_id", a.IdpID),
+		logger.String("user_id", a.UserID))
+	return fmt.Errorf("%w: tenant %s", ErrTooManyBinds, a.TenantID)
 }
 
 // search runs one search under the base of the provider, and answers the single

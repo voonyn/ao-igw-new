@@ -17,6 +17,18 @@ const createdUserID = "cccccccc-cccc-cccc-cccc-cccccccccccc"
 // binds as alice, who types the email address a claimed domain routes.
 const typed = "alice@corp.example"
 
+// firstBind is the attempt every provisioning test makes: alice types the email
+// address a claimed domain routes, and the identifier step named nobody. Tests
+// that name a person copy it and set UserID.
+var firstBind = Attempt{TenantID: testTenantID, IdpID: tenantIdpID, Identifier: typed}
+
+// sessionBind is the same attempt for a person the identifier step already
+// named. The Identity Link is still read first, so the two differ only in the
+// fallback each one reaches.
+var sessionBind = Attempt{
+	TenantID: testTenantID, IdpID: tenantIdpID, UserID: testUserID, Identifier: typed,
+}
+
 // alice is the directory account every provisioning test binds as. It carries
 // the six attributes the mapping reads, and nothing else.
 var alice = Identity{
@@ -35,7 +47,7 @@ var alice = Identity{
 func TestProvision(t *testing.T) {
 	svc := testService(t, deps{rows: []Provider{storedProvider(testOrgID)}})
 
-	userID, err := svc.Provision(context.Background(), testTenantID, tenantIdpID, typed, alice)
+	userID, err := svc.Provision(context.Background(), firstBind, alice)
 	if err != nil {
 		t.Fatalf("Provision: %v", err)
 	}
@@ -94,7 +106,7 @@ func TestProvisionUsesTheDefaultOrganization(t *testing.T) {
 	row.DefaultOrgID = otherOrgID
 	svc := testService(t, deps{rows: []Provider{row}})
 
-	if _, err := svc.Provision(context.Background(), testTenantID, tenantIdpID, typed, alice); err != nil {
+	if _, err := svc.Provision(context.Background(), firstBind, alice); err != nil {
 		t.Fatalf("Provision: %v", err)
 	}
 	if len(people) != 1 || people[0].OrgID != otherOrgID {
@@ -108,7 +120,7 @@ func TestProvisionUsesTheDefaultOrganization(t *testing.T) {
 func TestProvisionWithoutAnOrganization(t *testing.T) {
 	svc := testService(t, deps{rows: []Provider{storedProvider("")}})
 
-	_, err := svc.Provision(context.Background(), testTenantID, tenantIdpID, typed, alice)
+	_, err := svc.Provision(context.Background(), firstBind, alice)
 	if !errors.Is(err, ErrNoOrganization) {
 		t.Fatalf("err = %v, want ErrNoOrganization", err)
 	}
@@ -126,7 +138,7 @@ func TestProvisionWithoutAUsername(t *testing.T) {
 	nameless := alice
 	nameless.Username = ""
 
-	_, err := svc.Provision(context.Background(), testTenantID, tenantIdpID, typed, nameless)
+	_, err := svc.Provision(context.Background(), firstBind, nameless)
 	if !errors.Is(err, ErrNoUsername) {
 		t.Fatalf("err = %v, want ErrNoUsername", err)
 	}
@@ -149,7 +161,7 @@ func TestProvisionRefusesADisabledProvider(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			svc := testService(t, d)
 
-			_, err := svc.Provision(context.Background(), testTenantID, tenantIdpID, typed, alice)
+			_, err := svc.Provision(context.Background(), firstBind, alice)
 			if !errors.Is(err, ErrDisabled) {
 				t.Fatalf("err = %v, want ErrDisabled", err)
 			}
@@ -167,7 +179,7 @@ func TestProvisionLeavesNoHalfPerson(t *testing.T) {
 	taken := errors.New("duplicate username")
 	svc := testService(t, deps{rows: []Provider{storedProvider(testOrgID)}, createFails: taken})
 
-	_, err := svc.Provision(context.Background(), testTenantID, tenantIdpID, typed, alice)
+	_, err := svc.Provision(context.Background(), firstBind, alice)
 	if !errors.Is(err, taken) {
 		t.Fatalf("err = %v, want the refused create", err)
 	}
@@ -187,7 +199,7 @@ func TestProvisionRollsTheLinkBack(t *testing.T) {
 	broken := errors.New("the link could not be written")
 	svc.deps.WriteLink = func(context.Context, Link) error { return broken }
 
-	if _, err := svc.Provision(context.Background(), testTenantID, tenantIdpID, typed, alice); !errors.Is(err, broken) {
+	if _, err := svc.Provision(context.Background(), firstBind, alice); !errors.Is(err, broken) {
 		t.Fatalf("err = %v, want the failed link write", err)
 	}
 	if !rolledBack {
@@ -201,7 +213,7 @@ func TestProvisionRollsTheLinkBack(t *testing.T) {
 func TestProvisionLogsNoCredential(t *testing.T) {
 	svc := testService(t, deps{rows: []Provider{storedProvider(testOrgID)}})
 
-	if _, err := svc.Provision(context.Background(), testTenantID, tenantIdpID, typed, alice); err != nil {
+	if _, err := svc.Provision(context.Background(), firstBind, alice); err != nil {
 		t.Fatalf("Provision: %v", err)
 	}
 	for _, line := range logs.All() {
@@ -237,7 +249,7 @@ func aliceLink() Link {
 func TestPersonOfAnswersTheLinkedPerson(t *testing.T) {
 	svc := testService(t, deps{rows: []Provider{storedProvider(testOrgID)}, links: []Link{aliceLink()}})
 
-	userID, err := svc.PersonOf(context.Background(), testTenantID, tenantIdpID, "", typed, alice)
+	userID, err := svc.PersonOf(context.Background(), firstBind, alice)
 	if err != nil {
 		t.Fatalf("PersonOf: %v", err)
 	}
@@ -270,7 +282,14 @@ func TestPersonOfAnswersOnePersonWhateverTheIdentifier(t *testing.T) {
 				links: []Link{aliceLink()},
 			})
 
-			userID, err := svc.PersonOf(context.Background(), testTenantID, tenantIdpID, c.session, typed, alice)
+			attempt := Attempt{
+				TenantID:   testTenantID,
+				IdpID:      tenantIdpID,
+				UserID:     c.session,
+				Identifier: typed,
+			}
+
+			userID, err := svc.PersonOf(context.Background(), attempt, alice)
 			if err != nil {
 				t.Fatalf("PersonOf: %v", err)
 			}
@@ -290,7 +309,7 @@ func TestPersonOfAnswersOnePersonWhateverTheIdentifier(t *testing.T) {
 func TestPersonOfAnswersTheSessionPerson(t *testing.T) {
 	svc := testService(t, deps{rows: []Provider{storedProvider(testOrgID)}})
 
-	userID, err := svc.PersonOf(context.Background(), testTenantID, tenantIdpID, testUserID, typed, alice)
+	userID, err := svc.PersonOf(context.Background(), sessionBind, alice)
 	if err != nil {
 		t.Fatalf("PersonOf: %v", err)
 	}
@@ -310,7 +329,7 @@ func TestPersonOfProvisionsWhenNoLinkHoldsTheExternalID(t *testing.T) {
 	other.ExternalID = "a-stable-id-of-somebody-else"
 	svc := testService(t, deps{rows: []Provider{storedProvider(testOrgID)}, links: []Link{other}})
 
-	userID, err := svc.PersonOf(context.Background(), testTenantID, tenantIdpID, "", typed, alice)
+	userID, err := svc.PersonOf(context.Background(), firstBind, alice)
 	if err != nil {
 		t.Fatalf("PersonOf: %v", err)
 	}
@@ -331,7 +350,7 @@ func TestPersonOfRefusesABrokenLinkRead(t *testing.T) {
 		findLinkFails: errors.New("the database is down"),
 	})
 
-	if _, err := svc.PersonOf(context.Background(), testTenantID, tenantIdpID, "", typed, alice); err == nil {
+	if _, err := svc.PersonOf(context.Background(), firstBind, alice); err == nil {
 		t.Fatal("PersonOf answered a person, want the failed read")
 	}
 	if len(people) != 0 || len(linked) != 0 {
@@ -353,7 +372,7 @@ func TestPersonOfRefusesAnOffboardedLinkedPerson(t *testing.T) {
 		personOffboarded: true,
 	})
 
-	_, err := svc.PersonOf(context.Background(), testTenantID, tenantIdpID, "", typed, alice)
+	_, err := svc.PersonOf(context.Background(), firstBind, alice)
 	if !errors.Is(err, ErrDirectory) {
 		t.Fatalf("err = %v, want ErrDirectory", err)
 	}
@@ -394,7 +413,7 @@ func TestProvisionRefusesAnAccountTheTenantHolds(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			svc := testService(t, deps{rows: []Provider{storedProvider(testOrgID)}, held: held})
 
-			_, err := svc.PersonOf(context.Background(), testTenantID, tenantIdpID, "", typed, alice)
+			_, err := svc.PersonOf(context.Background(), firstBind, alice)
 			if !errors.Is(err, ErrDirectory) {
 				t.Fatalf("err = %v, want ErrDirectory", err)
 			}
@@ -420,7 +439,7 @@ func TestProvisionReadsTheTypedIdentifier(t *testing.T) {
 
 	svc := testService(t, deps{rows: []Provider{storedProvider(testOrgID)}, held: []string{typed}})
 
-	_, err := svc.Provision(context.Background(), testTenantID, tenantIdpID, typed, entry)
+	_, err := svc.Provision(context.Background(), firstBind, entry)
 	if !errors.Is(err, ErrDirectory) {
 		t.Fatalf("err = %v, want ErrDirectory", err)
 	}
@@ -435,7 +454,7 @@ func TestProvisionReadsTheTypedIdentifier(t *testing.T) {
 func TestProvisionRefusesABrokenHeldRead(t *testing.T) {
 	svc := testService(t, deps{rows: []Provider{storedProvider(testOrgID)}, heldBroken: true})
 
-	_, err := svc.Provision(context.Background(), testTenantID, tenantIdpID, typed, alice)
+	_, err := svc.Provision(context.Background(), firstBind, alice)
 	if err == nil {
 		t.Fatal("the broken read created a person, want a refusal")
 	}
@@ -451,7 +470,7 @@ func TestProvisionRefusesABrokenHeldRead(t *testing.T) {
 func TestProvisionLogsNoIdentifierOnARefusal(t *testing.T) {
 	svc := testService(t, deps{rows: []Provider{storedProvider(testOrgID)}, held: []string{alice.Username}})
 
-	if _, err := svc.Provision(context.Background(), testTenantID, tenantIdpID, typed, alice); err == nil {
+	if _, err := svc.Provision(context.Background(), firstBind, alice); err == nil {
 		t.Fatal("the held account was created, want a refusal")
 	}
 	for _, entry := range logs.All() {
@@ -482,7 +501,7 @@ func TestPersonOfRefusesAnEntryAnotherLinkNames(t *testing.T) {
 		linked: []string{tenantIdpID},
 	})
 
-	_, err := svc.PersonOf(context.Background(), testTenantID, tenantIdpID, testUserID, typed, alice)
+	_, err := svc.PersonOf(context.Background(), sessionBind, alice)
 	if !errors.Is(err, ErrDirectory) {
 		t.Fatalf("err = %v, want ErrDirectory", err)
 	}
@@ -504,7 +523,7 @@ func TestPersonOfAnswersTheSessionPersonLinkedElsewhere(t *testing.T) {
 		linked: []string{otherIdpID},
 	})
 
-	userID, err := svc.PersonOf(context.Background(), testTenantID, tenantIdpID, testUserID, typed, alice)
+	userID, err := svc.PersonOf(context.Background(), sessionBind, alice)
 	if err != nil {
 		t.Fatalf("PersonOf: %v", err)
 	}
@@ -521,7 +540,7 @@ func TestPersonOfRefusesABrokenLinkedRead(t *testing.T) {
 	broken := errors.New("the database is down")
 	svc.deps.Linked = func(context.Context, string, string) ([]string, error) { return nil, broken }
 
-	if _, err := svc.PersonOf(context.Background(), testTenantID, tenantIdpID, testUserID, typed, alice); !errors.Is(err, broken) {
+	if _, err := svc.PersonOf(context.Background(), sessionBind, alice); !errors.Is(err, broken) {
 		t.Fatalf("err = %v, want the failed read", err)
 	}
 }

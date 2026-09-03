@@ -313,7 +313,11 @@ func TestProveRefusesAnInactiveProvider(t *testing.T) {
 	off.State = StateInactive
 	svc := testService(t, deps{rows: []Provider{off}})
 
-	_, err := svc.Prove(context.Background(), testTenantID, tenantIdpID, personID, "alice", "the-typed-password")
+	_, err := svc.Prove(
+		context.Background(),
+		Attempt{TenantID: testTenantID, IdpID: tenantIdpID, UserID: personID, Identifier: "alice"},
+		"the-typed-password",
+	)
 	if !errors.Is(err, ErrDisabled) {
 		t.Fatalf("err = %v, want ErrDisabled", err)
 	}
@@ -328,7 +332,11 @@ func TestProveRefusesAnInactiveProvider(t *testing.T) {
 func TestProveRefusesAProviderNobodyHolds(t *testing.T) {
 	svc := testService(t, deps{})
 
-	_, err := svc.Prove(context.Background(), testTenantID, deadIdpID, personID, "alice", "the-typed-password")
+	_, err := svc.Prove(
+		context.Background(),
+		Attempt{TenantID: testTenantID, IdpID: deadIdpID, UserID: personID, Identifier: "alice"},
+		"the-typed-password",
+	)
 	if !errors.Is(err, ErrDisabled) {
 		t.Fatalf("err = %v, want ErrDisabled", err)
 	}
@@ -343,7 +351,11 @@ func TestProveRefusesAProviderNobodyHolds(t *testing.T) {
 func TestProveRefusesASpentBindBudget(t *testing.T) {
 	svc := testService(t, deps{rows: []Provider{failingProvider(t)}, budgetSpent: true})
 
-	_, err := svc.Prove(context.Background(), testTenantID, tenantIdpID, personID, "alice", "the-typed-password")
+	_, err := svc.Prove(
+		context.Background(),
+		Attempt{TenantID: testTenantID, IdpID: tenantIdpID, UserID: personID, Identifier: "alice"},
+		"the-typed-password",
+	)
 	if !errors.Is(err, ErrTooManyBinds) {
 		t.Fatalf("err = %v, want ErrTooManyBinds", err)
 	}
@@ -358,7 +370,11 @@ func TestProveRefusesASpentBindBudget(t *testing.T) {
 func TestProveRefusesABindBudgetNobodyCouldRead(t *testing.T) {
 	svc := testService(t, deps{rows: []Provider{failingProvider(t)}, budgetBroken: true})
 
-	_, err := svc.Prove(context.Background(), testTenantID, tenantIdpID, personID, "alice", "the-typed-password")
+	_, err := svc.Prove(
+		context.Background(),
+		Attempt{TenantID: testTenantID, IdpID: tenantIdpID, UserID: personID, Identifier: "alice"},
+		"the-typed-password",
+	)
 	if !errors.Is(err, ErrBindUnavailable) {
 		t.Fatalf("err = %v, want ErrBindUnavailable", err)
 	}
@@ -374,7 +390,11 @@ func TestProveRefusesABindBudgetNobodyCouldRead(t *testing.T) {
 func TestProveSpendsOneBindOnALiveProvider(t *testing.T) {
 	svc := testService(t, deps{rows: []Provider{failingProvider(t)}})
 
-	_, err := svc.Prove(context.Background(), testTenantID, tenantIdpID, personID, "alice", "the-typed-password")
+	_, err := svc.Prove(
+		context.Background(),
+		Attempt{TenantID: testTenantID, IdpID: tenantIdpID, UserID: personID, Identifier: "alice"},
+		"the-typed-password",
+	)
 	if !errors.Is(err, ErrDirectory) {
 		t.Fatalf("err = %v, want ErrDirectory", err)
 	}
@@ -426,7 +446,9 @@ func TestProveGivesTheBindBackWhenTheDirectoryDoesNotAnswer(t *testing.T) {
 			svc := testService(t, deps{rows: []Provider{c.row(t)}})
 
 			_, err := svc.Prove(
-				context.Background(), testTenantID, tenantIdpID, personID, "alice", "the-typed-password",
+				context.Background(),
+				Attempt{TenantID: testTenantID, IdpID: tenantIdpID, UserID: personID, Identifier: "alice"},
+				"the-typed-password",
 			)
 			if !errors.Is(err, ErrDirectory) {
 				t.Fatalf("err = %v, want ErrDirectory", err)
@@ -463,7 +485,9 @@ func TestProveKeepsTheBindOnACredentialFailure(t *testing.T) {
 			svc := testService(t, deps{rows: []Provider{p}})
 
 			_, err := svc.Prove(
-				context.Background(), testTenantID, tenantIdpID, personID, "alice", "the-typed-password",
+				context.Background(),
+				Attempt{TenantID: testTenantID, IdpID: tenantIdpID, UserID: personID, Identifier: "alice"},
+				"the-typed-password",
 			)
 			if !errors.Is(err, c.want) {
 				t.Fatalf("err = %v, want %v", err, c.want)
@@ -482,7 +506,11 @@ func TestProveKeepsTheBindOnACredentialFailure(t *testing.T) {
 func TestProveAnswersTheDirectoryWhenTheRefundFails(t *testing.T) {
 	svc := testService(t, deps{rows: []Provider{failingProvider(t)}, releaseBroken: true})
 
-	_, err := svc.Prove(context.Background(), testTenantID, tenantIdpID, personID, "alice", "the-typed-password")
+	_, err := svc.Prove(
+		context.Background(),
+		Attempt{TenantID: testTenantID, IdpID: tenantIdpID, UserID: personID, Identifier: "alice"},
+		"the-typed-password",
+	)
 	if !errors.Is(err, ErrDirectory) {
 		t.Fatalf("err = %v, want ErrDirectory", err)
 	}
@@ -587,7 +615,11 @@ func namedEntry(id int64) []byte {
 func TestProveSpendsNothingOnAnEmptyPassword(t *testing.T) {
 	svc := testService(t, deps{rows: []Provider{failingProvider(t)}})
 
-	_, err := svc.Prove(context.Background(), testTenantID, tenantIdpID, personID, "alice", "")
+	_, err := svc.Prove(
+		context.Background(),
+		Attempt{TenantID: testTenantID, IdpID: tenantIdpID, UserID: personID, Identifier: "alice"},
+		"",
+	)
 	if !errors.Is(err, ErrWrongPassword) {
 		t.Fatalf("err = %v, want ErrWrongPassword", err)
 	}
@@ -601,15 +633,15 @@ func TestProveSpendsNothingOnAnEmptyPassword(t *testing.T) {
 // of the identifier and never the address itself, because every operator who
 // lists the keyspace reads these keys.
 func TestUnnamedBindKeyCarriesNoIdentifier(t *testing.T) {
-	key := bindKey(testTenantID, "", "alice@corp.example")
+	key := bindKey(Attempt{TenantID: testTenantID, UserID: "", Identifier: "alice@corp.example"})
 
 	if strings.Contains(key, "alice") || strings.Contains(key, "corp.example") {
 		t.Fatalf("bindKey = %q, want no identifier in it", key)
 	}
-	if key == bindKey(testTenantID, "", "bob@corp.example") {
+	if key == bindKey(Attempt{TenantID: testTenantID, UserID: "", Identifier: "bob@corp.example"}) {
 		t.Fatal("two identifiers share one budget key, want one key each")
 	}
-	if key != bindKey(testTenantID, "", "alice@corp.example") {
+	if key != bindKey(Attempt{TenantID: testTenantID, UserID: "", Identifier: "alice@corp.example"}) {
 		t.Fatal("the key of one identifier changed between two reads")
 	}
 }
@@ -620,7 +652,7 @@ func TestUnnamedBindKeyCarriesNoIdentifier(t *testing.T) {
 // key that folded neither gave one entry a fresh counter of ten for every typed
 // form a caller invented. See .scratch/directory-sign-in/issues/34.
 func TestUnnamedBindKeyFoldsTheIdentifier(t *testing.T) {
-	key := bindKey(testTenantID, "", "alice@corp.example")
+	key := bindKey(Attempt{TenantID: testTenantID, UserID: "", Identifier: "alice@corp.example"})
 
 	forms := []string{
 		"Alice@corp.example",
@@ -629,12 +661,12 @@ func TestUnnamedBindKeyFoldsTheIdentifier(t *testing.T) {
 		"alice@corp.example\t",
 	}
 	for _, form := range forms {
-		if bindKey(testTenantID, "", form) != key {
+		if bindKey(Attempt{TenantID: testTenantID, UserID: "", Identifier: form}) != key {
 			t.Errorf("the form %q holds a budget of its own, want one counter for one entry", form)
 		}
 	}
 
-	if bindKey(testTenantID, "", "bob@corp.example") == key {
+	if bindKey(Attempt{TenantID: testTenantID, UserID: "", Identifier: "bob@corp.example"}) == key {
 		t.Error("two entries share one budget key, want one key each")
 	}
 }
@@ -643,18 +675,18 @@ func TestUnnamedBindKeyFoldsTheIdentifier(t *testing.T) {
 // a username and an email address, so a key of the typed string gave one person
 // two counters of ten, and the real cap was twenty.
 func TestBindKeyNamesThePerson(t *testing.T) {
-	byUsername := bindKey(testTenantID, personID, "alice")
+	byUsername := bindKey(Attempt{TenantID: testTenantID, UserID: personID, Identifier: "alice"})
 
-	if byUsername != bindKey(testTenantID, personID, "alice@corp.example") {
+	if byUsername != bindKey(Attempt{TenantID: testTenantID, UserID: personID, Identifier: "alice@corp.example"}) {
 		t.Fatalf("bindKey = %q, want both forms of one identifier on one key", byUsername)
 	}
-	if byUsername == bindKey(testTenantID, testUserID, "alice") {
+	if byUsername == bindKey(Attempt{TenantID: testTenantID, UserID: testUserID, Identifier: "alice"}) {
 		t.Fatal("two people share one budget key, want one key each")
 	}
-	if byUsername == bindKey(otherTenant, personID, "alice") {
+	if byUsername == bindKey(Attempt{TenantID: otherTenant, UserID: personID, Identifier: "alice"}) {
 		t.Fatal("two tenants share one budget key, want one key each")
 	}
-	if byUsername == bindKey(testTenantID, "", "alice") {
+	if byUsername == bindKey(Attempt{TenantID: testTenantID, UserID: "", Identifier: "alice"}) {
 		t.Fatal("a named person and a first bind share one key, want one key each")
 	}
 }
@@ -667,7 +699,9 @@ func TestProveSpendsOneBudgetForBothIdentifierForms(t *testing.T) {
 
 	for _, identifier := range []string{"alice", "alice@corp.example"} {
 		_, err := svc.Prove(
-			context.Background(), testTenantID, tenantIdpID, personID, identifier, "the-typed-password",
+			context.Background(),
+			Attempt{TenantID: testTenantID, IdpID: tenantIdpID, UserID: personID, Identifier: identifier},
+			"the-typed-password",
 		)
 		if !errors.Is(err, ErrDirectory) {
 			t.Fatalf("err = %v, want ErrDirectory", err)
@@ -697,7 +731,9 @@ func TestProveKeepsASecondCounterForAnUnresolvableForm(t *testing.T) {
 		{personID, "alice"},
 	} {
 		_, err := svc.Prove(
-			context.Background(), testTenantID, tenantIdpID, c.userID, c.identifier, "the-typed-password",
+			context.Background(),
+			Attempt{TenantID: testTenantID, IdpID: tenantIdpID, UserID: c.userID, Identifier: c.identifier},
+			"the-typed-password",
 		)
 		if !errors.Is(err, ErrDirectory) {
 			t.Fatalf("err = %v, want ErrDirectory", err)
@@ -718,7 +754,9 @@ func TestProveLogsNoPassword(t *testing.T) {
 	svc := testService(t, deps{rows: []Provider{failingProvider(t)}})
 
 	if _, err := svc.Prove(
-		context.Background(), testTenantID, tenantIdpID, personID, "alice", "the-typed-password",
+		context.Background(),
+		Attempt{TenantID: testTenantID, IdpID: tenantIdpID, UserID: personID, Identifier: "alice"},
+		"the-typed-password",
 	); err == nil {
 		t.Fatal("Prove answered no error, want a directory that refused the connection")
 	}

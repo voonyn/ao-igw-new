@@ -152,7 +152,7 @@ func TestDirectoryReProverRefusals(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			reprove := directoryReProver(
-				func(context.Context, string, string, string, string, string) (identityprovider.Identity, error) {
+				func(context.Context, identityprovider.Attempt, string) (identityprovider.Identity, error) {
 					t.Error("the bind ran on a re-proof the guard must refuse")
 					return identityprovider.Identity{}, nil
 				},
@@ -193,7 +193,7 @@ func TestOnePasswordProofResolvesTheDirectoryOnce(t *testing.T) {
 		},
 		Directory: directory,
 		ProveDirectory: directoryReProver(
-			func(context.Context, string, string, string, string, string) (identityprovider.Identity, error) {
+			func(context.Context, identityprovider.Attempt, string) (identityprovider.Identity, error) {
 				return identityprovider.Identity{}, nil
 			},
 			logger.New(),
@@ -218,10 +218,11 @@ func TestOnePasswordProofResolvesTheDirectoryOnce(t *testing.T) {
 // username the person holds reaches the bind as the search value, and the typed
 // password travels with it.
 func TestDirectoryReProverBindsOnTheUsername(t *testing.T) {
-	var asked []string
+	var asked identityprovider.Attempt
+	var askedPassword string
 	reprove := directoryReProver(
-		func(_ context.Context, tenantID, idpID, userID, identifier, password string) (identityprovider.Identity, error) {
-			asked = append(asked, tenantID, idpID, userID, identifier, password)
+		func(_ context.Context, a identityprovider.Attempt, password string) (identityprovider.Identity, error) {
+			asked, askedPassword = a, password
 			return identityprovider.Identity{}, nil
 		},
 		logger.New(),
@@ -233,14 +234,13 @@ func TestDirectoryReProverBindsOnTheUsername(t *testing.T) {
 		t.Fatalf("a proved re-proof answered %v, want nil", err)
 	}
 
-	want := []string{reproveTenantID, "idp-one", reproveUserID, "alice", "the typed password"}
-	if len(asked) != len(want) {
-		t.Fatalf("the bind was asked %v, want %v", asked, want)
+	want := identityprovider.Attempt{
+		TenantID: reproveTenantID, IdpID: "idp-one", UserID: reproveUserID, Identifier: "alice",
 	}
-	for i := range want {
-		if asked[i] != want[i] {
-			t.Errorf("the bind was asked %v, want %v", asked, want)
-			break
-		}
+	if asked != want {
+		t.Errorf("the bind was asked %+v, want %+v", asked, want)
+	}
+	if askedPassword != "the typed password" {
+		t.Errorf("the bind was asked the password %q, want the typed one", askedPassword)
 	}
 }
