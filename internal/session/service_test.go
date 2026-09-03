@@ -344,7 +344,7 @@ func TestIdentify_NamesTheEmailOfThePerson(t *testing.T) {
 	var gotIdentifier, gotEmail string
 	svc, _ := testServiceResolving(t,
 		knownPerson("ada", Identity{UserID: "user-1", Email: "ada@corp.example"}), noCredential,
-		func(_ context.Context, _, identifier, _, email string) (string, error) {
+		func(_ context.Context, _, _, identifier, email string) (string, error) {
 			gotIdentifier, gotEmail = identifier, email
 			return "", nil
 		})

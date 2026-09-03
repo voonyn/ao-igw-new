@@ -73,7 +73,7 @@ type CredentialFinder func(ctx context.Context, tenantID, userID string) (string
 // them, so a claim a person steps around by typing their username is no guard
 // rail.
 type ProviderResolver func(
-	ctx context.Context, tenantID, identifier, userID, email string,
+	ctx context.Context, tenantID, userID, identifier, email string,
 ) (string, error)
 
 // Binder proves one password against the directory a login session names, and
@@ -154,7 +154,7 @@ func (s *Service) Identify(ctx context.Context, tenantID, identifier, ip, userAg
 	// never a person who is not held: a sign-in that carried on would fall back
 	// to a local password hash that a claimed domain took out of service. The
 	// resolver has logged it.
-	idpID, err := s.deps.Provider(ctx, tenantID, identifier, person.UserID, person.Email)
+	idpID, err := s.deps.Provider(ctx, tenantID, person.UserID, identifier, person.Email)
 	if err != nil {
 		return Opened{}, err
 	}

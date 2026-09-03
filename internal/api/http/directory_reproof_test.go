@@ -47,8 +47,8 @@ func TestDirectoryOfAsksTheResolverAboutThePerson(t *testing.T) {
 		func(context.Context, string, string) (user.User, error) {
 			return claimedPerson(), nil
 		},
-		func(_ context.Context, tenantID, identifier, userID, email string) (string, error) {
-			asked = append(asked, tenantID, identifier, userID, email)
+		func(_ context.Context, tenantID, userID, identifier, email string) (string, error) {
+			asked = append(asked, tenantID, userID, identifier, email)
 			return "idp-one", nil
 		},
 	)
@@ -64,7 +64,7 @@ func TestDirectoryOfAsksTheResolverAboutThePerson(t *testing.T) {
 		t.Errorf("the read named the username %q, want the one the person holds", username)
 	}
 
-	want := []string{reproveTenantID, "", reproveUserID, "alice@corp.example"}
+	want := []string{reproveTenantID, reproveUserID, "", "alice@corp.example"}
 	if len(asked) != len(want) {
 		t.Fatalf("the resolver was asked %v, want %v", asked, want)
 	}

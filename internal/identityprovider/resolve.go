@@ -90,8 +90,8 @@ func NewResolver(deps ResolverDeps) *Resolver {
 //
 // userID and email are the person the identifier step named, and both are empty
 // when that read named nobody.
-func (r *Resolver) Resolve(ctx context.Context, tenantID, identifier, userID, email string) (string, error) {
-	idpID, err := r.resolve(ctx, tenantID, identifier, userID, email)
+func (r *Resolver) Resolve(ctx context.Context, tenantID, userID, identifier, email string) (string, error) {
+	idpID, err := r.resolve(ctx, tenantID, userID, identifier, email)
 	if errors.Is(err, ErrAmbiguous) {
 		return "", nil
 	}
@@ -130,7 +130,7 @@ func (r *Resolver) Resolve(ctx context.Context, tenantID, identifier, userID, em
 //
 // The identifier and the email address are personal data, so neither reaches a
 // log line.
-func (r *Resolver) resolve(ctx context.Context, tenantID, identifier, userID, email string) (string, error) {
+func (r *Resolver) resolve(ctx context.Context, tenantID, userID, identifier, email string) (string, error) {
 	r.log.Debug("resolve the identity provider",
 		logger.String("tenant_id", tenantID), logger.RequestID(ctx))
 

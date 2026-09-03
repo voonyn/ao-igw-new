@@ -1403,14 +1403,14 @@ func accountDirectoryError(err error) error {
 // caller logs the error where it stops bubbling up.
 func directoryOf(
 	find func(ctx context.Context, tenantID, userID string) (user.User, error),
-	resolve func(ctx context.Context, tenantID, identifier, userID, email string) (string, error),
+	resolve func(ctx context.Context, tenantID, userID, identifier, email string) (string, error),
 ) func(ctx context.Context, tenantID, userID string) (string, string, error) {
 	return func(ctx context.Context, tenantID, userID string) (string, string, error) {
 		person, err := find(ctx, tenantID, userID)
 		if err != nil {
 			return "", "", err
 		}
-		idpID, err := resolve(ctx, tenantID, "", userID, person.Email)
+		idpID, err := resolve(ctx, tenantID, userID, "", person.Email)
 		return idpID, person.Username, err
 	}
 }
