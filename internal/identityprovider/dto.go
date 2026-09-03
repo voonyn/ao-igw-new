@@ -31,6 +31,12 @@ var modeSchemes = map[int]string{
 // puts the password of every person on the wire in clear, so mode 1 is refused
 // without it.
 //
+// AttrID and AttrUsername are the two attributes the gateway cannot work
+// without: the id keys the Identity Link, and the username keys the person.
+// Every other mapped attribute is optional, AttrEmail included. A directory
+// that publishes no mail attribute is a real directory, and the read of one
+// entry already answers the empty case.
+//
 // The bounds match the ones the console renders. The backend is the enforcement
 // point, and the console form is a convenience for the operator.
 type Body struct {
@@ -54,7 +60,7 @@ type Body struct {
 
 	AttrID          string `json:"attrId" validate:"required,max=255"`
 	AttrUsername    string `json:"attrUsername" validate:"required,max=255"`
-	AttrEmail       string `json:"attrEmail" validate:"required,max=255"`
+	AttrEmail       string `json:"attrEmail" validate:"omitempty,max=255"`
 	AttrFirstName   string `json:"attrFirstName" validate:"omitempty,max=255"`
 	AttrLastName    string `json:"attrLastName" validate:"omitempty,max=255"`
 	AttrDisplayName string `json:"attrDisplayName" validate:"omitempty,max=255"`

@@ -345,6 +345,44 @@ func TestLinksReportAMissingPerson(t *testing.T) {
 	}
 }
 
+// TestAProviderThatMapsNoEmailAttribute covers a directory that publishes no
+// mail attribute. The id keys the Identity Link and the username keys the
+// person, so the third identifier is optional: a create stores the empty value,
+// the answer carries it, and an update clears a stored one.
+func TestAProviderThatMapsNoEmailAttribute(t *testing.T) {
+	svc := testService(t, deps{
+		tenantRoles: []string{tenant.RoleIAMOwner},
+		rows:        []Provider{storedProvider(testOrgID)},
+	})
+	ctx := context.Background()
+
+	noEmail := body()
+	noEmail.AttrEmail = ""
+
+	created, err := svc.Create(ctx, admin, noEmail)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if created.AttrEmail != "" {
+		t.Errorf("the created provider maps %q, want no email attribute", created.AttrEmail)
+	}
+	if len(written) != 1 || written[0].AttrEmail != "" {
+		t.Fatalf("the create wrote %+v, want a row with no email attribute", written)
+	}
+
+	// The stored row maps "mail", so this update clears it.
+	changed, err := svc.Update(ctx, admin, tenantIdpID, noEmail)
+	if err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	if changed.AttrEmail != "" {
+		t.Errorf("the updated provider maps %q, want the stored one cleared", changed.AttrEmail)
+	}
+	if len(updated) != 1 || updated[0].AttrEmail != "" {
+		t.Fatalf("the update wrote %+v, want a row with no email attribute", updated)
+	}
+}
+
 // What the fake repository answers with.
 type deps struct {
 	tenantRoles []string

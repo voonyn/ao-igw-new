@@ -60,6 +60,8 @@ func TestBodyRules(t *testing.T) {
 		{"no search base", with(func(b *Body) { b.BaseDN = "" }), false},
 		{"no object class", with(func(b *Body) { b.UserObjectClasses = nil }), false},
 		{"no stable identifier to map", with(func(b *Body) { b.AttrID = "" }), false},
+		{"no username to key the person", with(func(b *Body) { b.AttrUsername = "" }), false},
+		{"a directory that publishes no mail attribute", with(func(b *Body) { b.AttrEmail = "" }), true},
 		{"a timeout past a minute", with(func(b *Body) { b.TimeoutSeconds = 61 }), false},
 		{"no claimed domain", with(func(b *Body) { b.Domains = nil }), true},
 		{"a domain that is not a host", with(func(b *Body) { b.Domains = []string{"not a host"} }), false},
