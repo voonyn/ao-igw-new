@@ -45,6 +45,18 @@ type LocalOwner struct {
 	Email  string `bun:"email"`
 }
 
+// DomainPerson is one person of a tenant whose email address carries a claimed
+// domain. It is the row PeopleAtDomains answers with, and it is not a table.
+//
+// It is the population one domain claim moves onto a directory. LocalOwner is
+// the subset of it the guard rail reads, and this row is the whole of it: the
+// preview names everybody the claim moves, and the refusal names nobody.
+type DomainPerson struct {
+	UserID   string `bun:"user_id"`
+	Username string `bun:"username"`
+	Email    string `bun:"email"`
+}
+
 // LastLocalOwner reports whether one write empties the local owners of a tenant.
 //
 // owners is what LocalOwners answered before the write. takes reports whether

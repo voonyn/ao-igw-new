@@ -365,6 +365,14 @@ type deps struct {
 	hasPassword bool
 	linked      []string
 
+	// moves is the people of the tenant the claim preview reads. The fake below
+	// filters them by the domain of their address and caps the page the way the
+	// query does, so a test proves the answer and not the passthrough.
+	// movesBroken breaks the read instead, which is what a database that did not
+	// answer does.
+	moves       []tenant.DomainPerson
+	movesBroken bool
+
 	// What the person creator of a first bind answers. A test that sets it
 	// refuses the create, which is what a username another person of the tenant
 	// already holds does.
@@ -542,6 +550,27 @@ func testService(t *testing.T, d deps) *Service {
 		},
 		LocalOwners: func(context.Context, string) ([]tenant.LocalOwner, error) {
 			return d.localOwners, nil
+		},
+		PeopleAtDomains: func(
+			_ context.Context, _ string, claimed []string, limit int,
+		) ([]tenant.DomainPerson, int, error) {
+			if d.movesBroken {
+				return nil, 0, errors.New("the database is down")
+			}
+			var hit []tenant.DomainPerson
+			for _, person := range d.moves {
+				// Both forms, the way the query reads them: the address the
+				// tenant holds, and the identifier the person types.
+				if slices.Contains(claimed, emailDomain(person.Email)) ||
+					slices.Contains(claimed, emailDomain(person.Username)) {
+					hit = append(hit, person)
+				}
+			}
+			total := len(hit)
+			if len(hit) > limit {
+				hit = hit[:limit]
+			}
+			return hit, total, nil
 		},
 		HasPassword: func(context.Context, string, string) (bool, error) { return d.hasPassword, nil },
 		TenantRoles: func(context.Context, string, string) ([]string, error) { return d.tenantRoles, nil },

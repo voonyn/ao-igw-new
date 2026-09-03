@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 
 	"github.com/uptrace/bun"
 
@@ -380,4 +381,82 @@ func (r *Repository) DeleteMember(ctx context.Context, tenantID, userID string) 
 		logger.String("tenant_id", tenantID), logger.String("user_id", userID),
 		logger.RequestID(ctx))
 	return nil
+}
+
+// PeopleAtDomains reads the people of one tenant whose email address carries one
+// of the given domains, and the total behind the page.
+//
+// It is the read behind the claim preview of docs/specs/0002-directory-sign-in.md:
+// the console names the people a domain claim moves before it saves. Provider
+// Resolution case 1 outranks every case below it, so a claim routes every one of
+// these people to the directory, including the people who hold a local password
+// and no directory account. Those are the ones the preview is for, because every
+// one of them stops signing in with the password they hold.
+//
+// LocalOwners answers the subset the refusal is about. This read answers the
+// whole population, because a preview that named the subset would read as the
+// whole blast radius and the people it dropped still move.
+//
+// Two forms carry the domain, and the read matches both, because Provider
+// Resolution case 1 reads both: the identifier the person types, and the email
+// address the tenant holds for them. A person whose username is an address at a
+// claimed domain is routed by the claim even when their stored email is not, so
+// a read of the email alone would under-report the population.
+//
+// The read filters the soft delete and nothing else. Every state comes back: a
+// deactivated person is reactivated later, and the claim moves them when they
+// are. The join is an inner join, so a machine account, which holds no
+// user_humans row and no email address, is never in the answer.
+//
+// limit caps the rows. The total counts every match, so a tenant that holds a
+// whole company at one domain reads the number without reading the company.
+//
+// ponytail: the domain is computed per row, so no index answers this and the
+// scan is the whole tenant. LocalOwners already reads the same shape. Add a
+// functional key part on the email domain when a tenant grows large enough to
+// feel it.
+func (r *Repository) PeopleAtDomains(
+	ctx context.Context, tenantID string, domains []string, limit int,
+) ([]DomainPerson, int, error) {
+	r.log.Debug("read the people at the claimed domains",
+		logger.String("tenant_id", tenantID), logger.Int("domains", len(domains)),
+		logger.RequestID(ctx))
+
+	// An empty list moves nobody, and IN () is not a query. Every caller reads
+	// the same empty answer the match below would give.
+	if len(domains) == 0 {
+		r.log.Debug("found no people, because the claim names no domain",
+			logger.String("tenant_id", tenantID), logger.RequestID(ctx))
+		return nil, 0, nil
+	}
+
+	lowered := make([]string, 0, len(domains))
+	for _, domain := range domains {
+		lowered = append(lowered, strings.ToLower(domain))
+	}
+
+	var rows []DomainPerson
+	total, err := db.Conn(ctx, r.db).NewSelect().
+		Model(&rows).
+		ModelTableExpr("users AS u").
+		ColumnExpr("u.id AS user_id").
+		ColumnExpr("u.username AS username").
+		ColumnExpr("LOWER(h.email) AS email").
+		Join("JOIN user_humans AS h ON h.user_id = u.id AND h.tenant_id = u.tenant_id").
+		Where("u.tenant_id = ?", tenantID).
+		Where("u.deleted_at IS NULL").
+		Where("SUBSTRING_INDEX(LOWER(h.email), '@', -1) IN (?) "+
+			"OR SUBSTRING_INDEX(LOWER(u.username), '@', -1) IN (?)",
+			bun.In(lowered), bun.In(lowered)).
+		Order("u.id ASC").
+		Limit(limit).
+		ScanAndCount(ctx)
+	if err != nil {
+		return nil, 0, fmt.Errorf("read the people at the claimed domains of tenant %s: %w", tenantID, err)
+	}
+
+	r.log.Debug("found the people at the claimed domains",
+		logger.String("tenant_id", tenantID), logger.Int("total", total),
+		logger.RequestID(ctx))
+	return rows, total, nil
 }

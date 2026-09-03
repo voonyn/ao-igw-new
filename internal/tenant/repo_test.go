@@ -402,6 +402,102 @@ func TestLocalOwners(t *testing.T) {
 	}
 }
 
+// TestPeopleAtDomains covers the read behind the claim preview of
+// docs/specs/0002-directory-sign-in.md: the people one candidate domain list
+// moves onto a directory.
+//
+// The seeded owner is an IAM_OWNER of the tenant, so the first step proves the
+// answer for a domain that moves a local IAM_OWNER. The steps that follow prove
+// that the read names the whole population and not the owner subset.
+func TestPeopleAtDomains(t *testing.T) {
+	repo, bdb, ctx := testRepoDB(t)
+
+	exec := func(query string, args ...any) {
+		t.Helper()
+		if _, err := bdb.ExecContext(ctx, query, args...); err != nil {
+			t.Fatalf("write %q: %v", query, err)
+		}
+	}
+	read := func(what string, domains []string, limit int) ([]DomainPerson, int) {
+		t.Helper()
+		rows, total, err := repo.PeopleAtDomains(ctx, testTenantID, domains, limit)
+		if err != nil {
+			t.Fatalf("read the people %s: %v", what, err)
+		}
+		return rows, total
+	}
+
+	// The seeded owner carries owner@acme.com and holds IAM_OWNER. A claim on
+	// acme.com moves them, whether or not they hold a password hash.
+	rows, total := read("of the claimed domain", []string{"acme.com"}, 50)
+	if total != 1 || len(rows) != 1 || rows[0].UserID != testUserID {
+		t.Fatalf("acme.com moves %+v (total %d), want the seeded owner", rows, total)
+	}
+	if rows[0].Email != "owner@acme.com" {
+		t.Errorf("the moved person carries the address %q, want the seeded one", rows[0].Email)
+	}
+
+	// The match is on the domain and it ignores case on both sides.
+	if _, total := read("of the claimed domain in capitals", []string{"ACME.COM"}, 50); total != 1 {
+		t.Errorf("ACME.COM moves %d people, want 1", total)
+	}
+	if _, total := read("of a domain nobody carries", []string{"corp.example"}, 50); total != 0 {
+		t.Errorf("corp.example moves %d people, want 0", total)
+	}
+	if _, total := read("of an empty list", nil, 50); total != 0 {
+		t.Errorf("an empty domain list moves %d people, want 0", total)
+	}
+
+	// A person who holds no role and no password hash moves too. The preview
+	// names the whole population, and the guard rail names the owner subset.
+	exec(`INSERT INTO users (id, tenant_id, org_id, username, user_type, state)
+	      VALUES (?, ?, ?, 'second', 1, 1)`, secondUserID, testTenantID, testOrgID)
+	exec(`INSERT INTO user_humans (user_id, tenant_id, email)
+	      VALUES (?, ?, 'second@acme.com')`, secondUserID, testTenantID)
+	if _, total := read("after the second person", []string{"acme.com"}, 50); total != 2 {
+		t.Errorf("acme.com moves %d people, want both", total)
+	}
+
+	// A deactivated person moves. They are reactivated later, and the claim
+	// routes them when they are.
+	exec(`UPDATE users SET state = 2 WHERE id = ?`, secondUserID)
+	if _, total := read("after the deactivation", []string{"acme.com"}, 50); total != 2 {
+		t.Errorf("acme.com moves %d people after a deactivation, want both", total)
+	}
+
+	// The limit caps the page, and the total still counts every match.
+	rows, total = read("with a limit of one", []string{"acme.com"}, 1)
+	if len(rows) != 1 || total != 2 {
+		t.Errorf("a limit of one reads %d rows of %d, want 1 of 2", len(rows), total)
+	}
+
+	// A soft-deleted person moves nobody, because they sign in nowhere.
+	exec(`UPDATE users SET deleted_at = NOW(6) WHERE id = ?`, secondUserID)
+	if _, total := read("after the soft delete", []string{"acme.com"}, 50); total != 1 {
+		t.Errorf("acme.com moves %d people after a soft delete, want 1", total)
+	}
+
+	// The username is the second form Provider Resolution case 1 reads. This
+	// person carries another address, and the claim still moves them.
+	exec(`INSERT INTO users (id, tenant_id, org_id, username, user_type, state)
+	      VALUES (?, ?, ?, 'fourth@acme.com', 1, 1)`, revokedUserID, testTenantID, testOrgID)
+	exec(`INSERT INTO user_humans (user_id, tenant_id, email)
+	      VALUES (?, ?, 'fourth@elsewhere.test')`, revokedUserID, testTenantID)
+	rows, total = read("of the domain the username carries", []string{"acme.com"}, 50)
+	if total != 2 {
+		t.Errorf("acme.com moves %+v (total %d), want the seeded owner and the username", rows, total)
+	}
+
+	// Two domains read as one list.
+	exec(`INSERT INTO users (id, tenant_id, org_id, username, user_type, state)
+	      VALUES (?, ?, ?, 'third', 1, 1)`, newUserID, testTenantID, testOrgID)
+	exec(`INSERT INTO user_humans (user_id, tenant_id, email)
+	      VALUES (?, ?, 'third@other.test')`, newUserID, testTenantID)
+	if _, total := read("of both domains", []string{"acme.com", "other.test"}, 50); total != 2 {
+		t.Errorf("both domains move %d people, want 2", total)
+	}
+}
+
 // TestDeleteMember revokes one tenant membership. The row stays in the
 // database, and every read filters it out. A membership nobody holds answers
 // ErrMemberNotFound.

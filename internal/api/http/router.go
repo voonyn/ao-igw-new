@@ -853,6 +853,12 @@ func mountAdmin(
 		LocalOwners: tenants.LocalOwners,
 		HasPassword: users.HasPassword,
 
+		// The read behind the claim preview. It names the whole population one
+		// candidate domain list moves, and LocalOwners above names the subset the
+		// refusal is about. Both live in the tenant repository, so this package
+		// still imports no user model.
+		PeopleAtDomains: tenants.PeopleAtDomains,
+
 		// The budget of the connection test. It is an outbound call into a
 		// customer network that any console user of the tenant drives, so the
 		// counter lives in Redis alone and a cache failure refuses the test.

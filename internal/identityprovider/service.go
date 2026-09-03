@@ -126,6 +126,13 @@ type (
 	// whom the local password compare still signs in.
 	LocalOwnerLister func(ctx context.Context, tenantID string) ([]tenant.LocalOwner, error)
 
+	// PeopleFinder reads one capped page of the people of a tenant whose email
+	// address carries one of the given domains, and the total behind the page.
+	// It is the read behind the claim preview.
+	PeopleFinder func(
+		ctx context.Context, tenantID string, domains []string, limit int,
+	) ([]tenant.DomainPerson, int, error)
+
 	// PasswordReporter reports whether one person holds a password hash. A
 	// person the tenant does not hold answers false, because they hold none.
 	//
@@ -190,6 +197,11 @@ type Deps struct {
 	// password hash. See docs/specs/0002-directory-sign-in.md.
 	LocalOwners LocalOwnerLister
 	HasPassword PasswordReporter
+
+	// PeopleAtDomains reads the people one candidate domain claim would route to
+	// a directory. It backs the read-only preview and no write, so the refusal
+	// above stays the only thing that stops a claim.
+	PeopleAtDomains PeopleFinder
 
 	// Allow is the connection test budget and the sign-in bind budget. Both are
 	// Redis-only exceptions to the stateless rule CLAUDE.md lists: no table holds
@@ -564,6 +576,73 @@ func (s *Service) keepsALocalOwner(ctx context.Context, a Actor, body Body) erro
 	s.log.Warn("refused a domain claim that would leave the tenant without a local owner",
 		logger.String("tenant_id", a.TenantID), logger.String("user_id", a.UserID))
 	return fmt.Errorf("%w: tenant %s", tenant.ErrLastLocalOwner, a.TenantID)
+}
+
+// previewLimit caps the people one claim preview names.
+//
+// The count beside the page already tells the administrator how many move, so a
+// tenant that holds a whole company at one domain reads the number without
+// landing the company in one answer. Fifty names is more than an operator reads
+// on a form and enough to recognise the population.
+//
+// ponytail: one constant, and the page has no cursor. Add one when an operator
+// asks to walk the whole list rather than read the count.
+const previewLimit = 50
+
+// PreviewClaim names the people a candidate domain list would move onto the
+// directory. It reads, and it writes nothing.
+//
+// It is the second half of the guard rail of docs/specs/0002-directory-sign-in.md.
+// The refusal stops the claim that takes the last local IAM_OWNER, and this read
+// names the population before the save, so an administrator learns what a claim
+// costs while it is still a form.
+//
+// The answer is every person of the tenant whose email address carries one of the
+// domains. Provider Resolution case 1 outranks every case below it, so a claim
+// moves all of them, the people who hold a local password and no directory
+// account included. A preview that named a subset would read as the whole blast
+// radius, and the people it dropped would still move.
+//
+// The rule for who moves lives here and not in the browser, because a second
+// copy of Provider Resolution drifts from this one.
+//
+// Who may read it is who may write the claim. A person who cannot register a
+// provider at that level cannot list the people a claim there would move, so the
+// read is no roster of the tenant for a caller who holds no such right.
+func (s *Service) PreviewClaim(ctx context.Context, a Actor, body ClaimPreviewBody) (ClaimPreview, error) {
+	s.log.Debug("preview a domain claim",
+		logger.String("tenant_id", a.TenantID), logger.String("user_id", a.UserID),
+		logger.Int("domains", len(body.Domains)), logger.RequestID(ctx))
+
+	held, err := s.admitted(ctx, a)
+	if err != nil {
+		return ClaimPreview{}, err
+	}
+	if !held.CanWrite(body.OrgID) {
+		return ClaimPreview{}, s.refuse(a, "", "preview a domain claim")
+	}
+
+	// A form with no domain in the box reads the same empty answer as a domain
+	// nobody carries. The read answers it without a query, so no guard here
+	// repeats one the read already makes.
+	rows, total, err := s.deps.PeopleAtDomains(ctx, a.TenantID, domains(body.Domains), previewLimit)
+	if err != nil {
+		return ClaimPreview{}, s.fail(a, "read the people a domain claim moves", err)
+	}
+
+	people := make([]MovedPerson, 0, len(rows))
+	for _, row := range rows {
+		people = append(people, MovedPerson{
+			UserID:   row.UserID,
+			Username: row.Username,
+			Email:    row.Email,
+		})
+	}
+
+	s.log.Debug("previewed the domain claim",
+		logger.String("tenant_id", a.TenantID), logger.Int("total", total),
+		logger.RequestID(ctx))
+	return ClaimPreview{Total: total, People: people}, nil
 }
 
 // keepsACredential refuses the removal of the last Identity Link of a person who

@@ -79,6 +79,11 @@ func AdminRoutes(router fiber.Router, h *Handler) {
 	router.Post("/identity-providers/test", h.test)
 	router.Post("/identity-providers/:id/test", h.test)
 
+	// The claim preview names the people a candidate domain list moves, before
+	// the save. It reads and it writes nothing, and it is a POST because the
+	// domain list is the body of the form on screen, the way the test above is.
+	router.Post("/identity-providers/claim-preview", h.previewClaim)
+
 	router.Get("/users/:id/identity-links", h.links)
 	router.Delete("/users/:id/identity-links/:linkId", h.unlink)
 }
@@ -123,6 +128,22 @@ func (h *Handler) update(c fiber.Ctx) error {
 		return response.Fail(c, err)
 	}
 	return response.OK(c, view)
+}
+
+// previewClaim names the people the domain box on screen would move onto the
+// directory. It answers before the save, so an administrator reads the
+// population rather than the refusal.
+func (h *Handler) previewClaim(c fiber.Ctx) error {
+	var body ClaimPreviewBody
+	if err := c.Bind().Body(&body); err != nil {
+		return response.Validation(c, err)
+	}
+
+	preview, err := h.svc.PreviewClaim(c.Context(), actorFrom(c), body)
+	if err != nil {
+		return response.Fail(c, err)
+	}
+	return response.OK(c, preview)
 }
 
 func (h *Handler) remove(c fiber.Ctx) error {

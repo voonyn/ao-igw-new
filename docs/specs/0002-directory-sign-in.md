@@ -390,6 +390,7 @@ Admin routes, on the shared admin group beside `authpolicy`:
 - `PUT /api/v1/admin/identity-providers/:id`
 - `DELETE /api/v1/admin/identity-providers/:id`
 - `POST /api/v1/admin/identity-providers/:id/test`
+- `POST /api/v1/admin/identity-providers/claim-preview`
 - `GET /api/v1/admin/users/:id/identity-links`
 - `DELETE /api/v1/admin/users/:id/identity-links/:linkId`
 

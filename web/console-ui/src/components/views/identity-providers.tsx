@@ -20,6 +20,7 @@ import {
   MutationError,
   mutationMessage,
   UnauthorizedError,
+  type ClaimPreview,
   type ConnectionTestResult,
   type IdentityProvider,
   type IdentityProviderBody,
@@ -296,6 +297,46 @@ function ProviderForm({
 
   const serverList = useMemo(() => lines(servers), [servers]);
   const domainList = useMemo(() => lines(domains).map((d) => d.toLowerCase()), [domains]);
+
+  // The people the domains in the box would move onto this directory.
+  //
+  // The gateway answers it. Provider Resolution owns the rule for who moves —
+  // case 1 outranks every case below it, so a claim routes every person whose
+  // email carries the domain, the people who hold a local password and no
+  // directory account included. A copy of that rule here would drift from the
+  // one the save runs, so the browser computes no part of the population.
+  //
+  // The read is debounced, because the box is a textarea an operator types one
+  // character at a time.
+  //
+  // The answer is held beside the domain list it answered, and `result` is null
+  // when the read did not answer. An edit therefore drops the previous answer on
+  // the render that follows the keystroke, so no stale population is ever read
+  // as the population of the box on screen, and a blank space never stands for
+  // a read that is still running or that failed.
+  const [preview, setPreview] = useState<{ key: string; result: ClaimPreview | null } | null>(null);
+  const domainKey = domainList.join(",");
+  useEffect(() => {
+    if (domainKey === "") return;
+    let live = true;
+    const timer = setTimeout(() => {
+      identityProvidersApi
+        .previewClaim(level, domainList)
+        .then((result) => {
+          if (live) setPreview({ key: domainKey, result });
+        })
+        // A preview is a convenience, and the save carries its own refusal, so a
+        // read that did not answer says so and stops there. A session that ended
+        // surfaces on the next write, which is where it is handled.
+        .catch(() => {
+          if (live) setPreview({ key: domainKey, result: null });
+        });
+    }, 400);
+    return () => {
+      live = false;
+      clearTimeout(timer);
+    };
+  }, [domainKey, domainList, level]);
 
   const scheme = IDP_MODE_SCHEMES[mode];
   // The gateway refuses a server string that does not match the transport. This
@@ -741,6 +782,9 @@ function ProviderForm({
             />
           </Field>
           {fieldError?.field === "domains" && <FieldError text={fieldError.text} />}
+          {domainKey !== "" && (
+            <ClaimPreviewNote answered={preview?.key === domainKey} preview={preview?.result ?? null} />
+          )}
         </div>
       </SectionCard>
 
@@ -806,6 +850,56 @@ function FieldError({ text }: { text: string }) {
   return (
     <div role="alert" style={{ fontSize: 12.5, color: "var(--error)", marginTop: 6 }}>
       {text}
+    </div>
+  );
+}
+
+/** The people the domains in the box route to this directory, named before the
+ * save.
+ *
+ * A claim routes every person who carries one of the domains, whether or not
+ * this gateway holds a password for them. Anyone in this list who signs in with
+ * a password today signs in against the directory instead, so an operator reads
+ * the population while the form is still a form.
+ *
+ * `total` counts every one of them and `people` is one capped page, so a domain
+ * that carries a whole company reads as a number and a sample.
+ *
+ * Four states, and none of them is a blank space. A blank space beside a domain
+ * box reads as "nobody moves", and the two states that are not an answer — the
+ * read is still running, and the read failed — must never read that way. The
+ * caller renders nothing at all when the box is empty, which is the one case
+ * where there is truly nothing to say.
+ *
+ * The sentence is in the present tense, because the form prefills the domains a
+ * stored provider already claims. "Moves when you save" would assert a change
+ * that already happened. */
+function ClaimPreviewNote({ answered, preview }: { answered: boolean; preview: ClaimPreview | null }) {
+  const note = (text: string, tone?: string) => (
+    <div style={{ fontSize: 12.5, color: tone ?? "var(--muted)", marginTop: 8 }}>{text}</div>
+  );
+
+  if (!answered) return note("Reading who these domains route here…");
+  if (!preview) return note("This preview did not answer, so nobody is named here.", "var(--warn)");
+  if (preview.total === 0) return note("No person of this tenant carries these domains today.");
+
+  const rest = preview.total - preview.people.length;
+  return (
+    <div style={{ fontSize: 12.5, color: "var(--muted)", marginTop: 8 }}>
+      <div style={{ color: "var(--warn)", marginBottom: 4 }}>
+        {preview.total === 1
+          ? "These domains route 1 person to this directory."
+          : `These domains route ${preview.total} people to this directory.`}{" "}
+        Anyone here who signs in with a password today signs in against the directory instead.
+      </div>
+      <ul style={{ margin: 0, paddingInlineStart: 18 }}>
+        {preview.people.map((p) => (
+          <li key={p.userId} style={{ fontFamily: "var(--font-mono)" }}>
+            {p.username} — {p.email}
+          </li>
+        ))}
+      </ul>
+      {rest > 0 && <div style={{ marginTop: 4 }}>and {rest} more.</div>}
     </div>
   );
 }

@@ -98,6 +98,46 @@ type View struct {
 	Created time.Time `json:"created"`
 }
 
+// ClaimPreviewBody is the candidate domain list one preview reads. The console
+// sends the box on screen, so the preview answers values nobody saved yet.
+//
+// OrgID carries the level, the same way Body.OrgID does. The preview names the
+// people of the tenant, so the level decides nothing about the answer and
+// everything about who may read it: a caller who cannot write a provider at that
+// level cannot list the people a claim there would move.
+//
+// The bounds match Body.Domains. A preview of a list the save would refuse as
+// malformed answers the same 422 the save does.
+type ClaimPreviewBody struct {
+	OrgID   string   `json:"orgId" validate:"omitempty,max=36"`
+	Domains []string `json:"domains" validate:"omitempty,max=50,dive,required,fqdn,max=255"`
+}
+
+// ClaimPreview is what one claim preview answers.
+//
+// Total counts every person the claim moves. People is one capped page of them,
+// so a tenant that holds a whole company at one domain reads the number without
+// reading the company.
+//
+// The total sits in the answer and not in meta. meta carries the state of a
+// pager, and this route has none: it answers one fixed sample and the count
+// behind it, and no page of it is reachable. A meta block here would offer a
+// page two that no caller can ask for.
+type ClaimPreview struct {
+	Total  int           `json:"total"`
+	People []MovedPerson `json:"people"`
+}
+
+// MovedPerson is one person a candidate domain claim moves onto the directory.
+//
+// The email address is in it because the domain is what moved them, so the
+// console shows the operator which domain of the form carries each name.
+type MovedPerson struct {
+	UserID   string `json:"userId"`
+	Username string `json:"username"`
+	Email    string `json:"email"`
+}
+
 // LinkView is one Identity Link as the console reads it.
 //
 // IdpID is the handle the unlink route takes. One person holds at most one

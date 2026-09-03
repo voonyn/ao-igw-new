@@ -1041,6 +1041,26 @@ export interface ConnectionTestResult {
   detail: string;
 }
 
+/** What one domain claim preview answers.
+ *
+ * `total` counts every person the claim moves. `people` is one capped page of
+ * them, so a tenant that holds a whole company at one domain reads the number
+ * without reading the company.
+ *
+ * The gateway decides who moves. Provider Resolution owns that rule, and a
+ * second copy of it in the browser would drift from the one the save runs. */
+export interface ClaimPreview {
+  total: number;
+  people: MovedPerson[];
+}
+
+/** One person a candidate domain claim moves onto the directory. */
+export interface MovedPerson {
+  userId: string;
+  username: string;
+  email: string;
+}
+
 const idpBase = "/api/admin/identity-providers";
 
 /** Client for the identity-provider admin API, proxied through the BFF.
@@ -1060,4 +1080,9 @@ export const identityProvidersApi = {
   remove: (id: string) => mutate<{ ok: boolean }>(`${idpBase}/${encodeURIComponent(id)}`, "DELETE"),
   test: (b: IdentityProviderBody, id?: string) =>
     mutate<ConnectionTestResult>(id ? `${idpBase}/${encodeURIComponent(id)}/test` : `${idpBase}/test`, "POST", b),
+  // A read, sent as a POST: the domain list is the box on screen, the way the
+  // connection test sends the form nobody saved yet. `orgId` carries the level,
+  // and the gateway refuses a caller who cannot write a provider there.
+  previewClaim: (orgId: string, domains: string[]) =>
+    mutate<ClaimPreview>(`${idpBase}/claim-preview`, "POST", { orgId, domains }),
 };

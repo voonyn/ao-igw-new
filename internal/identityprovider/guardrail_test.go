@@ -296,3 +296,122 @@ func TestTheConnectionTestStillChecksTheOrganizations(t *testing.T) {
 		t.Fatalf("Test err = %v, want organization.ErrNotFound", err)
 	}
 }
+
+// The population the claim preview tests read. Three people carry the domain the
+// write claims, and one carries another, so a preview that answered the owner
+// subset or the whole tenant is named by the count.
+var (
+	movedOwner  = tenant.DomainPerson{UserID: testUserID, Username: "owner", Email: "owner@corp.example"}
+	movedPerson = tenant.DomainPerson{UserID: personID, Username: "second", Email: "second@corp.example"}
+	stayingOne  = tenant.DomainPerson{
+		UserID: "36363636-3636-3636-3636-363636363636", Username: "third", Email: "third@acme.test",
+	}
+)
+
+// TestPreviewClaimNamesEverybodyTheClaimMoves covers the read half of the first
+// guard rail of docs/specs/0002-directory-sign-in.md: the console names the
+// people a claim moves before it saves.
+//
+// The claim on corp.example moves a local IAM_OWNER and a person who holds no
+// role. Provider Resolution case 1 outranks every case below it, so the preview
+// names both. A preview that named the owner subset would read as the whole
+// blast radius, and the person it dropped would still move.
+func TestPreviewClaimNamesEverybodyTheClaimMoves(t *testing.T) {
+	svc := testService(t, deps{
+		tenantRoles: ownerRoles(),
+		moves:       []tenant.DomainPerson{movedOwner, movedPerson, stayingOne},
+	})
+
+	preview, err := svc.PreviewClaim(context.Background(), admin,
+		ClaimPreviewBody{OrgID: testOrgID, Domains: []string{"Corp.Example"}})
+	if err != nil {
+		t.Fatalf("PreviewClaim: %v", err)
+	}
+
+	if preview.Total != 2 || len(preview.People) != 2 {
+		t.Fatalf("the preview names %+v (total %d), want both people of corp.example",
+			preview.People, preview.Total)
+	}
+	if preview.People[0].UserID != testUserID || preview.People[1].UserID != personID {
+		t.Errorf("the preview names %+v, want the owner and the person", preview.People)
+	}
+	if preview.People[0].Email != "owner@corp.example" || preview.People[0].Username != "owner" {
+		t.Errorf("the first name reads %+v, want the seeded owner", preview.People[0])
+	}
+	if len(written) != 0 || len(claimed) != 0 {
+		t.Errorf("a preview wrote %+v and claimed %v, want nothing", written, claimed)
+	}
+}
+
+// TestPreviewClaimReadsBothFormsOfTheIdentifier covers the second form Provider
+// Resolution case 1 reads. A person whose username is an address at a claimed
+// domain is routed by the claim even when the tenant holds another address for
+// them, so a preview that read the email alone would under-report.
+func TestPreviewClaimReadsBothFormsOfTheIdentifier(t *testing.T) {
+	byUsername := tenant.DomainPerson{
+		UserID:   "37373737-3737-3737-3737-373737373737",
+		Username: "fourth@corp.example", Email: "fourth@acme.test",
+	}
+	svc := testService(t, deps{
+		tenantRoles: ownerRoles(),
+		moves:       []tenant.DomainPerson{byUsername, stayingOne},
+	})
+
+	preview, err := svc.PreviewClaim(context.Background(), admin,
+		ClaimPreviewBody{OrgID: testOrgID, Domains: []string{"corp.example"}})
+	if err != nil {
+		t.Fatalf("PreviewClaim: %v", err)
+	}
+	if preview.Total != 1 || len(preview.People) != 1 || preview.People[0].UserID != byUsername.UserID {
+		t.Fatalf("the preview names %+v (total %d), want the person the username moves",
+			preview.People, preview.Total)
+	}
+}
+
+// TestPreviewClaimAnswersNobodyForAnEmptyList covers a form with no domain in the
+// box. Nothing moves, and the read answers that without a query.
+func TestPreviewClaimAnswersNobodyForAnEmptyList(t *testing.T) {
+	svc := testService(t, deps{
+		tenantRoles: ownerRoles(),
+		moves:       []tenant.DomainPerson{movedOwner},
+	})
+
+	preview, err := svc.PreviewClaim(context.Background(), admin,
+		ClaimPreviewBody{OrgID: testOrgID})
+	if err != nil {
+		t.Fatalf("PreviewClaim: %v", err)
+	}
+	if preview.Total != 0 || len(preview.People) != 0 {
+		t.Errorf("an empty domain list names %+v (total %d), want nobody",
+			preview.People, preview.Total)
+	}
+}
+
+// TestPreviewClaimRefusesACallerWhoCannotWriteTheProvider covers the gate. The
+// preview names the people of the tenant, so the right to read it is the right
+// to write the claim. An ORG_OWNER of one organization asks for a tenant-wide
+// claim here.
+func TestPreviewClaimRefusesACallerWhoCannotWriteTheProvider(t *testing.T) {
+	svc := testService(t, deps{
+		memberships: []organization.Membership{{OrgID: testOrgID, Roles: []string{organization.RoleOrgOwner}}},
+		moves:       []tenant.DomainPerson{movedOwner, movedPerson},
+	})
+
+	_, err := svc.PreviewClaim(context.Background(), admin,
+		ClaimPreviewBody{Domains: []string{"corp.example"}})
+	if !errors.Is(err, ErrForbidden) {
+		t.Fatalf("err = %v, want ErrForbidden", err)
+	}
+}
+
+// TestPreviewClaimRefusesAPersonWithoutAdminRole refuses a person who
+// administers nothing, the way every other route of this package does.
+func TestPreviewClaimRefusesAPersonWithoutAdminRole(t *testing.T) {
+	svc := testService(t, deps{moves: []tenant.DomainPerson{movedOwner}})
+
+	_, err := svc.PreviewClaim(context.Background(), admin,
+		ClaimPreviewBody{Domains: []string{"corp.example"}})
+	if !errors.Is(err, ErrNotAdmin) {
+		t.Fatalf("err = %v, want ErrNotAdmin", err)
+	}
+}
