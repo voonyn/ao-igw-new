@@ -226,8 +226,11 @@ new field to its zero value, which is case 3, which is what they were.
   sign-in**, the same slug an unknown identifier gets. It is not a credential failure
   and it spends no budget, but a slug of its own would name every directory-owned person
   for as long as the provider stays off, which is a permanent enumeration oracle at
-  `/login/password`. `directory_disabled` is the answer of the admin and test routes,
-  where the caller is already authenticated.
+  `/login/password`. The admin and test routes carry no slug of their own for this
+  state. An administrator reads the state off the provider row, and the connection
+  test still runs against an inactive provider, so a misconfiguration can be fixed
+  and verified before the provider goes active again. A soft-deleted provider
+  answers 404 `not_found` on those routes, like every other deleted entity.
 - **Every failure still reaches `refuse`.** `internal/session/service.go:249-260` is the
   only writer of `login.failed` and it has one caller. A bind that returns early writes
   no audit row. Route every outcome through it.
@@ -395,9 +398,14 @@ Admin routes, on the shared admin group beside `authpolicy`:
 - `DELETE /api/v1/admin/users/:id/identity-links/:linkId`
 
 Every answer uses the one envelope. Every error carries a slug. New slugs:
-`directory_unavailable`, `directory_disabled`, `provider_ambiguous`,
-`domain_already_claimed`, `last_local_owner`, `last_identity_link`,
-`password_not_local`, `directory_no_entry`, `directory_misconfigured`.
+`directory_unavailable`, `domain_already_claimed`, `last_local_owner`,
+`last_identity_link`, `password_not_local`, `directory_no_entry`,
+`directory_misconfigured`.
+
+`directory_disabled` and `provider_ambiguous` are not slugs. Both name a state that
+no answer carries. `directory_disabled` is an audit `reason` only. The resolver
+swallows the ambiguous case, because a slug for it counts the providers of a tenant
+for an unauthenticated caller.
 
 `directory_no_entry` is the portal re-proof only, and it answers 409. A person whom
 no single directory entry proves holds a broken account: no live active Identity

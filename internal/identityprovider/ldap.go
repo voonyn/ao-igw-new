@@ -50,8 +50,11 @@ var ErrDirectory = errors.New("the directory did not answer")
 // The sign-in answers it with the slug an unknown identifier gets. A slug of its
 // own would name every directory-owned person of the tenant for as long as the
 // provider stays off, which is a permanent enumeration oracle at the password
-// step. directory_disabled is the answer of the admin and the test route, where
-// the caller is already authenticated. See docs/specs/0002-directory-sign-in.md.
+// step. directory_disabled is an audit reason and never a slug.
+//
+// The sign-in is the only caller. The admin and the test routes read the state off
+// the provider row and raise nothing, so a misconfigured directory can be fixed and
+// tested before it goes active again. See docs/specs/0002-directory-sign-in.md.
 var ErrDisabled = errors.New("the identity provider is disabled")
 
 // ErrTooManyBinds reports a person who spent their whole bind budget, or the
