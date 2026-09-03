@@ -52,9 +52,12 @@ var ErrDirectory = errors.New("the directory did not answer")
 // provider stays off, which is a permanent enumeration oracle at the password
 // step. directory_disabled is an audit reason and never a slug.
 //
-// The sign-in is the only caller. The admin and the test routes read the state off
-// the provider row and raise nothing, so a misconfigured directory can be fixed and
-// tested before it goes active again. See docs/specs/0002-directory-sign-in.md.
+// Prove raises it, and the sign-in and the portal re-proof both call Prove. The
+// re-proof maps it onto ErrDirectoryUnavailable, which tells a caller who already
+// proved who they are to try again, and names no person. The admin and the test
+// routes read the state off the provider row and raise nothing, so a misconfigured
+// directory can be fixed and tested before it goes active again. See
+// docs/specs/0002-directory-sign-in.md.
 var ErrDisabled = errors.New("the identity provider is disabled")
 
 // ErrTooManyBinds reports a person who spent their whole bind budget, or the

@@ -14,12 +14,13 @@ import (
 // live active providers of the tenant give it, and so do two Identity Links that
 // both take a typed password.
 //
-// The slug of this refusal is provider_ambiguous. No answer of the sign-in
-// carries it, and no route maps it: the identifier step answers the same thing
-// in every case, so the caller falls back to the local password compare, which
-// refuses the password step the way an unknown identifier already does. A
-// gateway that picked one of the two instead would send the password of one
-// customer to the server of another. See docs/adr/0013.
+// provider_ambiguous is not a slug. No answer carries it and no route maps it,
+// because a slug of its own would count the providers of a tenant for an
+// unauthenticated caller. The identifier step answers the same thing in every
+// case, so the caller falls back to the local password compare, which refuses
+// the password step the way an unknown identifier already does. A gateway that
+// picked one of the two instead would send the password of one customer to the
+// server of another. See docs/adr/0013.
 var ErrAmbiguous = errors.New("no single identity provider proves this sign-in")
 
 // The reads the resolver composes its answer from. Each one is a function value,
