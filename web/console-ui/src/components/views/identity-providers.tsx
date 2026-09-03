@@ -47,8 +47,8 @@ const STATES = [1, 2];
 
 /** The six attributes read from one directory entry.
  *
- * The three required ones are what a person is created from: the stable id, the
- * username, and the email. The other three are names, and a directory that
+ * The two required ones are what a person is keyed by: the stable id and the
+ * username. The other four are optional, the email included, and a directory that
  * carries none of them still signs somebody in. */
 type AttrKey = "attrId" | "attrUsername" | "attrEmail" | "attrFirstName" | "attrLastName" | "attrDisplayName";
 
@@ -61,7 +61,7 @@ const ATTRS: { key: AttrKey; label: string; placeholder: string; required?: bool
     note: "The identity link stores this value, so a username changed in the directory never orphans the person.",
   },
   { key: "attrUsername", label: "Username", placeholder: "sAMAccountName", required: true },
-  { key: "attrEmail", label: "Email", placeholder: "mail", required: true },
+  { key: "attrEmail", label: "Email (optional)", placeholder: "mail" },
   { key: "attrFirstName", label: "First name (optional)", placeholder: "givenName" },
   { key: "attrLastName", label: "Last name (optional)", placeholder: "sn" },
   { key: "attrDisplayName", label: "Display name (optional)", placeholder: "displayName" },
