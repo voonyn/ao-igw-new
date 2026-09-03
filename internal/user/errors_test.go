@@ -78,3 +78,36 @@ func TestErrDirectoryNoEntryMaps(t *testing.T) {
 		t.Errorf("the message is %q, want one that never says to try again", body.Message)
 	}
 }
+
+// TestErrPasswordNotLocalMaps covers the slug both password paths of this domain
+// answer with. The self-service change and the administrative reset refuse the
+// same person, so one sentinel and one slug serve both.
+//
+// The mapper is registered once, for the whole package. The admin handler and
+// the account handler read the same rule.
+func TestErrPasswordNotLocalMaps(t *testing.T) {
+	app := fiber.New()
+	app.Get("/", func(c fiber.Ctx) error {
+		return response.Fail(c, fmt.Errorf("reset the password of a user: %w", ErrPasswordNotLocal))
+	})
+
+	res, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/", nil))
+	if err != nil {
+		t.Fatalf("run request: %v", err)
+	}
+	defer res.Body.Close() //nolint:errcheck
+
+	if res.StatusCode != fiber.StatusConflict {
+		t.Errorf("status is %d, want %d", res.StatusCode, fiber.StatusConflict)
+	}
+
+	var body struct {
+		Error string `json:"error"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&body); err != nil {
+		t.Fatalf("read the body: %v", err)
+	}
+	if body.Error != "password_not_local" {
+		t.Errorf("the slug is %q, want %q", body.Error, "password_not_local")
+	}
+}

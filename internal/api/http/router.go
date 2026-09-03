@@ -572,6 +572,8 @@ func mountAdmin(
 		Log:         log,
 	})
 
+	directory, _ := directoryReProof(bdb, rdb, cipher, users, log)
+
 	svc := user.NewService(user.Deps{
 		Find:           users.FindByID,
 		Tenant:         tenants.FindByID,
@@ -608,6 +610,12 @@ func mountAdmin(
 		// organization it lands in. It is the same check the self-service change
 		// runs, so the console policy is enforced wherever a password is chosen.
 		CheckPassword: policySvc.Enforce,
+
+		// The reset refuses a person the Directory owns. It is the same resolver
+		// the portal password check runs, so one question decides the credential
+		// in both places. The bind half is unused here: this path writes a token
+		// and proves no password.
+		Directory: directory,
 
 		InTx:  tx,
 		Audit: recorder,

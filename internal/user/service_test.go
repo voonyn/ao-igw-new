@@ -671,6 +671,74 @@ func TestResetPasswordAnswersTheTokenOnceAndStoresADigest(t *testing.T) {
 	wantOneEvent(t, audit.ActionUserPasswordReset, testUserID)
 }
 
+// TestResetPasswordRefusesADirectoryOwnedPerson covers the refusal the
+// self-service change already makes, on the path an operator drives.
+//
+// The token buys such a person nothing. Provider Resolution case 1 routes them
+// to the bind whatever the stored hash holds, so the reset must refuse rather
+// than hand over a value that signs nobody in. Nothing is written.
+func TestResetPasswordRefusesADirectoryOwnedPerson(t *testing.T) {
+	svc := adminService(t, adminDeps{
+		tenantRoles: []string{tenant.RoleIAMOwner},
+		rows:        []User{seededPerson(testOrgID, StateActive)},
+		directory:   "idp-1",
+	})
+
+	_, err := svc.ResetPassword(context.Background(), admin, testUserID)
+	if !errors.Is(err, ErrPasswordNotLocal) {
+		t.Fatalf("ResetPassword answered %v, want ErrPasswordNotLocal", err)
+	}
+	if len(writtenTokens) != 0 {
+		t.Errorf("the refusal wrote %+v, want no token", writtenTokens)
+	}
+	if len(events) != 0 {
+		t.Errorf("the refusal recorded %+v, want no audit event", events)
+	}
+}
+
+// TestResetPasswordStillWorksForNoHashAndNoDirectory covers the one state
+// the refusal must let through: a person who holds no password hash and whom no
+// directory owns. A token is their only way back in, so the reset still works.
+func TestResetPasswordStillWorksForNoHashAndNoDirectory(t *testing.T) {
+	person := seededPerson(testOrgID, StateActive)
+	person.PasswordHash = ""
+	svc := adminService(t, adminDeps{
+		tenantRoles: []string{tenant.RoleIAMOwner},
+		rows:        []User{person},
+	})
+
+	got, err := svc.ResetPassword(context.Background(), admin, testUserID)
+	if err != nil {
+		t.Fatalf("ResetPassword: %v", err)
+	}
+	if got.Token == "" || len(writtenTokens) != 1 {
+		t.Fatalf("the reset wrote %+v, want one token", writtenTokens)
+	}
+}
+
+// TestResetPasswordFailsOnABrokenDirectoryRead covers a resolver that could not
+// answer. The read decides the credential, so a failure stops the request. A
+// reset that fell back to the token would hand one to a person the directory
+// owns, which is the refusal above.
+func TestResetPasswordFailsOnABrokenDirectoryRead(t *testing.T) {
+	svc := adminService(t, adminDeps{
+		tenantRoles:    []string{tenant.RoleIAMOwner},
+		rows:           []User{seededPerson(testOrgID, StateActive)},
+		directoryFails: true,
+	})
+
+	_, err := svc.ResetPassword(context.Background(), admin, testUserID)
+	if err == nil {
+		t.Fatal("ResetPassword answered no error, want the failed directory read")
+	}
+	if errors.Is(err, ErrPasswordNotLocal) {
+		t.Errorf("a broken read answered %v, want a server error", err)
+	}
+	if len(writtenTokens) != 0 {
+		t.Errorf("the failure wrote %+v, want no token", writtenTokens)
+	}
+}
+
 // TestResetMFAClearsEverySecondFactor covers the TOTP secret, the recovery codes
 // behind it, and every registered passkey. The console offers one button, so one
 // call clears all three.
@@ -966,6 +1034,13 @@ type adminDeps struct {
 	// enrolFails answers a failure from the Scan Verifier, as an outage there
 	// does.
 	enrolFails bool
+	// directory is the provider Provider Resolution names for the subject of the
+	// write. Empty means that no directory owns them, which is what a local
+	// account answers.
+	directory string
+	// directoryFails answers a broken resolver read, as a database that could
+	// not answer does.
+	directoryFails bool
 }
 
 // What the writes of one admin test did. adminService clears them, and the
@@ -1087,6 +1162,12 @@ func adminService(t *testing.T, d adminDeps) *Service {
 				return policyRefusal
 			}
 			return nil
+		},
+		Directory: func(context.Context, string, string) (string, string, error) {
+			if d.directoryFails {
+				return "", "", errors.New("the directory read failed")
+			}
+			return d.directory, "ada", nil
 		},
 
 		CountTenantOwners: func(context.Context, string) (int64, error) {

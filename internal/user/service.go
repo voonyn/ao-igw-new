@@ -186,6 +186,15 @@ type Deps struct {
 	// password is chosen.
 	CheckPassword PasswordChecker
 
+	// Directory names the Directory that owns one person. It is the same
+	// resolver the self-service change takes, so one question decides the
+	// credential of a person wherever a password of theirs is written.
+	//
+	// The stored hash cannot decide it. A domain claim routes a person the
+	// tenant already held, and the claim writes no row, so that person keeps a
+	// hash no sign-in reads. See AccountDeps.Directory.
+	Directory DirectoryResolver
+
 	InTx  db.TxRunner
 	Audit *audit.Recorder
 	Log   logger.Logger
@@ -733,12 +742,35 @@ func (s *Service) Delete(ctx context.Context, a Actor, userID string) error {
 // Nothing sends it. The notification transport is a later slice, so until it
 // lands the operator hands the value over. An operator who loses it resets
 // again, and the stored password is unchanged either way.
+//
+// A person the Directory owns is refused, with the slug the self-service change
+// answers. See AccountService.ChangePassword.
 func (s *Service) ResetPassword(ctx context.Context, a Actor, userID string) (ResetView, error) {
 	s.log.Debug("reset the password of a user",
 		logger.String("tenant_id", a.TenantID), logger.String("user_id", userID), logger.RequestID(ctx))
 
 	if _, err := s.writable(ctx, a, userID, "reset the password of a user"); err != nil {
 		return ResetView{}, err
+	}
+
+	// The token buys a person the Directory owns nothing. Provider Resolution
+	// case 1 routes them to the bind whatever the password_hash column holds, so
+	// the operator would hand over a value that signs nobody in, and read no
+	// answer that says why. The refusal comes before the mint, so no token row
+	// and no audit row is written.
+	//
+	// A named provider alone decides it, and never an empty hash. A person who
+	// holds neither still resets, because the token is their only way back in.
+	idpID, _, err := s.deps.Directory(ctx, a.TenantID, userID)
+	if err != nil {
+		return ResetView{}, s.fail(a.TenantID, a.UserID, "read the directory that owns the person", err)
+	}
+	if idpID != "" {
+		s.log.Warn("refused a password reset on an account the directory owns",
+			logger.String("tenant_id", a.TenantID),
+			logger.String("user_id", a.UserID),
+			logger.String("target_user_id", userID))
+		return ResetView{}, fmt.Errorf("%w: tenant %s, user %s", ErrPasswordNotLocal, a.TenantID, userID)
 	}
 
 	token, err := crypto.SessionToken()
