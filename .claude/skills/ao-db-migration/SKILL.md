@@ -35,7 +35,7 @@ never changes:
 | `audit_events` | append-only |
 | `system_bootstrap` | single-row marker |
 | `user_humans` | 1:1 extension, follows `users` |
-| `identity_provider_user_links` | nobody re-reads an unlinked account, `idp.unlinked` is the record |
+| `user_federation_links` | nobody re-reads an unlinked account, `federation.unlinked` is the record |
 
 ## Unique keys on a soft-deleted table
 
