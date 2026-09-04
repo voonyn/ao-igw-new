@@ -1165,7 +1165,7 @@ func TestVerifyPassword_DirectoryUnavailable(t *testing.T) {
 	}
 
 	metadata := refusal(t, st)
-	if !strings.Contains(metadata, `"reason":"directory_unavailable"`) {
+	if !strings.Contains(metadata, `"reason":"federation_unavailable"`) {
 		t.Errorf("the trail recorded %q, want the directory reason", metadata)
 	}
 	if !strings.Contains(metadata, directoryIdp) {
@@ -1185,7 +1185,7 @@ func TestVerifyPassword_DirectoryDisabled(t *testing.T) {
 	if !errors.Is(err, ErrFederationDisabled) {
 		t.Fatalf("err = %v, want ErrFederationDisabled", err)
 	}
-	if !strings.Contains(refusal(t, st), `"reason":"directory_disabled"`) {
+	if !strings.Contains(refusal(t, st), `"reason":"federation_disabled"`) {
 		t.Errorf("the trail recorded %q, want the disabled reason", st.events[0].Metadata)
 	}
 }
@@ -1193,15 +1193,15 @@ func TestVerifyPassword_DirectoryDisabled(t *testing.T) {
 // TestVerifyPassword_TooManyBinds covers the bind budget. The person waits out
 // the window, and the trail records the refused sign-in.
 func TestVerifyPassword_TooManyBinds(t *testing.T) {
-	svc, st := directoryService(t, refusedBind(ErrTooManyBinds))
+	svc, st := directoryService(t, refusedBind(ErrTooManyProofs))
 	opened := signedInAgainst(t, svc)
 
 	_, _, err := svc.VerifyPassword(
 		context.Background(), "tenant-1", opened.Token, "the-directory-password")
-	if !errors.Is(err, ErrTooManyBinds) {
-		t.Fatalf("err = %v, want ErrTooManyBinds", err)
+	if !errors.Is(err, ErrTooManyProofs) {
+		t.Fatalf("err = %v, want ErrTooManyProofs", err)
 	}
-	if !strings.Contains(refusal(t, st), `"reason":"too_many_binds"`) {
+	if !strings.Contains(refusal(t, st), `"reason":"too_many_proofs"`) {
 		t.Errorf("the trail recorded %q, want the budget reason", st.events[0].Metadata)
 	}
 }
@@ -1357,7 +1357,7 @@ func TestVerifyPassword_FirstBindThatCreatesNobody(t *testing.T) {
 	if st.saved.Authenticated() {
 		t.Error("the refused sign-in upgraded the login session")
 	}
-	if !strings.Contains(refusal(t, st), `"reason":"directory_unavailable"`) {
+	if !strings.Contains(refusal(t, st), `"reason":"federation_unavailable"`) {
 		t.Errorf("the trail recorded %q, want the directory reason", st.events[0].Metadata)
 	}
 }
@@ -1388,7 +1388,7 @@ func TestVerifyPassword_DirectoryMisconfigured(t *testing.T) {
 	if st.saved.Authenticated() {
 		t.Error("the refused sign-in upgraded the login session")
 	}
-	if !strings.Contains(refusal(t, st), `"reason":"directory_misconfigured"`) {
+	if !strings.Contains(refusal(t, st), `"reason":"federation_misconfigured"`) {
 		t.Errorf("the trail recorded %q, want the configuration reason", st.events[0].Metadata)
 	}
 }
@@ -1424,7 +1424,7 @@ func TestDirectoryRefusalsAnswerOneSlug(t *testing.T) {
 	if disabled := answer(fmt.Errorf("%w: session s-1", ErrFederationDisabled)); disabled != wrong {
 		t.Fatalf("a disabled directory answers %s, want the %s a wrong password answers", disabled, wrong)
 	}
-	if spent := answer(fmt.Errorf("%w: session s-1", ErrTooManyBinds)); spent != wrong {
+	if spent := answer(fmt.Errorf("%w: session s-1", ErrTooManyProofs)); spent != wrong {
 		t.Fatalf("a spent bind budget answers %s, want the %s a wrong password answers", spent, wrong)
 	}
 	if unavailable := answer(fmt.Errorf("%w: session s-1", ErrFederationUnavailable)); unavailable == wrong {

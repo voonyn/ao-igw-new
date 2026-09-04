@@ -159,8 +159,8 @@ func TestCreateClaimsTheDomainsAndRecordsTheEvent(t *testing.T) {
 	if len(claimed) != 1 || claimed[0] != "corp.example" {
 		t.Errorf("the create claimed %v, want the lowercased domain", claimed)
 	}
-	if len(events) != 1 || events[0].Action != string(audit.ActionIdpCreated) {
-		t.Fatalf("the create recorded %+v, want one idp.created", events)
+	if len(events) != 1 || events[0].Action != string(audit.ActionFederationCreated) {
+		t.Fatalf("the create recorded %+v, want one federation.created", events)
 	}
 	if view.TimeoutSeconds != 5 || len(view.Domains) != 1 {
 		t.Errorf("the view reads %+v, want the timeout and the claim it wrote", view)
@@ -279,8 +279,8 @@ func TestDeleteRecordsTheEvent(t *testing.T) {
 	if len(deleted) != 1 || deleted[0] != tenantFederationID {
 		t.Fatalf("the delete removed %v, want %s", deleted, tenantFederationID)
 	}
-	if len(events) != 1 || events[0].Action != string(audit.ActionIdpDeleted) {
-		t.Errorf("the delete recorded %+v, want one idp.deleted", events)
+	if len(events) != 1 || events[0].Action != string(audit.ActionFederationDeleted) {
+		t.Errorf("the delete recorded %+v, want one federation.deleted", events)
 	}
 }
 
@@ -310,8 +310,8 @@ func TestUnlinkRecordsTheEventAndNamesThePerson(t *testing.T) {
 	if len(unlinked) != 1 || unlinked[0] != personID {
 		t.Fatalf("the unlink removed %v, want the link of %s", unlinked, personID)
 	}
-	if len(events) != 1 || events[0].Action != string(audit.ActionIdpUnlinked) {
-		t.Fatalf("the unlink recorded %+v, want one idp.unlinked", events)
+	if len(events) != 1 || events[0].Action != string(audit.ActionFederationUnlinked) {
+		t.Fatalf("the unlink recorded %+v, want one federation.unlinked", events)
 	}
 	if !strings.Contains(events[0].Metadata, personID) {
 		t.Errorf("the event reads %s, want the person named in the metadata", events[0].Metadata)

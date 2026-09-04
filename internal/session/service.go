@@ -80,7 +80,7 @@ type FederationResolver func(
 // answers the person the sign-in carries on as. It answers one of five sentinels
 // of this package when the directory refused: ErrBadCredentials,
 // ErrFederationDisabled, ErrFederationUnavailable, ErrFederationMisconfigured, or
-// ErrTooManyBinds.
+// ErrTooManyProofs.
 //
 // userID is the person the login session already names, and it is empty when the
 // identifier named nobody. The answer names that same person when the session
@@ -213,7 +213,7 @@ func (s *Service) open(
 	s.log.Debug("opened login session",
 		logger.String("tenant_id", tenantID),
 		logger.String("session_id", live.ID),
-		logger.String("idp_id", live.IdpID), logger.RequestID(ctx))
+		logger.String("federation_id", live.IdpID), logger.RequestID(ctx))
 	return Opened{ID: live.ID, Token: token}, nil
 }
 
@@ -360,13 +360,13 @@ func (s *Service) prove(ctx context.Context, live LoginSession, password string)
 	person, err := s.deps.Prove(ctx, live.TenantID, live.IdpID, live.UserID, live.Identifier, password)
 	switch {
 	case errors.Is(err, ErrFederationDisabled):
-		return Identity{}, s.refuse(ctx, live, "directory_disabled", err, ErrFederationDisabled)
+		return Identity{}, s.refuse(ctx, live, "federation_disabled", err, ErrFederationDisabled)
 	case errors.Is(err, ErrFederationUnavailable):
-		return Identity{}, s.refuse(ctx, live, "directory_unavailable", err, ErrFederationUnavailable)
+		return Identity{}, s.refuse(ctx, live, "federation_unavailable", err, ErrFederationUnavailable)
 	case errors.Is(err, ErrFederationMisconfigured):
-		return Identity{}, s.refuse(ctx, live, "directory_misconfigured", err, ErrFederationMisconfigured)
-	case errors.Is(err, ErrTooManyBinds):
-		return Identity{}, s.refuse(ctx, live, "too_many_binds", err, ErrTooManyBinds)
+		return Identity{}, s.refuse(ctx, live, "federation_misconfigured", err, ErrFederationMisconfigured)
+	case errors.Is(err, ErrTooManyProofs):
+		return Identity{}, s.refuse(ctx, live, "too_many_proofs", err, ErrTooManyProofs)
 	case err != nil:
 		return Identity{}, s.refuse(ctx, live, "bad_password", err, ErrBadCredentials)
 	}
@@ -440,12 +440,12 @@ func (s *Service) refuse(
 		logger.String("reason", reason),
 		logger.Err(cause))
 
-	// The provider names the directory that refused, so an operator reading a
+	// The federation names the directory that refused, so an operator reading a
 	// failed sign-in knows which one to look at. It is the id of a row the tenant
 	// registered, and never a credential of any kind.
 	metadata := map[string]any{"reason": reason}
 	if live.IdpID != "" {
-		metadata["idp_id"] = live.IdpID
+		metadata["federation_id"] = live.IdpID
 	}
 	if err := s.deps.Audit.Record(ctx, s.entry(live, audit.ActionLoginFailed, metadata)); err != nil {
 		return err

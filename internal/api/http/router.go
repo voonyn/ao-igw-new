@@ -1479,7 +1479,7 @@ func directoryError(err error) error {
 	case errors.Is(err, userfederation.ErrDisabled):
 		return session.ErrFederationDisabled
 	case errors.Is(err, userfederation.ErrTooManyProofs):
-		return session.ErrTooManyBinds
+		return session.ErrTooManyProofs
 	case errors.Is(err, userfederation.ErrNoOrganization),
 		errors.Is(err, userfederation.ErrNoUsername):
 		return session.ErrFederationMisconfigured

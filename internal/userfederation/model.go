@@ -117,7 +117,8 @@ type Domain struct {
 // one directory account to one person.
 //
 // It is not an entity. It carries no deleted_at and it is hard deleted, because
-// nobody re-reads an unlinked account: the idp.unlinked audit row is the record.
+// nobody re-reads an unlinked account: the federation.unlinked audit row is
+// the record.
 //
 // ExternalID is the stable id of the directory, objectGUID in Active Directory,
 // and never the username. FederationName is read from user_federations, because

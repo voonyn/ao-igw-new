@@ -86,8 +86,8 @@ func TestProvision(t *testing.T) {
 		t.Error("the link carries no creation time")
 	}
 
-	if len(events) != 1 || events[0].Action != string(audit.ActionIdpLinked) {
-		t.Fatalf("the trail holds %v, want one %s row", events, audit.ActionIdpLinked)
+	if len(events) != 1 || events[0].Action != string(audit.ActionFederationLinked) {
+		t.Fatalf("the trail holds %v, want one %s row", events, audit.ActionFederationLinked)
 	}
 	if events[0].ActorID != createdUserID || events[0].EntityID != tenantFederationID {
 		t.Errorf("the trail names actor %q on %q, want %q on %q",

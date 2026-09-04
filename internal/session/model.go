@@ -176,10 +176,10 @@ var ErrFederationUnavailable = errors.New("the directory did not answer")
 // ErrFederationUnavailable.
 var ErrFederationMisconfigured = errors.New("the directory cannot create the person")
 
-// ErrTooManyBinds reports a person who spent their whole bind budget, or the
+// ErrTooManyProofs reports a person who spent their whole bind budget, or the
 // typed identifier that spent it when the identifier step named nobody. The
 // person waits out the window, and the directory is not dialled.
-var ErrTooManyBinds = errors.New("too many directory binds")
+var ErrTooManyProofs = errors.New("too many directory binds")
 
 // LoginSession is the authority on one person's login. It is what the sealed
 // blob holds, so every field here survives a restart.

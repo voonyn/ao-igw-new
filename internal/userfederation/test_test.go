@@ -161,8 +161,8 @@ func TestTestRecordsTheEventWithTheStage(t *testing.T) {
 	if got.OK || got.Stage != StageDial {
 		t.Fatalf("Test = %+v, want a failure at %s", got, StageDial)
 	}
-	if len(events) != 1 || events[0].Action != string(audit.ActionIdpTested) {
-		t.Fatalf("the test recorded %+v, want one idp.tested", events)
+	if len(events) != 1 || events[0].Action != string(audit.ActionFederationTested) {
+		t.Fatalf("the test recorded %+v, want one federation.tested", events)
 	}
 	if !strings.Contains(events[0].Metadata, `"stage":"dial"`) {
 		t.Errorf("the event metadata reads %q, want the stage that failed", events[0].Metadata)

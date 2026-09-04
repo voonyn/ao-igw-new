@@ -96,9 +96,9 @@ func failed(stage, detail string) TestResult {
 // beside a stored id replaces the stored row for this one test, and an absent
 // bind password in it keeps the stored credential.
 func (s *Service) Test(ctx context.Context, a Actor, federationID string, body *Body) (TestResult, error) {
-	s.log.Debug("test identity provider",
+	s.log.Debug("test user federation",
 		logger.String("tenant_id", a.TenantID), logger.String("user_id", a.UserID),
-		logger.String("idp_id", federationID), logger.RequestID(ctx))
+		logger.String("federation_id", federationID), logger.RequestID(ctx))
 
 	row, err := s.testable(ctx, a, federationID, body)
 	if err != nil {
@@ -123,7 +123,7 @@ func (s *Service) Test(ctx context.Context, a Actor, federationID string, body *
 	// nobody saved yet names no stored row, so this is the only record of where
 	// the outbound call went, and the budget above is what bounds how often an
 	// administrator can drive one at a host of their choosing.
-	entry := a.entry(audit.ActionIdpTested, federationID, row.OrgID)
+	entry := a.entry(audit.ActionFederationTested, federationID, row.OrgID)
 	entry.Metadata["stage"] = stage
 	entry.Metadata["servers"] = row.Servers
 
@@ -133,10 +133,10 @@ func (s *Service) Test(ctx context.Context, a Actor, federationID string, body *
 		return TestResult{}, s.fail(a, "record the connection test", err)
 	}
 
-	s.log.Info("tested identity provider",
+	s.log.Info("tested user federation",
 		logger.String("tenant_id", a.TenantID),
 		logger.String("user_id", a.UserID),
-		logger.String("idp_id", federationID),
+		logger.String("federation_id", federationID),
 		logger.String("stage", stage))
 	return result, nil
 }
@@ -162,7 +162,7 @@ func (s *Service) testable(ctx context.Context, a Actor, federationID string, bo
 			body = &Body{}
 		}
 		if !held.CanWrite(body.OrgID) {
-			return Federation{}, s.refuse(a, "", "test an identity provider")
+			return Federation{}, s.refuse(a, "", "test a user federation")
 		}
 		if err := s.checkShape(ctx, a, *body); err != nil {
 			return Federation{}, err
@@ -170,7 +170,7 @@ func (s *Service) testable(ctx context.Context, a Actor, federationID string, bo
 		return body.apply(Federation{TenantID: a.TenantID, OrgID: body.OrgID}), nil
 	}
 
-	stored, err := s.writable(ctx, a, federationID, "test an identity provider")
+	stored, err := s.writable(ctx, a, federationID, "test a user federation")
 	if err != nil {
 		return Federation{}, err
 	}
@@ -181,7 +181,7 @@ func (s *Service) testable(ctx context.Context, a Actor, federationID string, bo
 	// and report on an organization it does not belong to, so the level of a
 	// stored row is as fixed here as it is on an update.
 	if body.OrgID != stored.OrgID {
-		return Federation{}, fmt.Errorf("%w: provider %s", ErrLevelFixed, federationID)
+		return Federation{}, fmt.Errorf("%w: federation %s", ErrLevelFixed, federationID)
 	}
 	if err := s.checkShape(ctx, a, *body); err != nil {
 		return Federation{}, err
@@ -222,10 +222,10 @@ func (s *Service) spendTest(ctx context.Context, a Actor) error {
 // would say the same thing twice.
 func probe(ctx context.Context, p Federation) TestResult {
 	if p.BindDN == "" || p.BindPassword == "" {
-		return failed(StageBind, "the identity provider carries no bind credential")
+		return failed(StageBind, "the user federation carries no bind credential")
 	}
 	if len(p.UserObjectClasses) == 0 {
-		return failed(StageSearch, "the identity provider maps no user object class")
+		return failed(StageSearch, "the user federation maps no user object class")
 	}
 
 	conn, stage, err := dial(ctx, p)

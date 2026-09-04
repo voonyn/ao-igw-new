@@ -24,7 +24,7 @@ var ErrNotAdmin = errors.New("no administrative role")
 // ErrForbidden reports that the person administers this tenant or another
 // organization, but not the level the federation belongs to. A tenant-wide
 // federation is written by a tenant manager alone.
-var ErrForbidden = errors.New("cannot write this identity provider")
+var ErrForbidden = errors.New("cannot write this user federation")
 
 // ErrServerScheme reports a server string that does not match the transport. A
 // plain bind and a StartTLS bind carry ldap://, and LDAPS carries ldaps://.
@@ -33,7 +33,7 @@ var ErrServerScheme = errors.New("the server does not match the transport")
 // ErrLevelFixed reports a write that would move a federation between the tenant
 // level and an organization. The level decides which organization a bind creates
 // people in, so a move would relocate every person the next bind creates.
-var ErrLevelFixed = errors.New("an identity provider does not move between levels")
+var ErrLevelFixed = errors.New("a user federation does not move between levels")
 
 // ErrLastLink reports the removal of the last Federation Link of a person who
 // holds no password hash. That person signs in through the directory and through
@@ -240,7 +240,7 @@ func NewService(deps Deps) *Service {
 // Every administrator of the tenant reads the whole list, the same way the
 // application list reads. Writing one is what the roles narrow.
 func (s *Service) List(ctx context.Context, a Actor) ([]View, error) {
-	s.log.Debug("list identity providers",
+	s.log.Debug("list user federations",
 		logger.String("tenant_id", a.TenantID), logger.String("user_id", a.UserID),
 		logger.RequestID(ctx))
 
@@ -250,7 +250,7 @@ func (s *Service) List(ctx context.Context, a Actor) ([]View, error) {
 
 	rows, err := s.deps.List(ctx, a.TenantID)
 	if err != nil {
-		return nil, s.fail(a, "list identity providers", err)
+		return nil, s.fail(a, "list user federations", err)
 	}
 
 	ids := make([]string, 0, len(rows))
@@ -272,7 +272,7 @@ func (s *Service) List(ctx context.Context, a Actor) ([]View, error) {
 		views = append(views, newView(row))
 	}
 
-	s.log.Debug("listed identity providers",
+	s.log.Debug("listed user federations",
 		logger.String("tenant_id", a.TenantID), logger.Int("count", len(views)),
 		logger.RequestID(ctx))
 	return views, nil
@@ -281,8 +281,8 @@ func (s *Service) List(ctx context.Context, a Actor) ([]View, error) {
 // Find reads one live federation of the tenant, with the domains it claims. An id
 // nobody holds, and a soft-deleted federation, both answer ErrNotFound.
 func (s *Service) Find(ctx context.Context, a Actor, federationID string) (View, error) {
-	s.log.Debug("read identity provider",
-		logger.String("tenant_id", a.TenantID), logger.String("idp_id", federationID), logger.RequestID(ctx))
+	s.log.Debug("read user federation",
+		logger.String("tenant_id", a.TenantID), logger.String("federation_id", federationID), logger.RequestID(ctx))
 
 	if _, err := s.admitted(ctx, a); err != nil {
 		return View{}, err
@@ -293,8 +293,8 @@ func (s *Service) Find(ctx context.Context, a Actor, federationID string) (View,
 		return View{}, err
 	}
 
-	s.log.Debug("read the identity provider",
-		logger.String("tenant_id", a.TenantID), logger.String("idp_id", federationID), logger.RequestID(ctx))
+	s.log.Debug("read the user federation",
+		logger.String("tenant_id", a.TenantID), logger.String("federation_id", federationID), logger.RequestID(ctx))
 	return newView(row), nil
 }
 
@@ -305,7 +305,7 @@ func (s *Service) Find(ctx context.Context, a Actor, federationID string) (View,
 // A domain another live federation already holds answers ErrDomainClaimed and
 // leaves nothing behind.
 func (s *Service) Create(ctx context.Context, a Actor, body Body) (View, error) {
-	s.log.Debug("create identity provider",
+	s.log.Debug("create user federation",
 		logger.String("tenant_id", a.TenantID), logger.String("org_id", body.OrgID),
 		logger.RequestID(ctx))
 
@@ -314,7 +314,7 @@ func (s *Service) Create(ctx context.Context, a Actor, body Body) (View, error) 
 		return View{}, err
 	}
 	if !held.CanWrite(body.OrgID) {
-		return View{}, s.refuse(a, "", "create an identity provider")
+		return View{}, s.refuse(a, "", "create a user federation")
 	}
 	if err := s.checkBody(ctx, a, body); err != nil {
 		return View{}, err
@@ -334,19 +334,19 @@ func (s *Service) Create(ctx context.Context, a Actor, body Body) (View, error) 
 		if err := s.deps.Claim(ctx, a.TenantID, row.ID, row.Domains); err != nil {
 			return err
 		}
-		return s.deps.Audit.Record(ctx, a.entry(audit.ActionIdpCreated, row.ID, row.OrgID))
+		return s.deps.Audit.Record(ctx, a.entry(audit.ActionFederationCreated, row.ID, row.OrgID))
 	})
 	if err != nil {
 		if errors.Is(err, ErrDomainClaimed) || errors.Is(err, ErrNameTaken) {
 			return View{}, err
 		}
-		return View{}, s.fail(a, "create identity provider", err)
+		return View{}, s.fail(a, "create user federation", err)
 	}
 
-	s.log.Info("created identity provider",
+	s.log.Info("created user federation",
 		logger.String("tenant_id", a.TenantID),
 		logger.String("user_id", a.UserID),
-		logger.String("idp_id", row.ID))
+		logger.String("federation_id", row.ID))
 	return newView(row), nil
 }
 
@@ -359,15 +359,15 @@ func (s *Service) Create(ctx context.Context, a Actor, body Body) (View, error) 
 // The bind password is write-only. An absent field keeps the stored credential,
 // an empty string clears it, and a value replaces it.
 func (s *Service) Update(ctx context.Context, a Actor, federationID string, body Body) (View, error) {
-	s.log.Debug("update identity provider",
-		logger.String("tenant_id", a.TenantID), logger.String("idp_id", federationID), logger.RequestID(ctx))
+	s.log.Debug("update user federation",
+		logger.String("tenant_id", a.TenantID), logger.String("federation_id", federationID), logger.RequestID(ctx))
 
-	stored, err := s.writable(ctx, a, federationID, "update an identity provider")
+	stored, err := s.writable(ctx, a, federationID, "update a user federation")
 	if err != nil {
 		return View{}, err
 	}
 	if body.OrgID != stored.OrgID {
-		return View{}, fmt.Errorf("%w: provider %s", ErrLevelFixed, federationID)
+		return View{}, fmt.Errorf("%w: federation %s", ErrLevelFixed, federationID)
 	}
 	if err := s.checkBody(ctx, a, body); err != nil {
 		return View{}, err
@@ -382,29 +382,29 @@ func (s *Service) Update(ctx context.Context, a Actor, federationID string, body
 		if err := s.deps.Claim(ctx, a.TenantID, row.ID, row.Domains); err != nil {
 			return err
 		}
-		return s.deps.Audit.Record(ctx, a.entry(audit.ActionIdpUpdated, row.ID, row.OrgID))
+		return s.deps.Audit.Record(ctx, a.entry(audit.ActionFederationUpdated, row.ID, row.OrgID))
 	})
 	if err != nil {
 		if errors.Is(err, ErrDomainClaimed) || errors.Is(err, ErrNameTaken) {
 			return View{}, err
 		}
-		return View{}, s.fail(a, "update identity provider", err)
+		return View{}, s.fail(a, "update user federation", err)
 	}
 
-	s.log.Info("updated identity provider",
+	s.log.Info("updated user federation",
 		logger.String("tenant_id", a.TenantID),
 		logger.String("user_id", a.UserID),
-		logger.String("idp_id", row.ID))
+		logger.String("federation_id", row.ID))
 	return newView(row), nil
 }
 
 // Delete marks one federation deleted. The row stays in the database, the console
 // never shows it again, and the domains it claimed are released.
 func (s *Service) Delete(ctx context.Context, a Actor, federationID string) error {
-	s.log.Debug("delete identity provider",
-		logger.String("tenant_id", a.TenantID), logger.String("idp_id", federationID), logger.RequestID(ctx))
+	s.log.Debug("delete user federation",
+		logger.String("tenant_id", a.TenantID), logger.String("federation_id", federationID), logger.RequestID(ctx))
 
-	stored, err := s.writable(ctx, a, federationID, "delete an identity provider")
+	stored, err := s.writable(ctx, a, federationID, "delete a user federation")
 	if err != nil {
 		return err
 	}
@@ -413,23 +413,23 @@ func (s *Service) Delete(ctx context.Context, a Actor, federationID string) erro
 		if err := s.deps.Delete(ctx, a.TenantID, federationID); err != nil {
 			return err
 		}
-		return s.deps.Audit.Record(ctx, a.entry(audit.ActionIdpDeleted, federationID, stored.OrgID))
+		return s.deps.Audit.Record(ctx, a.entry(audit.ActionFederationDeleted, federationID, stored.OrgID))
 	})
 	if err != nil {
-		return s.fail(a, "delete identity provider", err)
+		return s.fail(a, "delete user federation", err)
 	}
 
-	s.log.Info("deleted identity provider",
+	s.log.Info("deleted user federation",
 		logger.String("tenant_id", a.TenantID),
 		logger.String("user_id", a.UserID),
-		logger.String("idp_id", federationID))
+		logger.String("federation_id", federationID))
 	return nil
 }
 
 // Links reads every Federation Link of one person. Every administrator of the
 // tenant reads them, the same way the user list reads.
 func (s *Service) Links(ctx context.Context, a Actor, userID string) ([]LinkView, error) {
-	s.log.Debug("list identity links",
+	s.log.Debug("list federation links",
 		logger.String("tenant_id", a.TenantID), logger.String("user_id", a.UserID),
 		logger.String("subject_id", userID), logger.RequestID(ctx))
 
@@ -444,28 +444,28 @@ func (s *Service) Links(ctx context.Context, a Actor, userID string) ([]LinkView
 
 	rows, err := s.deps.Links(ctx, a.TenantID, userID)
 	if err != nil {
-		return nil, s.fail(a, "list identity links", err)
+		return nil, s.fail(a, "list federation links", err)
 	}
 
 	views := make([]LinkView, 0, len(rows))
 	for _, row := range rows {
 		views = append(views, newLinkView(row))
 	}
-	s.log.Debug("listed identity links",
+	s.log.Debug("listed federation links",
 		logger.String("tenant_id", a.TenantID), logger.String("user_id", a.UserID),
 		logger.String("subject_id", userID), logger.Int("count", len(views)), logger.RequestID(ctx))
 	return views, nil
 }
 
 // Unlink removes the Federation Link one person holds with one federation. The row
-// is hard deleted, and the idp.unlinked audit row is the record.
+// is hard deleted, and the federation.unlinked audit row is the record.
 //
 // A tenant manager unlinks anybody, and an ORG_OWNER unlinks a person of its own
 // organization.
 func (s *Service) Unlink(ctx context.Context, a Actor, userID, federationID string) error {
-	s.log.Debug("delete identity link",
+	s.log.Debug("delete federation link",
 		logger.String("tenant_id", a.TenantID), logger.String("user_id", a.UserID),
-		logger.String("subject_id", userID), logger.String("idp_id", federationID), logger.RequestID(ctx))
+		logger.String("subject_id", userID), logger.String("federation_id", federationID), logger.RequestID(ctx))
 
 	held, err := s.admitted(ctx, a)
 	if err != nil {
@@ -486,7 +486,7 @@ func (s *Service) Unlink(ctx context.Context, a Actor, userID, federationID stri
 		if err := s.deps.DeleteLink(ctx, a.TenantID, federationID, userID); err != nil {
 			return err
 		}
-		entry := a.entry(audit.ActionIdpUnlinked, federationID, orgID)
+		entry := a.entry(audit.ActionFederationUnlinked, federationID, orgID)
 		entry.Metadata["user_id"] = userID
 		return s.deps.Audit.Record(ctx, entry)
 	})
@@ -494,14 +494,14 @@ func (s *Service) Unlink(ctx context.Context, a Actor, userID, federationID stri
 		if errors.Is(err, ErrLinkNotFound) {
 			return err
 		}
-		return s.fail(a, "delete identity link", err)
+		return s.fail(a, "delete federation link", err)
 	}
 
-	s.log.Info("deleted identity link",
+	s.log.Info("deleted federation link",
 		logger.String("tenant_id", a.TenantID),
 		logger.String("user_id", a.UserID),
 		logger.String("subject_id", userID),
-		logger.String("idp_id", federationID))
+		logger.String("federation_id", federationID))
 	return nil
 }
 
@@ -672,7 +672,7 @@ func (s *Service) keepsACredential(ctx context.Context, a Actor, userID, federat
 
 	working, err := s.deps.Linked(ctx, a.TenantID, userID)
 	if err != nil {
-		return s.fail(a, "read the linked identity providers of the person", err)
+		return s.fail(a, "read the linked user federations of the person", err)
 	}
 	if len(working) == 0 {
 		return nil
@@ -683,11 +683,11 @@ func (s *Service) keepsACredential(ctx context.Context, a Actor, userID, federat
 		}
 	}
 
-	s.log.Warn("refused the removal of the last identity link of a person who holds no password",
+	s.log.Warn("refused the removal of the last federation link of a person who holds no password",
 		logger.String("tenant_id", a.TenantID),
 		logger.String("user_id", a.UserID),
 		logger.String("subject_id", userID),
-		logger.String("idp_id", federationID))
+		logger.String("federation_id", federationID))
 	return fmt.Errorf("%w: tenant %s, user %s", ErrLastLink, a.TenantID, userID)
 }
 
@@ -738,7 +738,7 @@ func (s *Service) find(ctx context.Context, a Actor, federationID string) (Feder
 		if errors.Is(err, ErrNotFound) {
 			return Federation{}, err
 		}
-		return Federation{}, s.fail(a, "read identity provider", err)
+		return Federation{}, s.fail(a, "read user federation", err)
 	}
 	return row, nil
 }
@@ -783,7 +783,7 @@ func (s *Service) refuse(a Actor, federationID, what string) error {
 	s.log.Warn("refused a write",
 		logger.String("tenant_id", a.TenantID),
 		logger.String("user_id", a.UserID),
-		logger.String("idp_id", federationID),
+		logger.String("federation_id", federationID),
 		logger.String("what", what))
 	return fmt.Errorf("%w: %s, tenant %s, user %s", ErrForbidden, what, a.TenantID, a.UserID)
 }
@@ -795,7 +795,7 @@ func (a Actor) entry(action audit.Action, federationID, orgID string) audit.Entr
 		TenantID:   a.TenantID,
 		ActorID:    a.UserID,
 		Action:     action,
-		EntityType: audit.EntityIdentityProvider,
+		EntityType: audit.EntityFederation,
 		EntityID:   federationID,
 		IP:         a.IP,
 		UserAgent:  a.UserAgent,

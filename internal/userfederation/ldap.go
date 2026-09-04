@@ -50,7 +50,7 @@ var ErrDirectory = errors.New("the directory did not answer")
 // The sign-in answers it with the slug an unknown identifier gets. A slug of its
 // own would name every directory-owned person of the tenant for as long as the
 // federation stays off, which is a permanent enumeration oracle at the password
-// step. directory_disabled is an audit reason and never a slug.
+// step. federation_disabled is an audit reason and never a slug.
 //
 // Prove raises it, and the sign-in and the portal re-proof both call Prove. The
 // re-proof maps it onto ErrFederationUnavailable, which tells a caller who already
@@ -226,7 +226,7 @@ type Identity struct {
 // the bind account.
 func (s *Service) Bind(ctx context.Context, p Federation, identifier, password string) (Identity, error) {
 	s.log.Debug("bind against the directory",
-		logger.String("tenant_id", p.TenantID), logger.String("idp_id", p.ID),
+		logger.String("tenant_id", p.TenantID), logger.String("federation_id", p.ID),
 		logger.RequestID(ctx))
 
 	// An empty password is an unauthenticated bind, which most directories
@@ -258,7 +258,7 @@ func (s *Service) Bind(ctx context.Context, p Federation, identifier, password s
 	if err != nil {
 		if errors.Is(err, ErrNoEntry) {
 			s.log.Debug("the directory matched no single entry",
-				logger.String("tenant_id", p.TenantID), logger.String("idp_id", p.ID),
+				logger.String("tenant_id", p.TenantID), logger.String("federation_id", p.ID),
 				logger.RequestID(ctx))
 			return Identity{}, err
 		}
@@ -274,13 +274,13 @@ func (s *Service) Bind(ctx context.Context, p Federation, identifier, password s
 
 	if err := conn.Bind(entry.DN, password); err != nil {
 		if ldap.IsErrorWithCode(err, ldap.LDAPResultInvalidCredentials) {
-			return Identity{}, fmt.Errorf("%w: provider %s", ErrWrongPassword, p.ID)
+			return Identity{}, fmt.Errorf("%w: federation %s", ErrWrongPassword, p.ID)
 		}
 		return Identity{}, s.unavailable(p, "bind as the person", err)
 	}
 
 	s.log.Debug("bound against the directory",
-		logger.String("tenant_id", p.TenantID), logger.String("idp_id", p.ID),
+		logger.String("tenant_id", p.TenantID), logger.String("federation_id", p.ID),
 		logger.RequestID(ctx))
 	return person, nil
 }
@@ -322,22 +322,22 @@ func (s *Service) Bind(ctx context.Context, p Federation, identifier, password s
 // carries it, or the identifier, or the bind credential of the federation.
 func (s *Service) Prove(ctx context.Context, a Attempt, password string) (Identity, error) {
 	s.log.Debug("prove a password against the directory",
-		logger.String("tenant_id", a.TenantID), logger.String("idp_id", a.FederationID),
+		logger.String("tenant_id", a.TenantID), logger.String("federation_id", a.FederationID),
 		logger.RequestID(ctx))
 
 	row, err := s.deps.Find(ctx, a.TenantID, a.FederationID)
 	if errors.Is(err, ErrNotFound) {
-		return Identity{}, fmt.Errorf("%w: tenant %s, provider %s", ErrDisabled, a.TenantID, a.FederationID)
+		return Identity{}, fmt.Errorf("%w: tenant %s, federation %s", ErrDisabled, a.TenantID, a.FederationID)
 	}
 	if err != nil {
-		s.log.Error("read the identity provider of the sign-in",
-			logger.String("tenant_id", a.TenantID), logger.String("idp_id", a.FederationID), logger.Err(err))
+		s.log.Error("read the user federation of the sign-in",
+			logger.String("tenant_id", a.TenantID), logger.String("federation_id", a.FederationID), logger.Err(err))
 		return Identity{}, err
 	}
 	if row.State != StateActive {
 		s.log.Warn("refused a sign-in against a disabled directory",
-			logger.String("tenant_id", a.TenantID), logger.String("idp_id", a.FederationID))
-		return Identity{}, fmt.Errorf("%w: tenant %s, provider %s", ErrDisabled, a.TenantID, a.FederationID)
+			logger.String("tenant_id", a.TenantID), logger.String("federation_id", a.FederationID))
+		return Identity{}, fmt.Errorf("%w: tenant %s, federation %s", ErrDisabled, a.TenantID, a.FederationID)
 	}
 
 	// The guard is in Bind as well, where it is what keeps an unauthenticated
@@ -381,7 +381,7 @@ func (s *Service) Prove(ctx context.Context, a Attempt, password string) (Identi
 func (s *Service) releaseProof(ctx context.Context, a Attempt) {
 	if err := s.deps.Release(ctx, proofKey(a)); err != nil {
 		s.log.Error("give back the bind of a directory that did not answer",
-			logger.String("tenant_id", a.TenantID), logger.String("idp_id", a.FederationID),
+			logger.String("tenant_id", a.TenantID), logger.String("federation_id", a.FederationID),
 			logger.String("user_id", a.UserID), logger.Err(err))
 	}
 }
@@ -403,7 +403,7 @@ func (s *Service) spendProof(ctx context.Context, a Attempt) error {
 	allowed, err := s.deps.Allow(ctx, proofKey(a), bindLimit, bindWindow)
 	if err != nil {
 		s.log.Error("read the directory bind budget",
-			logger.String("tenant_id", a.TenantID), logger.String("idp_id", a.FederationID),
+			logger.String("tenant_id", a.TenantID), logger.String("federation_id", a.FederationID),
 			logger.String("user_id", a.UserID), logger.Err(err))
 		return fmt.Errorf("%w: tenant %s", ErrProofUnavailable, a.TenantID)
 	}
@@ -414,7 +414,7 @@ func (s *Service) spendProof(ctx context.Context, a Attempt) error {
 	// user_id is empty when the identifier step named nobody. The identifier
 	// that keyed that counter is personal data and stays out of the line.
 	s.log.Warn("refused a directory bind over the budget",
-		logger.String("tenant_id", a.TenantID), logger.String("idp_id", a.FederationID),
+		logger.String("tenant_id", a.TenantID), logger.String("federation_id", a.FederationID),
 		logger.String("user_id", a.UserID))
 	return fmt.Errorf("%w: tenant %s", ErrTooManyProofs, a.TenantID)
 }
@@ -458,7 +458,7 @@ func search(conn *ldap.Conn, p Federation, identifier string) (*ldap.Entry, erro
 // each server is the upgrade, and it needs a second column to stay bounded.
 func dial(ctx context.Context, p Federation) (*ldap.Conn, string, error) {
 	if len(p.Servers) == 0 {
-		return nil, StageDial, errors.New("the provider names no server")
+		return nil, StageDial, errors.New("the federation names no server")
 	}
 
 	timeout := time.Duration(p.TimeoutMS) * time.Millisecond
@@ -715,7 +715,7 @@ func control(r rune) bool {
 func (s *Service) unavailable(p Federation, what string, err error) error {
 	s.log.Warn("the directory did not answer",
 		logger.String("tenant_id", p.TenantID),
-		logger.String("idp_id", p.ID),
+		logger.String("federation_id", p.ID),
 		logger.String("what", what),
 		logger.Err(err))
 	return fmt.Errorf("%w: %s: %w", ErrDirectory, what, err)

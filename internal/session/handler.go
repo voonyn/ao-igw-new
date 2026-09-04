@@ -37,7 +37,7 @@ func init() {
 	response.Map(ErrNotAuthenticated, fiber.StatusUnauthorized, "unauthenticated", "Unauthorized")
 	response.Map(ErrSubjectBound, fiber.StatusUnauthorized, "unauthenticated", "Unauthorized")
 	response.Map(ErrFederationDisabled, fiber.StatusUnauthorized, "unauthenticated", "Unauthorized")
-	response.Map(ErrTooManyBinds, fiber.StatusUnauthorized, "unauthenticated", "Unauthorized")
+	response.Map(ErrTooManyProofs, fiber.StatusUnauthorized, "unauthenticated", "Unauthorized")
 
 	// A directory that did not answer is not a wrong password, so it carries a
 	// slug of its own and the person is told to try again. The slug says that

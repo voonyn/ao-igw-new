@@ -21,7 +21,7 @@ import (
 // the password step the way an unknown identifier already does. A gateway that
 // picked one of the two instead would send the password of one customer to the
 // server of another. See docs/adr/0013.
-var ErrAmbiguous = errors.New("no single identity provider proves this sign-in")
+var ErrAmbiguous = errors.New("no single user federation proves this sign-in")
 
 // The reads the resolver composes its answer from. Each one is a function value,
 // so the logic is testable without a database.
@@ -132,7 +132,7 @@ func (r *Resolver) Resolve(ctx context.Context, tenantID, userID, identifier, em
 // The identifier and the email address are personal data, so neither reaches a
 // log line.
 func (r *Resolver) resolve(ctx context.Context, tenantID, userID, identifier, email string) (string, error) {
-	r.log.Debug("resolve the identity provider",
+	r.log.Debug("resolve the user federation",
 		logger.String("tenant_id", tenantID), logger.RequestID(ctx))
 
 	for _, domain := range domainsOf(identifier, email) {
@@ -141,7 +141,7 @@ func (r *Resolver) resolve(ctx context.Context, tenantID, userID, identifier, em
 			return federationID, nil
 		}
 		if !errors.Is(err, ErrNotFound) {
-			r.log.Error("read the provider that claims the domain",
+			r.log.Error("read the user federation that claims the domain",
 				logger.String("tenant_id", tenantID), logger.Err(err))
 			return "", err
 		}
@@ -150,7 +150,7 @@ func (r *Resolver) resolve(ctx context.Context, tenantID, userID, identifier, em
 	if userID != "" {
 		linked, err := r.deps.Linked(ctx, tenantID, userID)
 		if err != nil {
-			r.log.Error("read the identity links of the person",
+			r.log.Error("read the federation links of the person",
 				logger.String("tenant_id", tenantID),
 				logger.String("user_id", userID), logger.Err(err))
 			return "", err
@@ -174,7 +174,7 @@ func (r *Resolver) resolve(ctx context.Context, tenantID, userID, identifier, em
 
 	active, err := r.deps.Active(ctx, tenantID)
 	if err != nil {
-		r.log.Error("read the active identity providers",
+		r.log.Error("read the active user federations",
 			logger.String("tenant_id", tenantID), logger.Err(err))
 		return "", err
 	}
@@ -195,7 +195,7 @@ func (r *Resolver) sole(tenantID string, federationIDs []string) (string, error)
 		return federationIDs[0], nil
 	}
 
-	r.log.Warn("refused a sign-in that no single identity provider proves",
+	r.log.Warn("refused a sign-in that no single user federation proves",
 		logger.String("tenant_id", tenantID))
 	return "", fmt.Errorf("%w: tenant %s", ErrAmbiguous, tenantID)
 }

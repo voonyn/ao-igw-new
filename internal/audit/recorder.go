@@ -113,12 +113,12 @@ const (
 	ActionNotificationTemplateUpdated Action = "notification.template_updated"
 	ActionNotificationTemplateReset   Action = "notification.template_reset"
 
-	ActionIdpCreated  Action = "idp.created"
-	ActionIdpUpdated  Action = "idp.updated"
-	ActionIdpDeleted  Action = "idp.deleted"
-	ActionIdpLinked   Action = "idp.linked"
-	ActionIdpUnlinked Action = "idp.unlinked"
-	ActionIdpTested   Action = "idp.tested"
+	ActionFederationCreated  Action = "federation.created"
+	ActionFederationUpdated  Action = "federation.updated"
+	ActionFederationDeleted  Action = "federation.deleted"
+	ActionFederationLinked   Action = "federation.linked"
+	ActionFederationUnlinked Action = "federation.unlinked"
+	ActionFederationTested   Action = "federation.tested"
 )
 
 // EntityOrganization names an organization in the entity_type column.
@@ -183,11 +183,11 @@ const EntityNotificationSettings = "notification_settings"
 // metadata.
 const EntityNotificationTemplate = "notification_template"
 
-// EntityIdentityProvider names one Identity Provider in the entity_type column.
-// The entity id is the provider row, and an unlink is recorded against the
-// provider too: the link is hard deleted, so the trail is the only record that
+// EntityFederation names one User Federation in the entity_type column. The
+// entity id is the federation row, and an unlink is recorded against the
+// federation too: the link is hard deleted, so the trail is the only record that
 // the person was ever tied to that directory. The person is in the metadata.
-const EntityIdentityProvider = "identity_provider"
+const EntityFederation = "federation"
 
 // The two values the result column holds.
 const (
@@ -257,19 +257,19 @@ var actionResults = map[Action]string{
 	ActionNotificationTemplateUpdated: ResultSuccess,
 	ActionNotificationTemplateReset:   ResultSuccess,
 
-	ActionIdpCreated:  ResultSuccess,
-	ActionIdpUpdated:  ResultSuccess,
-	ActionIdpDeleted:  ResultSuccess,
-	ActionIdpUnlinked: ResultSuccess,
+	ActionFederationCreated:  ResultSuccess,
+	ActionFederationUpdated:  ResultSuccess,
+	ActionFederationDeleted:  ResultSuccess,
+	ActionFederationUnlinked: ResultSuccess,
 
 	// The link a first bind wrote. It is the only record that the sign-in
 	// created the person, because the link itself is hard deleted.
-	ActionIdpLinked: ResultSuccess,
+	ActionFederationLinked: ResultSuccess,
 
 	// The test ran. Which stage of it failed is a metadata key, because the
 	// result column of one action is fixed and a failed dial is still a test
 	// an administrator drove.
-	ActionIdpTested: ResultSuccess,
+	ActionFederationTested: ResultSuccess,
 
 	// A recovery code redeemed is a success: the person signed in with a factor
 	// they hold. The failure it is often read beside is ActionLoginFailed.
@@ -311,10 +311,10 @@ var allowedMetadata = map[string]bool{
 	// bind, or the search. It names a step of the exchange, never a value the
 	// step carried.
 	"stage": true,
-	// The Identity Provider one event names. A failed sign-in records it, so an
+	// The User Federation one event names. A failed sign-in records it, so an
 	// operator reads which directory refused the password. It is the id of a row
 	// the tenant registered, and never a credential of any kind.
-	"idp_id": true,
+	"federation_id": true,
 	// The servers one connection test dialled. A test of a configuration nobody
 	// saved yet names no stored row, so without this key the trail records that
 	// somebody drove an outbound call and never records where it went. It holds

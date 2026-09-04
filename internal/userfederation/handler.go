@@ -56,15 +56,15 @@ func NewHandler(svc *Service) *Handler {
 // middleware and the bearer middleware on the group, so every route below reads
 // a resolved tenant and a verified subject.
 //
-// The provider list is bounded — a tenant registers a handful of directories, and
+// The federation list is bounded — a tenant registers a handful of directories, and
 // two of them already cost it the bare-username route — so it answers whole and
 // it carries no pager.
 //
-// The level of a provider is a field of the body, not a path segment, because a
-// provider does not move between levels once it is created.
+// The level of a federation is a field of the body, not a path segment, because a
+// federation does not move between levels once it is created.
 //
 // linkId is the id of the user federation. One person holds at most one account
-// per provider, which the unique key enforces, so the provider names exactly one
+// per federation, which the unique key enforces, so the federation names exactly one
 // link of one person.
 func AdminRoutes(router fiber.Router, h *Handler) {
 	router.Get("/user-federations", h.list)
@@ -74,7 +74,7 @@ func AdminRoutes(router fiber.Router, h *Handler) {
 	router.Delete("/user-federations/:id", h.remove)
 
 	// Two paths reach one connection test. The path with an id tests a stored
-	// provider, and the path without one tests a configuration nobody saved yet,
+	// federation, and the path without one tests a configuration nobody saved yet,
 	// so an administrator checks a directory before the first save.
 	router.Post("/user-federations/test", h.test)
 	router.Post("/user-federations/:id/test", h.test)
@@ -153,10 +153,10 @@ func (h *Handler) remove(c fiber.Ctx) error {
 	return response.NoContent(c)
 }
 
-// test dials the directory of one provider and answers which stage failed.
+// test dials the directory of one federation and answers which stage failed.
 //
 // The body is the form the console has on screen, so a test runs against values
-// nobody saved yet. A test of a stored provider carries no body, which is how an
+// nobody saved yet. A test of a stored federation carries no body, which is how an
 // administrator tests one without retyping its bind password.
 //
 // The path without an id has nothing stored to fall back on, so it requires the

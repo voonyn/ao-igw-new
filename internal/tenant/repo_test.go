@@ -370,7 +370,7 @@ func TestLocalOwners(t *testing.T) {
 		t.Fatalf("the tenant reads %+v local owners, want both", rows)
 	}
 
-	// An Federation Link with a live active federation takes the second owner:
+	// A Federation Link with a live active federation takes the second owner:
 	// Federation Resolution case 2 sends them to that directory.
 	const federationID = "88888888-8888-8888-8888-888888888888"
 	exec(`INSERT INTO user_federations (id, tenant_id, name, type, state)

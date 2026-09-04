@@ -26,7 +26,7 @@ func TestDirectoryError(t *testing.T) {
 		{"a wrong password", userfederation.ErrWrongPassword, session.ErrBadCredentials},
 		{"no such entry", userfederation.ErrNoEntry, session.ErrBadCredentials},
 		{"a disabled provider", userfederation.ErrDisabled, session.ErrFederationDisabled},
-		{"a spent budget", userfederation.ErrTooManyProofs, session.ErrTooManyBinds},
+		{"a spent budget", userfederation.ErrTooManyProofs, session.ErrTooManyProofs},
 		{"a directory that did not answer", userfederation.ErrDirectory, session.ErrFederationUnavailable},
 		{"a budget nobody could read", userfederation.ErrProofUnavailable, session.ErrFederationUnavailable},
 		{"a broken read of the row", errors.New("the database is down"), session.ErrFederationUnavailable},
