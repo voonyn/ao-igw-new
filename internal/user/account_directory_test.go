@@ -83,7 +83,7 @@ func directoryService(t *testing.T, d directoryDeps) *AccountService {
 		},
 		Directory: func(context.Context, string, string) (string, string, error) {
 			if d.claimed {
-				return "idp-one", "alice", nil
+				return "federation-one", "alice", nil
 			}
 			return "", "", nil
 		},
@@ -172,7 +172,7 @@ func TestVerifyPasswordAnswersADirectoryOutageAsItself(t *testing.T) {
 // try again.
 //
 // A person whom no single directory entry proves holds a broken account: no live
-// active Identity Link, or more than one, or a search that matched none, or a
+// active Federation Link, or more than one, or a search that matched none, or a
 // search that matched two. Only an administrator can mend it, so the sentinel
 // travels back whole, and never as a wrong password or a directory outage.
 func TestVerifyPasswordAnswersABrokenDirectoryAccountAsItself(t *testing.T) {
@@ -345,7 +345,7 @@ func TestPasswordLocalSaysWhichCredentialThePersonHolds(t *testing.T) {
 // holds: a read that broke stops the request. A proof that fell back to the
 // local compare would prove a person against the hash a domain claim retired.
 func TestABrokenResolverReadStopsThePasswordProof(t *testing.T) {
-	broken := errors.New("the read of the identity providers failed")
+	broken := errors.New("the read of the user federations failed")
 	svc := directoryService(t, directoryDeps{hash: localHash(t)})
 	svc.deps.Directory = func(context.Context, string, string) (string, string, error) {
 		return "", "", broken

@@ -359,7 +359,7 @@ func (r *Repository) Read(ctx context.Context, tenantID, userID string) (User, e
 // id and never a row, so no caller of it reads a column it did not ask for.
 //
 // It filters neither the state nor the lock, because the question is where the
-// person sits and not who can sign in. The Identity Link routes read it: an
+// person sits and not who can sign in. The Federation Link routes read it: an
 // administrator removes the link of a person they deactivated first, and the
 // offboarding would otherwise need the account turned back on.
 //

@@ -98,7 +98,7 @@ type FederationResolver func(
 // those live in a domain this one must not import. It maps that domain's
 // sentinels onto these five, so the password step reads one vocabulary.
 type Prover func(
-	ctx context.Context, tenantID, idpID, userID, identifier, password string,
+	ctx context.Context, tenantID, federationID, userID, identifier, password string,
 ) (Identity, error)
 
 // PendingSteps names the Pending Steps one person still owes after the password
@@ -154,11 +154,11 @@ func (s *Service) Identify(ctx context.Context, tenantID, identifier, ip, userAg
 	// never a person who is not held: a sign-in that carried on would fall back
 	// to a local password hash that a claimed domain took out of service. The
 	// resolver has logged it.
-	idpID, err := s.deps.Federation(ctx, tenantID, person.UserID, identifier, person.Email)
+	federationID, err := s.deps.Federation(ctx, tenantID, person.UserID, identifier, person.Email)
 	if err != nil {
 		return Opened{}, err
 	}
-	return s.open(ctx, tenantID, person, idpID, identifier, ip, userAgent)
+	return s.open(ctx, tenantID, person, federationID, identifier, ip, userAgent)
 }
 
 // Open opens a partial login session that names nobody.
@@ -173,23 +173,23 @@ func (s *Service) Open(ctx context.Context, tenantID, ip, userAgent string) (Ope
 
 // open writes one partial login session and hands out the token that
 // credentials it. person is the zero Identity when the caller names nobody,
-// idpID is empty when the local password compare proves the sign-in, and
+// federationID is empty when the local password compare proves the sign-in, and
 // identifier is empty when the caller names nobody at all.
 func (s *Service) open(
-	ctx context.Context, tenantID string, person Identity, idpID, identifier, ip, userAgent string,
+	ctx context.Context, tenantID string, person Identity, federationID, identifier, ip, userAgent string,
 ) (Opened, error) {
 	now := time.Now().UTC()
 	live := LoginSession{
-		ID:         utils.NewUUIDv7(),
-		TenantID:   tenantID,
-		UserID:     person.UserID,
-		Email:      person.Email,
-		IdpID:      idpID,
-		Identifier: identifier,
-		IP:         ip,
-		UserAgent:  userAgent,
-		CreatedAt:  now,
-		ExpiresAt:  now.Add(partialLifetime),
+		ID:           utils.NewUUIDv7(),
+		TenantID:     tenantID,
+		UserID:       person.UserID,
+		Email:        person.Email,
+		FederationID: federationID,
+		Identifier:   identifier,
+		IP:           ip,
+		UserAgent:    userAgent,
+		CreatedAt:    now,
+		ExpiresAt:    now.Add(partialLifetime),
 	}
 
 	token, err := mintToken()
@@ -213,7 +213,7 @@ func (s *Service) open(
 	s.log.Debug("opened login session",
 		logger.String("tenant_id", tenantID),
 		logger.String("session_id", live.ID),
-		logger.String("federation_id", live.IdpID), logger.RequestID(ctx))
+		logger.String("federation_id", live.FederationID), logger.RequestID(ctx))
 	return Opened{ID: live.ID, Token: token}, nil
 }
 
@@ -346,7 +346,7 @@ func (s *Service) VerifyPassword(
 // Every outcome runs through refuse, so login.failed is written for every
 // failure, a dial that never returned included.
 func (s *Service) prove(ctx context.Context, live LoginSession, password string) (Identity, error) {
-	if live.IdpID == "" {
+	if live.FederationID == "" {
 		hash, err := s.passwordHash(ctx, live)
 		if err != nil {
 			return Identity{}, err
@@ -357,7 +357,7 @@ func (s *Service) prove(ctx context.Context, live LoginSession, password string)
 		return Identity{UserID: live.UserID, Email: live.Email}, nil
 	}
 
-	person, err := s.deps.Prove(ctx, live.TenantID, live.IdpID, live.UserID, live.Identifier, password)
+	person, err := s.deps.Prove(ctx, live.TenantID, live.FederationID, live.UserID, live.Identifier, password)
 	switch {
 	case errors.Is(err, ErrFederationDisabled):
 		return Identity{}, s.refuse(ctx, live, "federation_disabled", err, ErrFederationDisabled)
@@ -444,8 +444,8 @@ func (s *Service) refuse(
 	// failed sign-in knows which one to look at. It is the id of a row the tenant
 	// registered, and never a credential of any kind.
 	metadata := map[string]any{"reason": reason}
-	if live.IdpID != "" {
-		metadata["federation_id"] = live.IdpID
+	if live.FederationID != "" {
+		metadata["federation_id"] = live.FederationID
 	}
 	if err := s.deps.Audit.Record(ctx, s.entry(live, audit.ActionLoginFailed, metadata)); err != nil {
 		return err

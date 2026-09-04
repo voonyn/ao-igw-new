@@ -319,20 +319,20 @@ func TestIdentify_ReadFails(t *testing.T) {
 	}
 }
 
-// TestIdentify_RecordsTheResolvedProvider proves that the identifier step writes
-// the Identity Provider onto the login session. The password step reads it there,
+// TestIdentify_RecordsTheResolvedFederation proves that the identifier step writes
+// the User Federation onto the login session. The password step reads it there,
 // so the resolution runs once and no later step resolves again.
-func TestIdentify_RecordsTheResolvedProvider(t *testing.T) {
-	const idpID = "idp-1"
+func TestIdentify_RecordsTheResolvedFederation(t *testing.T) {
+	const federationID = "federation-1"
 	svc, st := testServiceResolving(t,
 		knownPerson("person@example.com", Identity{UserID: "user-1"}), noCredential,
-		func(context.Context, string, string, string, string) (string, error) { return idpID, nil })
+		func(context.Context, string, string, string, string) (string, error) { return federationID, nil })
 
 	if _, err := svc.Identify(context.Background(), "tenant-1", "person@example.com", "", ""); err != nil {
 		t.Fatalf("identify: %v", err)
 	}
-	if st.saved.IdpID != idpID {
-		t.Errorf("the saved session names %q, want %q", st.saved.IdpID, idpID)
+	if st.saved.FederationID != federationID {
+		t.Errorf("the saved session names %q, want %q", st.saved.FederationID, federationID)
 	}
 }
 
@@ -379,22 +379,22 @@ func TestIdentify_ResolutionFails(t *testing.T) {
 	}
 }
 
-// TestOpen_NamesNoProvider covers the flow that learns the person later. QR Login
+// TestOpen_NamesNoFederation covers the flow that learns the person later. QR Login
 // opens a session before anybody has typed an identifier, so there is nothing to
 // resolve a directory from.
-func TestOpen_NamesNoProvider(t *testing.T) {
+func TestOpen_NamesNoFederation(t *testing.T) {
 	svc, st := testServiceResolving(t,
 		knownPerson("person@example.com", Identity{UserID: "user-1"}), noCredential,
 		func(context.Context, string, string, string, string) (string, error) {
-			t.Error("Open resolved an identity provider")
-			return "idp-1", nil
+			t.Error("Open resolved a User Federation")
+			return "federation-1", nil
 		})
 
 	if _, err := svc.Open(context.Background(), "tenant-1", "", ""); err != nil {
 		t.Fatalf("open: %v", err)
 	}
-	if st.saved.IdpID != "" {
-		t.Errorf("the saved session names %q, want no provider", st.saved.IdpID)
+	if st.saved.FederationID != "" {
+		t.Errorf("the saved session names %q, want no federation", st.saved.FederationID)
 	}
 }
 
@@ -948,7 +948,7 @@ func TestFactorNames(t *testing.T) {
 // The fixtures of the directory sign-in tests. The person holds a local row and
 // the login session names the directory that proves their password.
 const (
-	directoryIdp        = "77777777-7777-7777-7777-777777777777"
+	directoryFederation = "77777777-7777-7777-7777-777777777777"
 	directoryIdentifier = "alice@corp.example"
 )
 
@@ -973,7 +973,7 @@ func directoryService(t *testing.T, bind Prover) (*Service, *store) {
 			t.Error("the password step read a local password hash, want a bind")
 			return "", user.ErrNotFound
 		},
-		func(context.Context, string, string, string, string) (string, error) { return directoryIdp, nil },
+		func(context.Context, string, string, string, string) (string, error) { return directoryFederation, nil },
 		bind)
 }
 
@@ -994,11 +994,11 @@ func refusal(t *testing.T, st *store) string {
 // proves. The bind takes the identifier the person typed, the session carries
 // the pwd factor, and the token rotates, which is what a local password does.
 func TestVerifyPassword_Bind(t *testing.T) {
-	var got struct{ tenantID, idpID, userID, identifier, password string }
+	var got struct{ tenantID, federationID, userID, identifier, password string }
 	svc, st := directoryService(t, func(
-		_ context.Context, tenantID, idpID, userID, identifier, password string,
+		_ context.Context, tenantID, federationID, userID, identifier, password string,
 	) (Identity, error) {
-		got.tenantID, got.idpID, got.userID = tenantID, idpID, userID
+		got.tenantID, got.federationID, got.userID = tenantID, federationID, userID
 		got.identifier, got.password = identifier, password
 		return Identity{UserID: userID, Email: directoryIdentifier}, nil
 	})
@@ -1010,8 +1010,8 @@ func TestVerifyPassword_Bind(t *testing.T) {
 		t.Fatalf("verify password: %v", err)
 	}
 
-	if got.tenantID != "tenant-1" || got.idpID != directoryIdp {
-		t.Errorf("the bind ran against %s of %s, want %s of tenant-1", got.idpID, got.tenantID, directoryIdp)
+	if got.tenantID != "tenant-1" || got.federationID != directoryFederation {
+		t.Errorf("the bind ran against %s of %s, want %s of tenant-1", got.federationID, got.tenantID, directoryFederation)
 	}
 	if got.identifier != directoryIdentifier {
 		t.Errorf("the bind searched for %q, want %q", got.identifier, directoryIdentifier)
@@ -1053,7 +1053,7 @@ func TestVerifyPassword_BindTellsNobodyItWasADirectory(t *testing.T) {
 	if len(st.events) != 1 {
 		t.Fatalf("the trail holds %v, want one row", st.actions())
 	}
-	if strings.Contains(st.events[0].Metadata, "idp") {
+	if strings.Contains(st.events[0].Metadata, "federation") {
 		t.Errorf("the successful sign-in recorded %q, want the row a local password writes",
 			st.events[0].Metadata)
 	}
@@ -1168,7 +1168,7 @@ func TestVerifyPassword_DirectoryUnavailable(t *testing.T) {
 	if !strings.Contains(metadata, `"reason":"federation_unavailable"`) {
 		t.Errorf("the trail recorded %q, want the directory reason", metadata)
 	}
-	if !strings.Contains(metadata, directoryIdp) {
+	if !strings.Contains(metadata, directoryFederation) {
 		t.Errorf("the trail recorded %q, want the provider that refused", metadata)
 	}
 }
@@ -1215,7 +1215,7 @@ func firstBindService(t *testing.T, bind Prover) (*Service, *store) {
 	return testServiceBinding(t,
 		func(context.Context, string, string) (Identity, error) { return Identity{}, user.ErrNotFound },
 		noCredential,
-		func(context.Context, string, string, string, string) (string, error) { return directoryIdp, nil },
+		func(context.Context, string, string, string, string) (string, error) { return directoryFederation, nil },
 		bind)
 }
 
@@ -1436,7 +1436,7 @@ func TestDirectoryRefusalsAnswerOneSlug(t *testing.T) {
 // names somebody other than the person the identifier step found.
 //
 // The identifier step finds a person by username and writes their email onto the
-// session. The bind proves a directory entry whose Identity Link names another
+// session. The bind proves a directory entry whose Federation Link names another
 // person, and the sign-in carries on as the person the proof named. The session
 // must then carry the email of that person, because a session that named one
 // person and showed the address of another is what every screen below it reads.

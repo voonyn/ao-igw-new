@@ -35,14 +35,14 @@ func TestErrNotFoundMaps(t *testing.T) {
 	}
 }
 
-// TestErrDirectoryNoEntryMaps covers the answer a person reads when no single
+// TestErrFederationNoAccountMaps covers the answer a person reads when no single
 // directory entry proves them.
 //
-// The state is permanent: no live active Identity Link, more than one, a search
+// The state is permanent: no live active Federation Link, more than one, a search
 // that matched none, or a search that matched two. It is not a directory that is
 // down for a moment, so the answer is 409 and never the 503 the outage answers,
 // and the message tells the person to ask an administrator.
-func TestErrDirectoryNoEntryMaps(t *testing.T) {
+func TestErrFederationNoAccountMaps(t *testing.T) {
 	app := fiber.New()
 	app.Get("/", func(c fiber.Ctx) error {
 		return response.Fail(c, fmt.Errorf("re-prove the person: %w", ErrFederationNoAccount))

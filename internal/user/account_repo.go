@@ -97,7 +97,7 @@ func (r *Repository) FindCredential(ctx context.Context, tenantID, userID string
 //
 // It filters neither the state nor the lock, because the question is what the
 // row holds and not who can sign in. The administrative guard that reads it
-// refuses the removal of the last Identity Link of a person whose password_hash
+// refuses the removal of the last Federation Link of a person whose password_hash
 // is NULL, and a deactivated person of that shape is locked out for ever by the
 // same removal.
 //

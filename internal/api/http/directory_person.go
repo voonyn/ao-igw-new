@@ -17,7 +17,7 @@ import (
 // value, and this is where the crossing is wired.
 //
 // All three writes run on the caller's transaction, so the person, the profile,
-// the membership, and the Identity Link land whole or not at all. A username
+// the membership, and the Federation Link land whole or not at all. A username
 // another live account of the tenant holds fails the first write and leaves
 // nothing behind.
 //

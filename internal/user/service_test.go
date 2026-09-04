@@ -681,7 +681,7 @@ func TestResetPasswordRefusesADirectoryOwnedPerson(t *testing.T) {
 	svc := adminService(t, adminDeps{
 		tenantRoles: []string{tenant.RoleIAMOwner},
 		rows:        []User{seededPerson(testOrgID, StateActive)},
-		directory:   "idp-1",
+		directory:   "federation-1",
 	})
 
 	_, err := svc.ResetPassword(context.Background(), admin, testUserID)

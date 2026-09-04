@@ -15,7 +15,7 @@ import (
 // docs/specs/0002-directory-sign-in.md.
 //
 // Two other domains raise this sentinel: the membership write that revokes a
-// role, and the identity provider write that claims a domain. Both answer the
+// role, and the user federation write that claims a domain. Both answer the
 // slug this package registers, so the console branches on one string wherever
 // the refusal comes from.
 func TestErrLastLocalOwnerMaps(t *testing.T) {

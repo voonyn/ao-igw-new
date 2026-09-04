@@ -441,7 +441,7 @@ func TestLinkedFederationsReadsTheLiveActiveLinks(t *testing.T) {
 	    (tenant_id, federation_id, external_id, user_id, created_at) VALUES (?, ?, ?, ?, NOW(3))`
 	for _, federationID := range []string{orgFederationID, deadFederationID} {
 		if _, err := repo.db.ExecContext(ctx, link, testTenantID, federationID, "guid-"+federationID, personID); err != nil {
-			t.Fatalf("write the identity link with %s: %v", federationID, err)
+			t.Fatalf("write the federation link with %s: %v", federationID, err)
 		}
 	}
 

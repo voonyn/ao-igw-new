@@ -193,7 +193,7 @@ var ErrTooManyProofs = errors.New("too many directory binds")
 // lives in the sealed blob, so it needs no column and every instance reads the
 // same number.
 //
-// IdpID names the User Federation the identifier step resolved, and it is
+// FederationID names the User Federation the identifier step resolved, and it is
 // empty when the local password compare proves this sign-in. It needs no column
 // either, and no SQL read names a field inside the blob, so a session already in
 // flight decodes it to the empty string, which is what that session was.
@@ -203,18 +203,18 @@ var ErrTooManyProofs = errors.New("too many directory binds")
 // email and no user id. It is personal data, and the blob is sealed, which is
 // where Email already lives.
 type LoginSession struct {
-	ID         string               `json:"id"`
-	TenantID   string               `json:"tenant_id"`
-	UserID     string               `json:"user_id,omitempty"`
-	Email      string               `json:"email,omitempty"`
-	IdpID      string               `json:"idp_id,omitempty"`
-	Identifier string               `json:"identifier,omitempty"`
-	IP         string               `json:"ip,omitempty"`
-	UserAgent  string               `json:"user_agent,omitempty"`
-	WrongCodes int                  `json:"wrong_codes,omitempty"`
-	Factors    map[string]time.Time `json:"factors,omitempty"`
-	CreatedAt  time.Time            `json:"created_at"`
-	ExpiresAt  time.Time            `json:"expires_at"`
+	ID           string               `json:"id"`
+	TenantID     string               `json:"tenant_id"`
+	UserID       string               `json:"user_id,omitempty"`
+	Email        string               `json:"email,omitempty"`
+	FederationID string               `json:"federation_id,omitempty"`
+	Identifier   string               `json:"identifier,omitempty"`
+	IP           string               `json:"ip,omitempty"`
+	UserAgent    string               `json:"user_agent,omitempty"`
+	WrongCodes   int                  `json:"wrong_codes,omitempty"`
+	Factors      map[string]time.Time `json:"factors,omitempty"`
+	CreatedAt    time.Time            `json:"created_at"`
+	ExpiresAt    time.Time            `json:"expires_at"`
 }
 
 // Authenticated reports whether the person verified at least one factor. A

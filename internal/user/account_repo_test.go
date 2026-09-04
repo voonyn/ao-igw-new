@@ -153,7 +153,7 @@ func TestSetPassword(t *testing.T) {
 //
 // The question is what the row holds, not who can sign in, so the read filters
 // neither the state nor the lock. A person the directory owns holds a NULL
-// password_hash, and the removal of their last Identity Link locks them out for
+// password_hash, and the removal of their last Federation Link locks them out for
 // ever whatever state the account is in.
 func TestHasPassword(t *testing.T) {
 	repo, ctx := testRepo(t)

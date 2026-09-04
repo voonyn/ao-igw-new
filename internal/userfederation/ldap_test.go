@@ -628,11 +628,11 @@ func TestProveSpendsNothingOnAnEmptyPassword(t *testing.T) {
 	}
 }
 
-// TestUnnamedBindKeyCarriesNoIdentifier covers the fallback, which a sign-in
+// TestUnnamedProofKeyCarriesNoIdentifier covers the fallback, which a sign-in
 // takes whenever the identifier step named no person. The key carries the digest
 // of the identifier and never the address itself, because every operator who
 // lists the keyspace reads these keys.
-func TestUnnamedBindKeyCarriesNoIdentifier(t *testing.T) {
+func TestUnnamedProofKeyCarriesNoIdentifier(t *testing.T) {
 	key := proofKey(Attempt{TenantID: testTenantID, UserID: "", Identifier: "alice@corp.example"})
 
 	if strings.Contains(key, "alice") || strings.Contains(key, "corp.example") {
@@ -646,12 +646,12 @@ func TestUnnamedBindKeyCarriesNoIdentifier(t *testing.T) {
 	}
 }
 
-// TestUnnamedBindKeyFoldsTheIdentifier covers the multiplication a raw digest
+// TestUnnamedProofKeyFoldsTheIdentifier covers the multiplication a raw digest
 // left open. The directory matches a DirectoryString attribute with
 // caseIgnoreMatch, so it folds case and insignificant space onto one entry. A
 // key that folded neither gave one entry a fresh counter of ten for every typed
 // form a caller invented. See .scratch/directory-sign-in/issues/34.
-func TestUnnamedBindKeyFoldsTheIdentifier(t *testing.T) {
+func TestUnnamedProofKeyFoldsTheIdentifier(t *testing.T) {
 	key := proofKey(Attempt{TenantID: testTenantID, UserID: "", Identifier: "alice@corp.example"})
 
 	forms := []string{
@@ -671,10 +671,10 @@ func TestUnnamedBindKeyFoldsTheIdentifier(t *testing.T) {
 	}
 }
 
-// TestBindKeyNamesThePerson covers the key of a named person. A tenant matches
+// TestProofKeyNamesThePerson covers the key of a named person. A tenant matches
 // a username and an email address, so a key of the typed string gave one person
 // two counters of ten, and the real cap was twenty.
-func TestBindKeyNamesThePerson(t *testing.T) {
+func TestProofKeyNamesThePerson(t *testing.T) {
 	byUsername := proofKey(Attempt{TenantID: testTenantID, UserID: personID, Identifier: "alice"})
 
 	if byUsername != proofKey(Attempt{TenantID: testTenantID, UserID: personID, Identifier: "alice@corp.example"}) {

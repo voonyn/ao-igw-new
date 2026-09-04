@@ -49,7 +49,7 @@ func TestDirectoryOfAsksTheResolverAboutThePerson(t *testing.T) {
 		},
 		func(_ context.Context, tenantID, userID, identifier, email string) (string, error) {
 			asked = append(asked, tenantID, userID, identifier, email)
-			return "idp-one", nil
+			return "federation-one", nil
 		},
 	)
 
@@ -57,7 +57,7 @@ func TestDirectoryOfAsksTheResolverAboutThePerson(t *testing.T) {
 	if err != nil {
 		t.Fatalf("directoryOf: %v", err)
 	}
-	if federationID != "idp-one" {
+	if federationID != "federation-one" {
 		t.Errorf("the read named %q, want the provider the resolver named", federationID)
 	}
 	if username != "alice" {
@@ -111,7 +111,7 @@ func TestDirectoryOfCarriesABrokenRead(t *testing.T) {
 		},
 		func(context.Context, string, string, string, string) (string, error) {
 			t.Error("the resolver ran on a person the read could not name")
-			return "idp-one", nil
+			return "federation-one", nil
 		},
 	)
 	if _, _, err := brokenPerson(t.Context(), reproveTenantID, reproveUserID); !errors.Is(err, broken) {
@@ -146,7 +146,7 @@ func TestDirectoryReProverRefusals(t *testing.T) {
 		want         error
 	}{
 		{"no single directory", "", "alice", user.ErrFederationNoAccount},
-		{"a person who holds no username", "idp-one", "", user.ErrFederationNoAccount},
+		{"a person who holds no username", "federation-one", "", user.ErrFederationNoAccount},
 	}
 
 	for _, c := range cases {
@@ -184,7 +184,7 @@ func TestOnePasswordProofResolvesTheDirectoryOnce(t *testing.T) {
 		},
 		func(context.Context, string, string, string, string) (string, error) {
 			resolves++
-			return "idp-one", nil
+			return "federation-one", nil
 		},
 	)
 	account := user.NewAccountService(user.AccountDeps{
@@ -229,13 +229,13 @@ func TestDirectoryReProverBindsOnTheUsername(t *testing.T) {
 	)
 
 	err := reprove(t.Context(),
-		reproveTenantID, "idp-one", reproveUserID, "alice", "the typed password")
+		reproveTenantID, "federation-one", reproveUserID, "alice", "the typed password")
 	if err != nil {
 		t.Fatalf("a proved re-proof answered %v, want nil", err)
 	}
 
 	want := userfederation.Attempt{
-		TenantID: reproveTenantID, FederationID: "idp-one", UserID: reproveUserID, Identifier: "alice",
+		TenantID: reproveTenantID, FederationID: "federation-one", UserID: reproveUserID, Identifier: "alice",
 	}
 	if asked != want {
 		t.Errorf("the bind was asked %+v, want %+v", asked, want)

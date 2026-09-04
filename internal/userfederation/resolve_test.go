@@ -101,7 +101,7 @@ func TestCaseOneDomainClaimAnswers(t *testing.T) {
 	})
 
 	if got := resolve(t, r, testUserID, theIdentifier, ""); got != tenantFederationID {
-		t.Fatalf("idp = %q, want the federation that claims the domain", got)
+		t.Fatalf("federation = %q, want the federation that claims the domain", got)
 	}
 	if ran.linked != 0 || ran.held != 0 || ran.active != 0 {
 		t.Fatalf("reads below the domain claim ran: %+v", ran)
@@ -131,7 +131,7 @@ func TestBareUsernameReadsNoDomainClaim(t *testing.T) {
 	r, ran := testResolver(t, world{claims: map[string]string{theDomain: tenantFederationID}})
 
 	if got := resolve(t, r, testUserID, bareUsername, ""); got != "" {
-		t.Fatalf("idp = %q, want the local password compare", got)
+		t.Fatalf("federation = %q, want the local password compare", got)
 	}
 	if ran.domain != 0 {
 		t.Fatalf("the domain claim was read %d times, want none", ran.domain)
@@ -153,7 +153,7 @@ func TestCaseOneReadsTheEmailOfThePerson(t *testing.T) {
 	})
 
 	if got := resolve(t, r, testUserID, bareUsername, theIdentifier); got != tenantFederationID {
-		t.Fatalf("idp = %q, want the federation that claims the domain", got)
+		t.Fatalf("federation = %q, want the federation that claims the domain", got)
 	}
 	if ran.linked != 0 || ran.held != 0 || ran.active != 0 {
 		t.Fatalf("reads below the domain claim ran: %+v", ran)
@@ -167,7 +167,7 @@ func TestCaseOneReadsTheTypedFormOnce(t *testing.T) {
 	r, ran := testResolver(t, world{claims: map[string]string{theDomain: tenantFederationID}})
 
 	if got := resolve(t, r, testUserID, theIdentifier, theIdentifier); got != tenantFederationID {
-		t.Fatalf("idp = %q, want the federation that claims the domain", got)
+		t.Fatalf("federation = %q, want the federation that claims the domain", got)
 	}
 	if ran.domain != 1 {
 		t.Fatalf("the domain claim was read %d times, want one", ran.domain)
@@ -184,7 +184,7 @@ func TestNoClaimCoversTheEmailOfThePerson(t *testing.T) {
 	})
 
 	if got := resolve(t, r, testUserID, bareUsername, "ada@other.example"); got != orgFederationID {
-		t.Fatalf("idp = %q, want the federation of the identity link", got)
+		t.Fatalf("federation = %q, want the federation of the federation link", got)
 	}
 	if ran.domain != 1 {
 		t.Fatalf("the domain claim was read %d times, want one for the email form", ran.domain)
@@ -198,7 +198,7 @@ func TestCaseTwoOneFederationLinkAnswers(t *testing.T) {
 	r, ran := testResolver(t, world{linked: []string{orgFederationID}, active: []string{orgFederationID}})
 
 	if got := resolve(t, r, testUserID, bareUsername, ""); got != orgFederationID {
-		t.Fatalf("idp = %q, want the linked federation", got)
+		t.Fatalf("federation = %q, want the linked federation", got)
 	}
 	if ran.held != 0 || ran.active != 0 {
 		t.Fatalf("the reads of case 4 ran for a person the tenant holds: %+v", ran)
@@ -223,7 +223,7 @@ func TestCaseThreeLocalPasswordAnswers(t *testing.T) {
 	r, _ := testResolver(t, world{active: []string{tenantFederationID}})
 
 	if got := resolve(t, r, testUserID, bareUsername, ""); got != "" {
-		t.Fatalf("idp = %q, want the local password compare", got)
+		t.Fatalf("federation = %q, want the local password compare", got)
 	}
 }
 
@@ -234,7 +234,7 @@ func TestCaseFourSoleFederationAnswers(t *testing.T) {
 	r, ran := testResolver(t, world{active: []string{tenantFederationID}})
 
 	if got := resolve(t, r, "", bareUsername, ""); got != tenantFederationID {
-		t.Fatalf("idp = %q, want the one federation of the tenant", got)
+		t.Fatalf("federation = %q, want the one federation of the tenant", got)
 	}
 	if ran.held != 1 {
 		t.Fatalf("the account read ran %d times, want once", ran.held)
@@ -262,7 +262,7 @@ func TestCaseFourSkipsAnAccountTheTenantHolds(t *testing.T) {
 	r, ran := testResolver(t, world{held: true, active: []string{tenantFederationID}})
 
 	if got := resolve(t, r, "", bareUsername, ""); got != "" {
-		t.Fatalf("idp = %q, want the local password compare", got)
+		t.Fatalf("federation = %q, want the local password compare", got)
 	}
 	if ran.active != 0 {
 		t.Fatalf("the federations of the tenant were counted for an account that exists: %+v", ran)
@@ -277,7 +277,7 @@ func TestTenantWithNoFederationResolvesNothing(t *testing.T) {
 
 	for _, userID := range []string{testUserID, ""} {
 		if got := resolve(t, r, userID, theIdentifier, ""); got != "" {
-			t.Fatalf("idp = %q, want the local password compare", got)
+			t.Fatalf("federation = %q, want the local password compare", got)
 		}
 	}
 }
@@ -356,10 +356,10 @@ func testResolverLogging(log logger.Logger, w world) *Resolver {
 // real person.
 func TestResolveAnswersTheLocalCompareWhenItRefuses(t *testing.T) {
 	cases := map[string]world{
-		"two identity links": {linked: []string{orgFederationID, tenantFederationID}},
-		"two federations":    {active: []string{orgFederationID, tenantFederationID}},
+		"two federation links": {linked: []string{orgFederationID, tenantFederationID}},
+		"two federations":      {active: []string{orgFederationID, tenantFederationID}},
 	}
-	userIDs := map[string]string{"two identity links": testUserID, "two federations": ""}
+	userIDs := map[string]string{"two federation links": testUserID, "two federations": ""}
 
 	for name, w := range cases {
 		r, _ := testResolver(t, w)

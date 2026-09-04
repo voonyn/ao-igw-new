@@ -42,7 +42,7 @@ func TestDirectoryError(t *testing.T) {
 		// they keep the answer above. Each one is proved and refused, and a slug
 		// of its own would say which people a tenant holds.
 		{
-			"a person an identity link names who cannot sign in",
+			"a person an federation link names who cannot sign in",
 			fmt.Errorf("%w: tenant t-1, user u-1", userfederation.ErrDirectory),
 			session.ErrFederationUnavailable,
 		},

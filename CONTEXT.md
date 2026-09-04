@@ -256,9 +256,9 @@ _Avoid_: Certificate, secret, JWK (that is an encoding, not the concept)
 **Scan Verifier**:
 An external service that turns a credential a person presents into a proven
 identity. Digital Identity is the first one, and today the only one.
-_Avoid_: Verifier (unqualified), DI, wallet service, identity provider
+_Avoid_: Verifier (unqualified), DI, wallet service, user federation
 
-Note: the Avoid list above now names a real term. An Identity Provider holds the
+Note: the Avoid list above now names a real term. A User Federation holds the
 credential of a person and proves it. A Scan Verifier holds no credential of this
 gateway's people, and it answers one scan. The two are never the same word.
 
@@ -285,38 +285,72 @@ The account the Scan Verifier keeps for one gateway person, keyed by that person
 username.
 _Avoid_: Registration, onboarding, enrollment (see Membership), provisioning
 
-### Identity Providers
+### User Federation
 
-**Identity Provider**:
-An external system that a tenant trusts to hold the password of its people, and to
-prove it. A tenant registers one for the whole tenant, or one for a single
-organization.
-_Avoid_: IdP, federation, external provider, connection, realm
+**User Federation**:
+An external user store that a tenant trusts to hold the password of its people, and to
+prove it. A tenant registers one for the whole tenant, or one for a single organization.
+_Avoid_: Identity Provider, IdP, external provider, connection, realm
+
+Note: Identity Provider is a reserved word here, and it names something else. See
+External Identity Provider below.
+
+**Federation Method**:
+How one User Federation reaches its store. The gateway declares two: Directory and
+Database. It serves Directory alone, and the Database method is recorded and not built.
+_Avoid_: Type, kind, driver, backend, protocol
+
+Note: the word "method" alone stays banned. A Factor is not a method and a Pending Step
+is not a method, and both entries above say so. Always write the two words.
 
 **Directory**:
-The LDAP or Active Directory server that one Identity Provider names. It is the only
-kind of Identity Provider this deployment serves.
+The Federation Method that reaches an LDAP server. The word also names the server
+itself.
 _Avoid_: LDAP (unqualified), AD, domain controller, server
 
+**Server Type**:
+Which server one Directory talks to: LDAP, or Active Directory. Active Directory is an
+LDAP server with its own schema, so it is a Server Type and never a Federation Method
+of its own.
+_Avoid_: Vendor, dialect, flavour, variant, product
+
+**External Proof**:
+The act that proves one password against a User Federation. Every Federation Method has
+one, and a successful proof records the same Factor a local password records, `pwd`. A
+budget caps it, on a Redis key of its own.
+_Avoid_: Authenticate, verify, check, login, bind (see Bind)
+
 **Bind**:
-The LDAP operation that proves one password against a Directory. A successful bind
-records the same Factor a local password records, `pwd`.
+The LDAP operation that proves one password against a Directory. It is the External
+Proof of one Federation Method, and never the name of the act itself.
 _Avoid_: Authenticate, verify, check, login
 
 Note: this is a fourth word in this system that carries more than one meaning. The
 others are enrolment, session, and code. A Bind proves a password. Binding a person to
 a Login Session is a different act, and it needs a different word.
 
-**Identity Link**:
-The row that ties one person here to one account in one Identity Provider. It holds the
-stable identifier that provider issued, so a username changed there never orphans the
-person. One person holds at most one link per provider, and can hold several links.
-_Avoid_: Mapping, binding (see Bind), association, federation link
+**Federation Link**:
+The row that ties one person here to one account in one User Federation. It holds the
+stable identifier that store issued, so a username changed there never orphans the
+person. One person holds at most one link per federation, and can hold several links.
+_Avoid_: Mapping, binding (see Bind), association, Identity Link
 
-**Provider Resolution**:
-The step that decides which Identity Provider proves one sign-in, or that no provider
-does. It runs at the identifier step and it discloses nothing.
+**Federation Resolution**:
+The step that decides which User Federation proves one sign-in, or that none does. It
+runs at the identifier step and it discloses nothing.
 _Avoid_: Home realm discovery, realm discovery, routing, IdP discovery
 
-Note: a person the Directory owns holds no password in this gateway. `password_hash` is
-NULL for that person for ever, and the portal refuses every local password change.
+Note: a person a User Federation owns holds no password in this gateway.
+`password_hash` is NULL for that person for ever, and the portal refuses every local
+password change.
+
+**External Identity Provider**:
+An external system that proves a person by redirect and hands the gateway the answer:
+OIDC, SAML, Google, Microsoft Entra. The person types the password there and never
+here, so the gateway holds no credential and runs no External Proof. Nothing serves one
+today.
+_Avoid_: IdP, social login, SSO provider, User Federation
+
+Note: this entry exists to hold two words. **Identity Provider** names this concept
+alone, and **Identity Link** names the row that ties a person to one account in it. A
+User Federation is neither. See `docs/adr/0014`.

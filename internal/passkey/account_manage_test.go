@@ -311,7 +311,7 @@ func TestDecodeCredentialID(t *testing.T) {
 // TestAccountRemove_CarriesTheBrokenAccountOfADirectoryPerson proves the answer
 // a person reads when no single directory entry proves them.
 //
-// The state is permanent. The person holds no live active Identity Link, or more
+// The state is permanent. The person holds no live active Federation Link, or more
 // than one, or the search of the directory matched none, or it matched two. No
 // try of theirs changes any of that, so the sentinel must reach the caller whole
 // and never collapse into the refusal a wrong password gets.
@@ -326,7 +326,7 @@ func TestAccountRemove_CarriesTheBrokenAccountOfADirectoryPerson(t *testing.T) {
 			return user.ErrFederationNoAccount
 		},
 		Directory: func(context.Context, string, string) (string, string, error) {
-			return "idp-one", "alice", nil
+			return "federation-one", "alice", nil
 		},
 		Log: log,
 	})
@@ -378,7 +378,7 @@ func TestAccountRemove_BindsForAClaimedPersonWhoKeepsAStaleHash(t *testing.T) {
 			return nil
 		},
 		Directory: func(context.Context, string, string) (string, string, error) {
-			return "idp-one", "alice", nil
+			return "federation-one", "alice", nil
 		},
 		Log: log,
 	})

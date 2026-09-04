@@ -1,5 +1,14 @@
 # 0013 - One Identity Provider table, and a bind at the password step
 
+**The naming half of this ADR is superseded by `docs/adr/0014`.** The concept this file
+calls an Identity Provider is now a **User Federation**, and the words Identity Provider
+and Identity Link are reserved for the redirect kind. Read the names here as the names
+of the day, and read 0014 for the boundary and the current vocabulary.
+
+Everything else stands: one table with a `type` column, the resolved row winning whole,
+the domain claim as a row, the bind at the password step, the four resolution cases, the
+refusal at two providers, and the constant-time floor.
+
 ## Context
 
 A Tenant that runs Active Directory holds every password of its staff. Today that

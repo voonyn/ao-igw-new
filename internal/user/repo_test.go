@@ -452,7 +452,7 @@ func TestHoldsIdentifier(t *testing.T) {
 	}
 }
 
-// TestOrgOf covers the read the Identity Link routes make before they name the
+// TestOrgOf covers the read the Federation Link routes make before they name the
 // rights of the caller. It answers a person in any state, so an administrator
 // can remove the link of somebody they deactivated first.
 //

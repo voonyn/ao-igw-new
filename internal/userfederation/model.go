@@ -19,16 +19,6 @@ import (
 // beside the directory ones. See docs/adr/0014.
 const TypeDirectory = 1
 
-// The values user_federations.server_type holds. ServerType names the server the
-// method talks to, and no code branches on it today. It exists so the console
-// reopens a saved form and shows the server that was picked. The values are
-// numbered globally and never restart per method, so a database method takes 3
-// and 4. See docs/adr/0014.
-const (
-	ServerTypeLDAP            = 1
-	ServerTypeActiveDirectory = 2
-)
-
 // The values user_federations.state holds. An inactive federation and a
 // soft-deleted federation behave alike at sign-in: both refuse every person tied
 // to them.
@@ -67,7 +57,6 @@ type Federation struct {
 	OrgID        string `bun:"org_id"`
 	Name         string `bun:"name"`
 	Type         int    `bun:"type"`
-	ServerType   int    `bun:"server_type"`
 	State        int    `bun:"state"`
 	DefaultOrgID string `bun:"default_org_id,nullzero"`
 
