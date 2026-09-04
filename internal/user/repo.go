@@ -161,7 +161,7 @@ func (r *Repository) FindByIdentifier(ctx context.Context, tenantID, identifier 
 // HoldsIdentifier reports whether the tenant holds any account for one
 // identifier, whatever its state, and soft-deleted rows included.
 //
-// It is the second read Provider Resolution needs, and it exists because
+// It is the second read Federation Resolution needs, and it exists because
 // FindByIdentifier filters state = active inside the query: a deactivated,
 // locked, or soft-deleted person reads as absent there. A sign-in that took that
 // for "nobody" would resolve a directory and let the first bind write a brand-new

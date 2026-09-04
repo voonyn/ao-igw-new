@@ -13,8 +13,8 @@ import (
 // The read that names the Directory of one person, and the username the bind
 // searches on.
 //
-// Provider Resolution answers it. Neither the password_hash column nor the
-// Identity Link can: case 1 routes a person whose email domain a live active
+// Federation Resolution answers it. Neither the password_hash column nor the
+// Federation Link can: case 1 routes a person whose email domain a live active
 // provider claims, and the claim writes no row, so that person keeps their hash
 // and holds no link. A re-proof that read either one would shut the four
 // destructive portal routes on a person who signs in every day.
@@ -136,7 +136,7 @@ func TestDirectoryOfCarriesABrokenRead(t *testing.T) {
 //
 // The empty username is the point. A directory owns the person, the row carries
 // no username, and the bind has no search value. No retry mends that, so the
-// answer is the permanent one and never `directory_unavailable`. See
+// answer is the permanent one and never `federation_unavailable`. See
 // .scratch/directory-sign-in/issues/25.
 func TestDirectoryReProverRefusals(t *testing.T) {
 	cases := []struct {
@@ -145,8 +145,8 @@ func TestDirectoryReProverRefusals(t *testing.T) {
 		username     string
 		want         error
 	}{
-		{"no single directory", "", "alice", user.ErrDirectoryNoEntry},
-		{"a person who holds no username", "idp-one", "", user.ErrDirectoryNoEntry},
+		{"no single directory", "", "alice", user.ErrFederationNoAccount},
+		{"a person who holds no username", "idp-one", "", user.ErrFederationNoAccount},
 	}
 
 	for _, c := range cases {
@@ -169,7 +169,7 @@ func TestDirectoryReProverRefusals(t *testing.T) {
 }
 
 // TestOnePasswordProofResolvesTheDirectoryOnce proves the fix of ticket 28. One
-// portal password check reads the person row once and runs Provider Resolution
+// portal password check reads the person row once and runs Federation Resolution
 // once.
 //
 // The predicate that decides the credential already names the Directory and the
@@ -210,7 +210,7 @@ func TestOnePasswordProofResolvesTheDirectoryOnce(t *testing.T) {
 		t.Errorf("one password check read the person row %d times, want 1", finds)
 	}
 	if resolves != 1 {
-		t.Errorf("one password check ran Provider Resolution %d times, want 1", resolves)
+		t.Errorf("one password check ran Federation Resolution %d times, want 1", resolves)
 	}
 }
 

@@ -102,14 +102,14 @@ func noBind(context.Context, string, string, string, string, string) (Identity, 
 // boundAs is a bind seam that accepts the password and answers one person, with
 // the email address of the directory entry. It is the seam of a test about what
 // the sign-in does with the answer, and not about the bind itself.
-func boundAs(userID, email string) Binder {
+func boundAs(userID, email string) Prover {
 	return func(_ context.Context, _, _, _, _, _ string) (Identity, error) {
 		return Identity{UserID: userID, Email: email}, nil
 	}
 }
 
 // refusedBind is a bind seam that refuses with one sentinel.
-func refusedBind(answer error) Binder {
+func refusedBind(answer error) Prover {
 	return func(_ context.Context, _, _, _, _, _ string) (Identity, error) {
 		return Identity{}, answer
 	}
@@ -144,7 +144,7 @@ func testServiceWith(t *testing.T, identity IdentityFinder, credential Credentia
 }
 
 func testServiceResolving(
-	t *testing.T, identity IdentityFinder, credential CredentialFinder, provider ProviderResolver,
+	t *testing.T, identity IdentityFinder, credential CredentialFinder, provider FederationResolver,
 ) (*Service, *store) {
 	t.Helper()
 	return testServiceBinding(t, identity, credential, provider, noBind)
@@ -152,7 +152,7 @@ func testServiceResolving(
 
 func testServiceBinding(
 	t *testing.T, identity IdentityFinder, credential CredentialFinder,
-	provider ProviderResolver, bind Binder,
+	provider FederationResolver, bind Prover,
 ) (*Service, *store) {
 	t.Helper()
 
@@ -160,8 +160,8 @@ func testServiceBinding(
 	st := &store{}
 	svc := NewService(Deps{
 		Identity:   identity,
-		Provider:   provider,
-		Bind:       bind,
+		Federation: provider,
+		Prove:      bind,
 		Credential: credential,
 		Steps:      noSteps,
 		Save:       st.Save,
@@ -961,7 +961,7 @@ func signedInAgainst(t *testing.T, svc *Service) Opened {
 
 // directoryService builds a service whose identifier step resolves one directory
 // for one person the tenant already holds. bind is what the directory answers.
-func directoryService(t *testing.T, bind Binder) (*Service, *store) {
+func directoryService(t *testing.T, bind Prover) (*Service, *store) {
 	t.Helper()
 
 	person := Identity{UserID: "user-1", Email: directoryIdentifier}
@@ -1152,13 +1152,13 @@ func TestVerifyPassword_RefusalsTakeTheSameTime(t *testing.T) {
 // answer. It is not a credential failure, so it carries a slug of its own, and
 // the trail names the cause and the provider.
 func TestVerifyPassword_DirectoryUnavailable(t *testing.T) {
-	svc, st := directoryService(t, refusedBind(ErrDirectoryUnavailable))
+	svc, st := directoryService(t, refusedBind(ErrFederationUnavailable))
 	opened := signedInAgainst(t, svc)
 
 	_, _, err := svc.VerifyPassword(
 		context.Background(), "tenant-1", opened.Token, "the-directory-password")
-	if !errors.Is(err, ErrDirectoryUnavailable) {
-		t.Fatalf("err = %v, want ErrDirectoryUnavailable", err)
+	if !errors.Is(err, ErrFederationUnavailable) {
+		t.Fatalf("err = %v, want ErrFederationUnavailable", err)
 	}
 	if errors.Is(err, ErrBadCredentials) {
 		t.Fatalf("err = %v, want a directory failure and not a credential failure", err)
@@ -1177,13 +1177,13 @@ func TestVerifyPassword_DirectoryUnavailable(t *testing.T) {
 // and a soft-deleted one, which behave alike. The answer is the one an unknown
 // identifier gets, and only the trail names the cause.
 func TestVerifyPassword_DirectoryDisabled(t *testing.T) {
-	svc, st := directoryService(t, refusedBind(ErrDirectoryDisabled))
+	svc, st := directoryService(t, refusedBind(ErrFederationDisabled))
 	opened := signedInAgainst(t, svc)
 
 	_, _, err := svc.VerifyPassword(
 		context.Background(), "tenant-1", opened.Token, "the-directory-password")
-	if !errors.Is(err, ErrDirectoryDisabled) {
-		t.Fatalf("err = %v, want ErrDirectoryDisabled", err)
+	if !errors.Is(err, ErrFederationDisabled) {
+		t.Fatalf("err = %v, want ErrFederationDisabled", err)
 	}
 	if !strings.Contains(refusal(t, st), `"reason":"directory_disabled"`) {
 		t.Errorf("the trail recorded %q, want the disabled reason", st.events[0].Metadata)
@@ -1209,7 +1209,7 @@ func TestVerifyPassword_TooManyBinds(t *testing.T) {
 // firstBindService builds a service whose identifier step names a directory and
 // no person. It is the first sign-in of somebody this gateway holds no row for,
 // and the bind is what creates them.
-func firstBindService(t *testing.T, bind Binder) (*Service, *store) {
+func firstBindService(t *testing.T, bind Prover) (*Service, *store) {
 	t.Helper()
 
 	return testServiceBinding(t,
@@ -1346,13 +1346,13 @@ func TestVerifyPassword_BindNamesNoPerson(t *testing.T) {
 // holds. It is not a credential failure, so it answers the slug a directory that
 // did not answer gets, and no session is upgraded.
 func TestVerifyPassword_FirstBindThatCreatesNobody(t *testing.T) {
-	svc, st := firstBindService(t, refusedBind(ErrDirectoryUnavailable))
+	svc, st := firstBindService(t, refusedBind(ErrFederationUnavailable))
 	opened := signedInAgainst(t, svc)
 
 	_, _, err := svc.VerifyPassword(
 		context.Background(), "tenant-1", opened.Token, "the-directory-password")
-	if !errors.Is(err, ErrDirectoryUnavailable) {
-		t.Fatalf("err = %v, want ErrDirectoryUnavailable", err)
+	if !errors.Is(err, ErrFederationUnavailable) {
+		t.Fatalf("err = %v, want ErrFederationUnavailable", err)
 	}
 	if st.saved.Authenticated() {
 		t.Error("the refused sign-in upgraded the login session")
@@ -1371,15 +1371,15 @@ func TestVerifyPassword_FirstBindThatCreatesNobody(t *testing.T) {
 // one that tells the person to try again. The password was proved, so it must
 // not read as a wrong password either.
 func TestVerifyPassword_DirectoryMisconfigured(t *testing.T) {
-	svc, st := firstBindService(t, refusedBind(ErrDirectoryMisconfigured))
+	svc, st := firstBindService(t, refusedBind(ErrFederationMisconfigured))
 	opened := signedInAgainst(t, svc)
 
 	_, _, err := svc.VerifyPassword(
 		context.Background(), "tenant-1", opened.Token, "the-directory-password")
-	if !errors.Is(err, ErrDirectoryMisconfigured) {
-		t.Fatalf("err = %v, want ErrDirectoryMisconfigured", err)
+	if !errors.Is(err, ErrFederationMisconfigured) {
+		t.Fatalf("err = %v, want ErrFederationMisconfigured", err)
 	}
-	if errors.Is(err, ErrDirectoryUnavailable) {
+	if errors.Is(err, ErrFederationUnavailable) {
 		t.Fatal("a misconfigured directory reads as a directory that did not answer")
 	}
 	if errors.Is(err, ErrBadCredentials) {
@@ -1421,13 +1421,13 @@ func TestDirectoryRefusalsAnswerOneSlug(t *testing.T) {
 	}
 
 	wrong := answer(fmt.Errorf("%w: session s-1", ErrBadCredentials))
-	if disabled := answer(fmt.Errorf("%w: session s-1", ErrDirectoryDisabled)); disabled != wrong {
+	if disabled := answer(fmt.Errorf("%w: session s-1", ErrFederationDisabled)); disabled != wrong {
 		t.Fatalf("a disabled directory answers %s, want the %s a wrong password answers", disabled, wrong)
 	}
 	if spent := answer(fmt.Errorf("%w: session s-1", ErrTooManyBinds)); spent != wrong {
 		t.Fatalf("a spent bind budget answers %s, want the %s a wrong password answers", spent, wrong)
 	}
-	if unavailable := answer(fmt.Errorf("%w: session s-1", ErrDirectoryUnavailable)); unavailable == wrong {
+	if unavailable := answer(fmt.Errorf("%w: session s-1", ErrFederationUnavailable)); unavailable == wrong {
 		t.Fatal("a directory that did not answer reads as a wrong password, want a slug of its own")
 	}
 }

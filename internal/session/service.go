@@ -59,12 +59,12 @@ type Terminator func(ctx context.Context, tenantID, sessionID string) error
 // user.ErrNotFound when no live account of the tenant carries the id.
 type CredentialFinder func(ctx context.Context, tenantID, userID string) (string, error)
 
-// ProviderResolver names the Identity Provider that proves one sign-in. It
+// FederationResolver names the User Federation that proves one sign-in. It
 // answers an empty id when the local password compare proves it, and an error
-// when no single provider can.
+// when no single federation can.
 //
 // The router composes it, because it reads the directories a tenant registered,
-// the domains they claim, and the Identity Links of the person, and those live in
+// the domains they claim, and the Federation Links of the person, and those live in
 // a domain this one must not import.
 //
 // userID and email are the person the identifier named, and both are empty when
@@ -72,14 +72,14 @@ type CredentialFinder func(ctx context.Context, tenantID, userID string) (string
 // person, the identifier they typed and the email address the tenant holds for
 // them, so a claim a person steps around by typing their username is no guard
 // rail.
-type ProviderResolver func(
+type FederationResolver func(
 	ctx context.Context, tenantID, userID, identifier, email string,
 ) (string, error)
 
-// Binder proves one password against the directory a login session names, and
+// Prover proves one password against the directory a login session names, and
 // answers the person the sign-in carries on as. It answers one of five sentinels
 // of this package when the directory refused: ErrBadCredentials,
-// ErrDirectoryDisabled, ErrDirectoryUnavailable, ErrDirectoryMisconfigured, or
+// ErrFederationDisabled, ErrFederationUnavailable, ErrFederationMisconfigured, or
 // ErrTooManyBinds.
 //
 // userID is the person the login session already names, and it is empty when the
@@ -97,7 +97,7 @@ type ProviderResolver func(
 // budget, dials the directory, and writes the person the first bind creates, and
 // those live in a domain this one must not import. It maps that domain's
 // sentinels onto these five, so the password step reads one vocabulary.
-type Binder func(
+type Prover func(
 	ctx context.Context, tenantID, idpID, userID, identifier, password string,
 ) (Identity, error)
 
@@ -113,8 +113,8 @@ type PendingSteps func(ctx context.Context, tenantID, userID string) ([]string, 
 // a recorder, so the logic is testable without a database.
 type Deps struct {
 	Identity   IdentityFinder
-	Provider   ProviderResolver
-	Bind       Binder
+	Federation FederationResolver
+	Prove      Prover
 	Credential CredentialFinder
 	Steps      PendingSteps
 	Save       Saver
@@ -154,7 +154,7 @@ func (s *Service) Identify(ctx context.Context, tenantID, identifier, ip, userAg
 	// never a person who is not held: a sign-in that carried on would fall back
 	// to a local password hash that a claimed domain took out of service. The
 	// resolver has logged it.
-	idpID, err := s.deps.Provider(ctx, tenantID, person.UserID, identifier, person.Email)
+	idpID, err := s.deps.Federation(ctx, tenantID, person.UserID, identifier, person.Email)
 	if err != nil {
 		return Opened{}, err
 	}
@@ -265,7 +265,7 @@ func (s *Service) VerifyPassword(
 	//
 	// A bind that changed the person writes their email too. The identifier step
 	// finds a person by username and writes their email, and the bind then proves
-	// a directory entry whose Identity Link names somebody else. A first bind is
+	// a directory entry whose Federation Link names somebody else. A first bind is
 	// the same case with nobody on the left: the session carries no email, and the
 	// bind is the only step that learns one.
 	//
@@ -328,7 +328,7 @@ func (s *Service) VerifyPassword(
 // prove proves the password of one login session, records the refusal when it
 // does not hold, and answers the person the sign-in carries on as.
 //
-// A session that names an Identity Provider is proved with a bind, and every
+// A session that names a User Federation is proved with a bind, and every
 // other session with the bcrypt compare. The two answer alike wherever they can:
 // a wrong password, an entry the directory does not hold, and a search that
 // matched twice all give ErrBadCredentials, which is what a wrong local password
@@ -357,14 +357,14 @@ func (s *Service) prove(ctx context.Context, live LoginSession, password string)
 		return Identity{UserID: live.UserID, Email: live.Email}, nil
 	}
 
-	person, err := s.deps.Bind(ctx, live.TenantID, live.IdpID, live.UserID, live.Identifier, password)
+	person, err := s.deps.Prove(ctx, live.TenantID, live.IdpID, live.UserID, live.Identifier, password)
 	switch {
-	case errors.Is(err, ErrDirectoryDisabled):
-		return Identity{}, s.refuse(ctx, live, "directory_disabled", err, ErrDirectoryDisabled)
-	case errors.Is(err, ErrDirectoryUnavailable):
-		return Identity{}, s.refuse(ctx, live, "directory_unavailable", err, ErrDirectoryUnavailable)
-	case errors.Is(err, ErrDirectoryMisconfigured):
-		return Identity{}, s.refuse(ctx, live, "directory_misconfigured", err, ErrDirectoryMisconfigured)
+	case errors.Is(err, ErrFederationDisabled):
+		return Identity{}, s.refuse(ctx, live, "directory_disabled", err, ErrFederationDisabled)
+	case errors.Is(err, ErrFederationUnavailable):
+		return Identity{}, s.refuse(ctx, live, "directory_unavailable", err, ErrFederationUnavailable)
+	case errors.Is(err, ErrFederationMisconfigured):
+		return Identity{}, s.refuse(ctx, live, "directory_misconfigured", err, ErrFederationMisconfigured)
 	case errors.Is(err, ErrTooManyBinds):
 		return Identity{}, s.refuse(ctx, live, "too_many_binds", err, ErrTooManyBinds)
 	case err != nil:

@@ -150,8 +150,8 @@ type MovedPerson struct {
 // account per federation, which the unique key enforces, so the federation names
 // exactly one link of one person.
 type LinkView struct {
-	FederationID   string    `json:"idpId"`
-	FederationName string    `json:"idpName"`
+	FederationID   string    `json:"federationId"`
+	FederationName string    `json:"federationName"`
 	ExternalID     string    `json:"externalId"`
 	UserID         string    `json:"userId"`
 	Created        time.Time `json:"created"`

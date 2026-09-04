@@ -36,15 +36,15 @@ func init() {
 	response.Map(ErrLoginSessionNotFound, fiber.StatusUnauthorized, "unauthenticated", "Unauthorized")
 	response.Map(ErrNotAuthenticated, fiber.StatusUnauthorized, "unauthenticated", "Unauthorized")
 	response.Map(ErrSubjectBound, fiber.StatusUnauthorized, "unauthenticated", "Unauthorized")
-	response.Map(ErrDirectoryDisabled, fiber.StatusUnauthorized, "unauthenticated", "Unauthorized")
+	response.Map(ErrFederationDisabled, fiber.StatusUnauthorized, "unauthenticated", "Unauthorized")
 	response.Map(ErrTooManyBinds, fiber.StatusUnauthorized, "unauthenticated", "Unauthorized")
 
 	// A directory that did not answer is not a wrong password, so it carries a
 	// slug of its own and the person is told to try again. The slug says that
 	// the identifier is served by a directory, and that is paid for on purpose:
 	// the state is transient, and the person needs to call the right helpdesk.
-	response.Map(ErrDirectoryUnavailable, fiber.StatusServiceUnavailable,
-		"directory_unavailable", "Service Unavailable")
+	response.Map(ErrFederationUnavailable, fiber.StatusServiceUnavailable,
+		"federation_unavailable", "Service Unavailable")
 
 	// A directory that cannot create the person is permanent. The state stays
 	// until an administrator names an organization or somebody gives the entry a
@@ -54,7 +54,7 @@ func init() {
 	//
 	// The slug says no more than the one above already does. It names a fault of
 	// the configuration, and never which people the tenant holds.
-	response.Map(ErrDirectoryMisconfigured, fiber.StatusConflict, "directory_misconfigured",
+	response.Map(ErrFederationMisconfigured, fiber.StatusConflict, "federation_misconfigured",
 		"Your organization's directory is not set up for sign-in. Ask an administrator to correct it.")
 
 	// This one carries its own slug. A person who owes a factor proved their

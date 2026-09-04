@@ -289,7 +289,7 @@ func TestBindStopsAtTheTimeout(t *testing.T) {
 }
 
 // TestBindReportsADirectoryThatRefusesTheConnection covers the dial failure. It
-// is not a credential failure, so the caller answers directory_unavailable.
+// is not a credential failure, so the caller answers federation_unavailable.
 func TestBindReportsADirectoryThatRefusesTheConnection(t *testing.T) {
 	svc := testService(t, deps{})
 

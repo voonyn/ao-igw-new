@@ -45,7 +45,7 @@ func TestErrNotFoundMaps(t *testing.T) {
 func TestErrDirectoryNoEntryMaps(t *testing.T) {
 	app := fiber.New()
 	app.Get("/", func(c fiber.Ctx) error {
-		return response.Fail(c, fmt.Errorf("re-prove the person: %w", ErrDirectoryNoEntry))
+		return response.Fail(c, fmt.Errorf("re-prove the person: %w", ErrFederationNoAccount))
 	})
 
 	res, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/", nil))
@@ -65,10 +65,10 @@ func TestErrDirectoryNoEntryMaps(t *testing.T) {
 	if err := json.NewDecoder(res.Body).Decode(&body); err != nil {
 		t.Fatalf("read the body: %v", err)
 	}
-	if body.Error != "directory_no_entry" {
-		t.Errorf("the slug is %q, want %q", body.Error, "directory_no_entry")
+	if body.Error != "federation_no_account" {
+		t.Errorf("the slug is %q, want %q", body.Error, "federation_no_account")
 	}
-	if body.Error == "directory_unavailable" {
+	if body.Error == "federation_unavailable" {
 		t.Error("a permanent state borrowed the slug of a transient one")
 	}
 	if !strings.Contains(strings.ToLower(body.Message), "administrator") {

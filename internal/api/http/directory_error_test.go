@@ -25,18 +25,18 @@ func TestDirectoryError(t *testing.T) {
 		{"a bind that proved the password", nil, nil},
 		{"a wrong password", userfederation.ErrWrongPassword, session.ErrBadCredentials},
 		{"no such entry", userfederation.ErrNoEntry, session.ErrBadCredentials},
-		{"a disabled provider", userfederation.ErrDisabled, session.ErrDirectoryDisabled},
+		{"a disabled provider", userfederation.ErrDisabled, session.ErrFederationDisabled},
 		{"a spent budget", userfederation.ErrTooManyProofs, session.ErrTooManyBinds},
-		{"a directory that did not answer", userfederation.ErrDirectory, session.ErrDirectoryUnavailable},
-		{"a budget nobody could read", userfederation.ErrProofUnavailable, session.ErrDirectoryUnavailable},
-		{"a broken read of the row", errors.New("the database is down"), session.ErrDirectoryUnavailable},
+		{"a directory that did not answer", userfederation.ErrDirectory, session.ErrFederationUnavailable},
+		{"a budget nobody could read", userfederation.ErrProofUnavailable, session.ErrFederationUnavailable},
+		{"a broken read of the row", errors.New("the database is down"), session.ErrFederationUnavailable},
 		{
 			"a provider that names no organization",
-			userfederation.ErrNoOrganization, session.ErrDirectoryMisconfigured,
+			userfederation.ErrNoOrganization, session.ErrFederationMisconfigured,
 		},
 		{
 			"an entry that carries no username",
-			userfederation.ErrNoUsername, session.ErrDirectoryMisconfigured,
+			userfederation.ErrNoUsername, session.ErrFederationMisconfigured,
 		},
 		// The three deliberate refusals of provision.go carry ErrDirectory, and
 		// they keep the answer above. Each one is proved and refused, and a slug
@@ -44,7 +44,7 @@ func TestDirectoryError(t *testing.T) {
 		{
 			"a person an identity link names who cannot sign in",
 			fmt.Errorf("%w: tenant t-1, user u-1", userfederation.ErrDirectory),
-			session.ErrDirectoryUnavailable,
+			session.ErrFederationUnavailable,
 		},
 	}
 
@@ -71,8 +71,8 @@ func TestDirectoryError(t *testing.T) {
 			// answer that tells the person to try again nor the one that tells
 			// them the password was wrong, because no try of theirs can work
 			// and the password they typed was proved.
-			if c.want == session.ErrDirectoryMisconfigured {
-				if errors.Is(got, session.ErrDirectoryUnavailable) {
+			if c.want == session.ErrFederationMisconfigured {
+				if errors.Is(got, session.ErrFederationUnavailable) {
 					t.Error("a misconfigured directory reads as a directory outage")
 				}
 				if errors.Is(got, session.ErrBadCredentials) {
@@ -105,12 +105,12 @@ func TestAccountDirectoryError(t *testing.T) {
 	}{
 		{"a bind that proved the password", nil, nil},
 		{"a wrong password", userfederation.ErrWrongPassword, user.ErrBadPassword},
-		{"no single directory entry proves the person", userfederation.ErrNoEntry, user.ErrDirectoryNoEntry},
-		{"a disabled provider", userfederation.ErrDisabled, user.ErrDirectoryUnavailable},
-		{"a spent budget", userfederation.ErrTooManyProofs, user.ErrDirectoryUnavailable},
-		{"a directory that did not answer", userfederation.ErrDirectory, user.ErrDirectoryUnavailable},
-		{"a budget nobody could read", userfederation.ErrProofUnavailable, user.ErrDirectoryUnavailable},
-		{"a broken read of the row", errors.New("the database is down"), user.ErrDirectoryUnavailable},
+		{"no single directory entry proves the person", userfederation.ErrNoEntry, user.ErrFederationNoAccount},
+		{"a disabled provider", userfederation.ErrDisabled, user.ErrFederationUnavailable},
+		{"a spent budget", userfederation.ErrTooManyProofs, user.ErrFederationUnavailable},
+		{"a directory that did not answer", userfederation.ErrDirectory, user.ErrFederationUnavailable},
+		{"a budget nobody could read", userfederation.ErrProofUnavailable, user.ErrFederationUnavailable},
+		{"a broken read of the row", errors.New("the database is down"), user.ErrFederationUnavailable},
 	}
 
 	for _, c := range cases {
@@ -130,12 +130,12 @@ func TestAccountDirectoryError(t *testing.T) {
 			if !errors.Is(got, c.want) {
 				t.Fatalf("accountDirectoryError = %v, want %v", got, c.want)
 			}
-			if c.want == user.ErrDirectoryUnavailable && errors.Is(got, user.ErrBadPassword) {
+			if c.want == user.ErrFederationUnavailable && errors.Is(got, user.ErrBadPassword) {
 				t.Error("a directory that could not prove the person reads as a wrong password")
 			}
 			// The permanent state must never borrow the transient answer. A 503
 			// tells the person to try again, and no try of theirs can work.
-			if c.want == user.ErrDirectoryNoEntry && errors.Is(got, user.ErrDirectoryUnavailable) {
+			if c.want == user.ErrFederationNoAccount && errors.Is(got, user.ErrFederationUnavailable) {
 				t.Error("a person whom no single directory entry proves reads as a directory outage")
 			}
 		})

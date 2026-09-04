@@ -30,7 +30,7 @@ var ErrWrongPassword = errors.New("the directory refused the password")
 
 // ErrDirectory reports that the directory did not answer: a dial failure, a
 // timeout, a TLS failure, or a bind failure of the service credential. None of
-// those is a credential failure, and the caller answers directory_unavailable.
+// those is a credential failure, and the caller answers federation_unavailable.
 //
 // Three permanent refusals of provision.go reuse it, and that is deliberate: the
 // offboarded person a Federation Link names, a bind whose entry another link of
@@ -53,12 +53,12 @@ var ErrDirectory = errors.New("the directory did not answer")
 // step. directory_disabled is an audit reason and never a slug.
 //
 // Prove raises it, and the sign-in and the portal re-proof both call Prove. The
-// re-proof maps it onto ErrDirectoryUnavailable, which tells a caller who already
+// re-proof maps it onto ErrFederationUnavailable, which tells a caller who already
 // proved who they are to try again, and names no person. The admin and the test
 // routes read the state off the federation row and raise nothing, so a misconfigured
 // directory can be fixed and tested before it goes active again. See
 // docs/specs/0002-directory-sign-in.md.
-var ErrDisabled = errors.New("the identity provider is disabled")
+var ErrDisabled = errors.New("the user federation is disabled")
 
 // ErrTooManyProofs reports a person who spent their whole bind budget, or the
 // typed identifier that spent it when the identifier step named nobody. The

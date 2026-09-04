@@ -193,7 +193,7 @@ type Deps struct {
 	// The stored hash cannot decide it. A domain claim routes a person the
 	// tenant already held, and the claim writes no row, so that person keeps a
 	// hash no sign-in reads. See AccountDeps.Directory.
-	Directory DirectoryResolver
+	Directory FederationResolver
 
 	InTx  db.TxRunner
 	Audit *audit.Recorder
@@ -753,19 +753,19 @@ func (s *Service) ResetPassword(ctx context.Context, a Actor, userID string) (Re
 		return ResetView{}, err
 	}
 
-	// The token buys a person the Directory owns nothing. Provider Resolution
+	// The token buys a person a User Federation owns nothing. Federation Resolution
 	// case 1 routes them to the bind whatever the password_hash column holds, so
 	// the operator would hand over a value that signs nobody in, and read no
 	// answer that says why. The refusal comes before the mint, so no token row
 	// and no audit row is written.
 	//
-	// A named provider alone decides it, and never an empty hash. A person who
+	// A named federation alone decides it, and never an empty hash. A person who
 	// holds neither still resets, because the token is their only way back in.
-	idpID, _, err := s.deps.Directory(ctx, a.TenantID, userID)
+	federationID, _, err := s.deps.Directory(ctx, a.TenantID, userID)
 	if err != nil {
 		return ResetView{}, s.fail(a.TenantID, a.UserID, "read the directory that owns the person", err)
 	}
-	if idpID != "" {
+	if federationID != "" {
 		s.log.Warn("refused a password reset on an account the directory owns",
 			logger.String("tenant_id", a.TenantID),
 			logger.String("user_id", a.UserID),

@@ -14,7 +14,7 @@ import (
 // live active federations of the tenant give it, and so do two Federation Links that
 // both take a typed password.
 //
-// provider_ambiguous is not a slug. No answer carries it and no route maps it,
+// federation_ambiguous is not a slug. No answer carries it and no route maps it,
 // because a slug of its own would count the federations of a tenant for an
 // unauthenticated caller. The identifier step answers the same thing in every
 // case, so the caller falls back to the local password compare, which refuses

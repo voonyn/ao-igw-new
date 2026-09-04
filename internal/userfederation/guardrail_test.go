@@ -218,7 +218,7 @@ func TestUnlinkAllowsTheLinkOfADeadFederation(t *testing.T) {
 func TestErrLastLinkMaps(t *testing.T) {
 	app := fiber.New()
 	app.Get("/", func(c fiber.Ctx) error {
-		return response.Fail(c, fmt.Errorf("delete identity link: %w", ErrLastLink))
+		return response.Fail(c, fmt.Errorf("delete federation link: %w", ErrLastLink))
 	})
 
 	res, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/", nil))
@@ -237,8 +237,8 @@ func TestErrLastLinkMaps(t *testing.T) {
 	if err := json.NewDecoder(res.Body).Decode(&body); err != nil {
 		t.Fatalf("decode the answer: %v", err)
 	}
-	if body.Error != "last_identity_link" {
-		t.Errorf("the answer carries the slug %q, want last_identity_link", body.Error)
+	if body.Error != "last_federation_link" {
+		t.Errorf("the answer carries the slug %q, want last_federation_link", body.Error)
 	}
 }
 

@@ -674,7 +674,7 @@ func TestResetPasswordAnswersTheTokenOnceAndStoresADigest(t *testing.T) {
 // TestResetPasswordRefusesADirectoryOwnedPerson covers the refusal the
 // self-service change already makes, on the path an operator drives.
 //
-// The token buys such a person nothing. Provider Resolution case 1 routes them
+// The token buys such a person nothing. Federation Resolution case 1 routes them
 // to the bind whatever the stored hash holds, so the reset must refuse rather
 // than hand over a value that signs nobody in. Nothing is written.
 func TestResetPasswordRefusesADirectoryOwnedPerson(t *testing.T) {
@@ -1034,7 +1034,7 @@ type adminDeps struct {
 	// enrolFails answers a failure from the Scan Verifier, as an outage there
 	// does.
 	enrolFails bool
-	// directory is the provider Provider Resolution names for the subject of the
+	// directory is the provider Federation Resolution names for the subject of the
 	// write. Empty means that no directory owns them, which is what a local
 	// account answers.
 	directory string

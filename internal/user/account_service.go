@@ -29,16 +29,16 @@ var ErrBadPassword = errors.New("current password is wrong")
 // person meets this refusal only when the account changed under an open screen.
 var ErrPasswordNotLocal = errors.New("the password of the account is not local")
 
-// ErrDirectoryUnavailable reports a directory that could not answer a re-proof.
+// ErrFederationUnavailable reports a directory that could not answer a re-proof.
 //
 // It is not a wrong password, and it must never read as one. A person whose
 // directory is off, unreachable, or over its bind budget is told to try again,
 // and never that the password they typed is wrong.
-var ErrDirectoryUnavailable = errors.New("the directory did not answer")
+var ErrFederationUnavailable = errors.New("the directory did not answer")
 
-// ErrDirectoryNoEntry reports a person whom no single directory entry proves.
+// ErrFederationNoAccount reports a person whom no single directory entry proves.
 //
-// Five states reach it: the person holds no live active Identity Link, the
+// Five states reach it: the person holds no live active Federation Link, the
 // person holds more than one, the search matched no entry, the search matched
 // two, and the row of a directory-owned person carries no username. The last one
 // names no entry to search for. Each one is an answer, and each one stays until
@@ -47,7 +47,7 @@ var ErrDirectoryUnavailable = errors.New("the directory did not answer")
 // It is not a directory that could not answer, and it must never read as one. A
 // person who meets it holds a broken account, nothing they do makes the next try
 // work, and only an administrator can mend it. The answer says so.
-var ErrDirectoryNoEntry = errors.New("no single directory entry holds the person")
+var ErrFederationNoAccount = errors.New("no single directory entry holds the person")
 
 // The reads and writes the self-service half of this domain composes its answers
 // from. Each one is a function value, so the logic is testable without a
@@ -75,28 +75,28 @@ type (
 	// keeps this domain from importing the policy domain.
 	PasswordChecker func(ctx context.Context, tenantID, orgID, plain string) error
 
-	// DirectoryProver proves one password against the Directory that owns a
+	// Prover proves one password against the User Federation that owns a
 	// person. userfederation.Service.Prove has this shape, and the strings run
 	// in that order.
 	//
-	// The caller names the provider and the username, because DirectoryResolver
+	// The caller names the federation and the username, because FederationResolver
 	// already found both. A prover that resolved them again would read the person
 	// and the providers a second time on every password check, for the answer the
 	// first read gave. See .scratch/directory-sign-in/issues/28.
 	//
-	// It answers nil on a match, ErrDirectoryUnavailable when no directory could
-	// answer, ErrDirectoryNoEntry when no single directory entry proves the
+	// It answers nil on a match, ErrFederationUnavailable when no directory could
+	// answer, ErrFederationNoAccount when no single directory entry proves the
 	// person, and any other error for a refusal. The password never reaches a log
 	// line of this domain.
-	DirectoryProver func(ctx context.Context, tenantID, idpID, userID, username, plain string) error
+	Prover func(ctx context.Context, tenantID, federationID, userID, username, plain string) error
 
-	// DirectoryResolver names the Directory that proves one person, beside the
-	// username the bind searches on. Provider Resolution answers it, and the
+	// FederationResolver names the User Federation that proves one person, beside
+	// the username the bind searches on. Federation Resolution answers it, and the
 	// composition root runs the same resolver the sign-in runs, so one question
 	// decides the credential in both places.
 	//
-	// An empty provider id means that no single Directory proves the person, which
-	// is what a local account answers.
+	// An empty federation id means that no single User Federation proves the
+	// person, which is what a local account answers.
 	//
 	// It reads the person and never a typed string. The portal holds no typed
 	// identifier: the access token named the person, and the resolver matches the
@@ -105,7 +105,7 @@ type (
 	// A read that broke is an error. It stops the request, the way a broken read
 	// of the same resolver stops the sign-in, so no re-proof ever falls back to a
 	// local hash that a domain claim took out of service.
-	DirectoryResolver func(ctx context.Context, tenantID, userID string) (string, string, error)
+	FederationResolver func(ctx context.Context, tenantID, userID string) (string, string, error)
 
 	// SessionRevoker ends every login session of one person except the one
 	// named, and the grants those sessions fanned out to.
@@ -125,7 +125,7 @@ type AccountDeps struct {
 
 	// ProveDirectory is the re-proof of a person the Directory owns. It runs
 	// wherever the local password does not prove the person. See passwordLocal.
-	ProveDirectory DirectoryProver
+	ProveDirectory Prover
 
 	// Directory names the Directory that proves the person, which is what decides
 	// the credential every password proof of this service runs.
@@ -133,7 +133,7 @@ type AccountDeps struct {
 	// The stored hash cannot decide it. A domain claim routes a person the tenant
 	// already held, and the claim writes no row, so that person keeps the hash
 	// the claim retired. See passwordLocal.
-	Directory DirectoryResolver
+	Directory FederationResolver
 
 	InTx  db.TxRunner
 	Audit *audit.Recorder
@@ -323,7 +323,7 @@ func (s *AccountService) PasswordLocal(ctx context.Context, a Actor) (bool, erro
 // .scratch/directory-sign-in/issues/28.
 //
 // Two states answer false. A Directory proves the person, whatever the
-// password_hash column holds: Provider Resolution case 1 routes a person whose
+// password_hash column holds: Federation Resolution case 1 routes a person whose
 // email domain a live active provider claims, the claim writes no row, and the
 // hash it retired stays behind. And the person holds no hash at all, which is
 // what the first bind creates.
@@ -334,11 +334,11 @@ func (s *AccountService) PasswordLocal(ctx context.Context, a Actor) (bool, erro
 func (s *AccountService) passwordLocal(
 	ctx context.Context, a Actor, hash string,
 ) (bool, string, string, error) {
-	idpID, username, err := s.deps.Directory(ctx, a.TenantID, a.UserID)
+	federationID, username, err := s.deps.Directory(ctx, a.TenantID, a.UserID)
 	if err != nil {
 		return false, "", "", s.fail(a.TenantID, a.UserID, "read the directory that owns the person", err)
 	}
-	return idpID == "" && hash != "", idpID, username, nil
+	return federationID == "" && hash != "", federationID, username, nil
 }
 
 // readCredential answers a failed credential read.
@@ -355,19 +355,19 @@ func (s *AccountService) readCredential(a Actor, err error) error {
 
 // checkPassword proves plain against the credential that signs this person in.
 //
-// Provider Resolution decides which credential that is, and the stored hash
+// Federation Resolution decides which credential that is, and the stored hash
 // never does. A domain claim routes a person the tenant already held, and it
 // writes no row, so that person keeps a hash no sign-in reads. A compare against
 // it would refuse the very password that signs them in.
 //
 // The password never reaches a log line.
 func (s *AccountService) checkPassword(ctx context.Context, a Actor, hash, plain string) error {
-	local, idpID, username, err := s.passwordLocal(ctx, a, hash)
+	local, federationID, username, err := s.passwordLocal(ctx, a, hash)
 	if err != nil {
 		return err
 	}
 	if !local {
-		return s.proveDirectory(ctx, a, idpID, username, plain)
+		return s.proveDirectory(ctx, a, federationID, username, plain)
 	}
 	return s.compareLocal(a, hash, plain)
 }
@@ -413,13 +413,13 @@ func (s *AccountService) compareLocal(a Actor, hash, plain string) error {
 // The password never reaches a log line, and the directory layer already logged
 // whatever it saw.
 func (s *AccountService) proveDirectory(
-	ctx context.Context, a Actor, idpID, username, plain string,
+	ctx context.Context, a Actor, federationID, username, plain string,
 ) error {
-	err := s.deps.ProveDirectory(ctx, a.TenantID, idpID, a.UserID, username, plain)
+	err := s.deps.ProveDirectory(ctx, a.TenantID, federationID, a.UserID, username, plain)
 	switch {
 	case err == nil:
 		return nil
-	case errors.Is(err, ErrDirectoryUnavailable), errors.Is(err, ErrDirectoryNoEntry):
+	case errors.Is(err, ErrFederationUnavailable), errors.Is(err, ErrFederationNoAccount):
 		return err
 	default:
 		return s.refuse(a, "the directory refused the password")

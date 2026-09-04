@@ -23,13 +23,13 @@ func init() {
 	response.Map(ErrNotAdmin, fiber.StatusForbidden, "forbidden", "Forbidden")
 	response.Map(ErrForbidden, fiber.StatusForbidden, "forbidden", "Forbidden")
 	response.Map(ErrDomainClaimed, fiber.StatusConflict, "domain_already_claimed",
-		"Another identity provider of this tenant already claims that domain.")
+		"Another user federation of this tenant already claims that domain.")
 	response.Map(ErrNameTaken, fiber.StatusConflict, "name_conflict",
-		"Another identity provider of this tenant already carries that name.")
+		"Another user federation of this tenant already carries that name.")
 	response.Map(ErrLevelFixed, fiber.StatusConflict, "level_fixed",
-		"An identity provider stays at the level it was created at.")
-	response.Map(ErrLastLink, fiber.StatusConflict, "last_identity_link",
-		"That person holds no password here. Removing the last identity link would lock them out.")
+		"A user federation stays at the level it was created at.")
+	response.Map(ErrLastLink, fiber.StatusConflict, "last_federation_link",
+		"That person holds no password here. Removing the last federation link would lock them out.")
 	response.Map(ErrServerScheme, fiber.StatusUnprocessableEntity, "invalid_input",
 		"A server does not match the transport. LDAPS takes ldaps://, and the other two take ldap://.")
 
@@ -42,7 +42,7 @@ func init() {
 		"The connection test cannot run at the moment.")
 }
 
-// Handler serves the identity providers of a tenant to the console. It binds the
+// Handler serves the user federations of a tenant to the console. It binds the
 // request, calls the service, and writes the envelope. No rule lives here.
 type Handler struct {
 	svc *Service
@@ -52,7 +52,7 @@ func NewHandler(svc *Service) *Handler {
 	return &Handler{svc: svc}
 }
 
-// AdminRoutes mounts the identity provider routes. The caller mounts the tenant
+// AdminRoutes mounts the user federation routes. The caller mounts the tenant
 // middleware and the bearer middleware on the group, so every route below reads
 // a resolved tenant and a verified subject.
 //
@@ -63,29 +63,29 @@ func NewHandler(svc *Service) *Handler {
 // The level of a provider is a field of the body, not a path segment, because a
 // provider does not move between levels once it is created.
 //
-// linkId is the id of the identity provider. One person holds at most one account
+// linkId is the id of the user federation. One person holds at most one account
 // per provider, which the unique key enforces, so the provider names exactly one
 // link of one person.
 func AdminRoutes(router fiber.Router, h *Handler) {
-	router.Get("/identity-providers", h.list)
-	router.Post("/identity-providers", h.create)
-	router.Get("/identity-providers/:id", h.find)
-	router.Put("/identity-providers/:id", h.update)
-	router.Delete("/identity-providers/:id", h.remove)
+	router.Get("/user-federations", h.list)
+	router.Post("/user-federations", h.create)
+	router.Get("/user-federations/:id", h.find)
+	router.Put("/user-federations/:id", h.update)
+	router.Delete("/user-federations/:id", h.remove)
 
 	// Two paths reach one connection test. The path with an id tests a stored
 	// provider, and the path without one tests a configuration nobody saved yet,
 	// so an administrator checks a directory before the first save.
-	router.Post("/identity-providers/test", h.test)
-	router.Post("/identity-providers/:id/test", h.test)
+	router.Post("/user-federations/test", h.test)
+	router.Post("/user-federations/:id/test", h.test)
 
 	// The claim preview names the people a candidate domain list moves, before
 	// the save. It reads and it writes nothing, and it is a POST because the
 	// domain list is the body of the form on screen, the way the test above is.
-	router.Post("/identity-providers/claim-preview", h.previewClaim)
+	router.Post("/user-federations/claim-preview", h.previewClaim)
 
-	router.Get("/users/:id/identity-links", h.links)
-	router.Delete("/users/:id/identity-links/:linkId", h.unlink)
+	router.Get("/users/:id/federation-links", h.links)
+	router.Delete("/users/:id/federation-links/:linkId", h.unlink)
 }
 
 func (h *Handler) list(c fiber.Ctx) error {

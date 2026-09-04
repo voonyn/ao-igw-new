@@ -16,7 +16,7 @@ import (
 //
 // Two people are one case here. The person the first bind created holds no local
 // password hash. The person a domain claim routes keeps the hash the claim
-// retired, because the claim writes no row. Provider Resolution answers for
+// retired, because the claim writes no row. Federation Resolution answers for
 // both, and the stored hash answers for neither.
 //
 // Four portal routes ask them for a password: the TOTP disable, the
@@ -34,7 +34,7 @@ type directoryDeps struct {
 	// hash is the stored password of the account. An empty hash is what the
 	// person the first bind created holds.
 	hash string
-	// claimed is what Provider Resolution answers for the person. A domain claim
+	// claimed is what Federation Resolution answers for the person. A domain claim
 	// routes a person the tenant already held, and it writes no row, so such a
 	// person is claimed and keeps the hash the claim retired.
 	claimed bool
@@ -156,11 +156,11 @@ func TestVerifyPasswordRefusesAWrongDirectoryPassword(t *testing.T) {
 // depends on: a directory that could not answer never reads as a wrong password.
 // The person is told to try again, and not to hunt for a password that is right.
 func TestVerifyPasswordAnswersADirectoryOutageAsItself(t *testing.T) {
-	svc := directoryService(t, directoryDeps{proveErr: ErrDirectoryUnavailable})
+	svc := directoryService(t, directoryDeps{proveErr: ErrFederationUnavailable})
 
 	err := svc.VerifyPassword(t.Context(), person, currentPassword)
-	if !errors.Is(err, ErrDirectoryUnavailable) {
-		t.Fatalf("VerifyPassword answered %v, want %v", err, ErrDirectoryUnavailable)
+	if !errors.Is(err, ErrFederationUnavailable) {
+		t.Fatalf("VerifyPassword answered %v, want %v", err, ErrFederationUnavailable)
 	}
 	if errors.Is(err, ErrBadPassword) {
 		t.Error("a directory outage answered a wrong password, want the outage")
@@ -176,16 +176,16 @@ func TestVerifyPasswordAnswersADirectoryOutageAsItself(t *testing.T) {
 // search that matched two. Only an administrator can mend it, so the sentinel
 // travels back whole, and never as a wrong password or a directory outage.
 func TestVerifyPasswordAnswersABrokenDirectoryAccountAsItself(t *testing.T) {
-	svc := directoryService(t, directoryDeps{proveErr: ErrDirectoryNoEntry})
+	svc := directoryService(t, directoryDeps{proveErr: ErrFederationNoAccount})
 
 	err := svc.VerifyPassword(t.Context(), person, currentPassword)
-	if !errors.Is(err, ErrDirectoryNoEntry) {
-		t.Fatalf("VerifyPassword answered %v, want %v", err, ErrDirectoryNoEntry)
+	if !errors.Is(err, ErrFederationNoAccount) {
+		t.Fatalf("VerifyPassword answered %v, want %v", err, ErrFederationNoAccount)
 	}
 	if errors.Is(err, ErrBadPassword) {
 		t.Error("a broken directory account answered a wrong password, want the broken account")
 	}
-	if errors.Is(err, ErrDirectoryUnavailable) {
+	if errors.Is(err, ErrFederationUnavailable) {
 		t.Error("a broken directory account answered a directory outage, want the broken account")
 	}
 }
@@ -232,7 +232,7 @@ func TestChangePasswordRefusesAPersonTheDirectoryOwns(t *testing.T) {
 // TestVerifyPasswordBindsForAClaimedPersonWhoKeepsAStaleHash proves the fix of
 // ticket 21. The three destructive portal routes reach it through VerifyPassword.
 //
-// Provider Resolution case 1 routes a person whose email domain a live active
+// Federation Resolution case 1 routes a person whose email domain a live active
 // provider claims. The claim writes no row, so the person keeps every column
 // they had, and password_hash keeps the value it held. The bind signs them in
 // from that moment, so the bind is what re-proves them, and a compare against
@@ -271,7 +271,7 @@ func TestVerifyPasswordRefusesTheStaleHashOfAClaimedPerson(t *testing.T) {
 // TestTheTwoRefusalsHoldForAClaimedPersonWithAStaleHash proves that the stale
 // hash changes neither answer a broken directory gives.
 func TestTheTwoRefusalsHoldForAClaimedPersonWithAStaleHash(t *testing.T) {
-	for _, want := range []error{ErrDirectoryUnavailable, ErrDirectoryNoEntry} {
+	for _, want := range []error{ErrFederationUnavailable, ErrFederationNoAccount} {
 		svc := directoryService(t, directoryDeps{
 			hash: localHash(t), claimed: true, proveErr: want,
 		})

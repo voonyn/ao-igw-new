@@ -133,16 +133,16 @@ var ErrSubjectBound = errors.New("login session already names another person")
 // says which of them happened.
 var ErrBadCredentials = errors.New("identifier or password is wrong")
 
-// ErrDirectoryDisabled reports a sign-in against a directory that is inactive or
+// ErrFederationDisabled reports a sign-in against a directory that is inactive or
 // soft deleted. It is not a credential failure, and it spends no budget.
 //
 // It answers the slug ErrBadCredentials answers, so the response never says that
 // a directory is what refused. A slug of its own would name every
-// directory-owned person of the tenant for as long as the provider stays off.
+// directory-owned person of the tenant for as long as the federation stays off.
 // The audit trail tells the two apart, because it is read by an operator.
-var ErrDirectoryDisabled = errors.New("the identity provider is disabled")
+var ErrFederationDisabled = errors.New("the user federation is disabled")
 
-// ErrDirectoryUnavailable reports a directory that could not prove the person
+// ErrFederationUnavailable reports a directory that could not prove the person
 // for a moment: a dial failure, a timeout, a TLS failure, or a failed bind of
 // the service credential. A bind budget nobody could read answers it too, and so
 // does a broken read of the provider row.
@@ -155,10 +155,10 @@ var ErrDirectoryDisabled = errors.New("the identity provider is disabled")
 // says so. It discloses that the identifier is served by a directory, and that
 // is paid for on purpose: the person needs to call the right helpdesk. A
 // permanent configuration fault must not borrow it, and answers
-// ErrDirectoryMisconfigured instead. See docs/specs/0002-directory-sign-in.md.
-var ErrDirectoryUnavailable = errors.New("the directory did not answer")
+// ErrFederationMisconfigured instead. See docs/specs/0002-directory-sign-in.md.
+var ErrFederationUnavailable = errors.New("the directory did not answer")
 
-// ErrDirectoryMisconfigured reports a directory that cannot create the person
+// ErrFederationMisconfigured reports a directory that cannot create the person
 // this sign-in proved. The provider names no organization to create people in,
 // or the directory entry carries no username.
 //
@@ -173,8 +173,8 @@ var ErrDirectoryUnavailable = errors.New("the directory did not answer")
 // already does. The state is a fault of the configuration, and it says nothing
 // about which people the tenant holds. The three deliberate refusals of
 // userfederation.ErrDirectory are the ones that would, and they stay on
-// ErrDirectoryUnavailable.
-var ErrDirectoryMisconfigured = errors.New("the directory cannot create the person")
+// ErrFederationUnavailable.
+var ErrFederationMisconfigured = errors.New("the directory cannot create the person")
 
 // ErrTooManyBinds reports a person who spent their whole bind budget, or the
 // typed identifier that spent it when the identifier step named nobody. The
@@ -193,7 +193,7 @@ var ErrTooManyBinds = errors.New("too many directory binds")
 // lives in the sealed blob, so it needs no column and every instance reads the
 // same number.
 //
-// IdpID names the Identity Provider the identifier step resolved, and it is
+// IdpID names the User Federation the identifier step resolved, and it is
 // empty when the local password compare proves this sign-in. It needs no column
 // either, and no SQL read names a field inside the blob, so a session already in
 // flight decodes it to the empty string, which is what that session was.

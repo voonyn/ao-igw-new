@@ -254,8 +254,8 @@ func mountMFA(
 	users := user.NewRepository(bdb, log)
 
 	// The password check the two destructive portal addresses demand. It reads
-	// the stored credential of one person, and it re-proves a person the
-	// Directory owns with the bind that signs them in. Such a person holds no
+	// the stored credential of one person, and it re-proves a person a User
+	// Federation owns with the bind that signs them in. Such a person holds no
 	// local password hash, so a build without the re-proof would close both
 	// addresses to every one of them.
 	directory, reprove := directoryReProof(bdb, rdb, cipher, users, log)
@@ -611,7 +611,7 @@ func mountAdmin(
 		// runs, so the console policy is enforced wherever a password is chosen.
 		CheckPassword: policySvc.Enforce,
 
-		// The reset refuses a person the Directory owns. It is the same resolver
+		// The reset refuses a person a User Federation owns. It is the same resolver
 		// the portal password check runs, so one question decides the credential
 		// in both places. The bind half is unused here: this path writes a token
 		// and proves no password.
@@ -649,8 +649,8 @@ func mountAdmin(
 		CountTenantOwners:  tenants.CountOwners,
 		// The first guard rail: never leave the tenant with no IAM_OWNER whom
 		// the local password compare signs in. The count above cannot answer it,
-		// because a tenant whose owners a directory proves counts owners it
-		// cannot reach while that directory is off.
+		// because a tenant whose owners a federation proves counts owners it
+		// cannot reach while that federation is off.
 		LocalTenantOwners: tenants.LocalOwners,
 		Org:               orgs.FindByID,
 		TenantRoles:       tenants.MemberRoles,
@@ -813,7 +813,7 @@ func mountAdmin(
 	})
 
 	// The directories a tenant registers, the domains each one claims, and the
-	// Identity Link that ties one directory account to one person. The repository
+	// Federation Link that ties one directory account to one person. The repository
 	// holds the cipher, so the bind password is sealed at rest and no layer above
 	// it ever holds the ciphertext.
 	federations := userfederation.NewRepository(bdb, cipher, log)
@@ -836,7 +836,7 @@ func mountAdmin(
 		// here into the sentinel that package declares.
 		//
 		// OrgOf reads a person in any state. An administrator deactivates a
-		// person and then removes their Identity Link, and a read that filtered
+		// person and then removes their Federation Link, and a read that filtered
 		// the state would answer 404 for the one account the offboarding is
 		// about. CanSignIn below keeps the state filter, because it asks the
 		// other question.
@@ -856,7 +856,7 @@ func mountAdmin(
 
 		// The two reads behind the guard rails. The first refuses a domain claim
 		// that would take the last local IAM_OWNER of the tenant, and the second
-		// refuses the removal of the last Identity Link of a person who holds no
+		// refuses the removal of the last Federation Link of a person who holds no
 		// password hash.
 		LocalOwners: tenants.LocalOwners,
 		HasPassword: users.HasPassword,
@@ -1152,7 +1152,7 @@ func newSessionService(
 	users := user.NewRepository(bdb, log)
 	sessions := session.NewRepository(bdb, cipher, log)
 
-	// Which Identity Provider proves this sign-in. The session domain imports
+	// Which User Federation proves this sign-in. The session domain imports
 	// neither the provider domain nor the four reads that answer the question,
 	// so the crossing is one function value composed here.
 	//
@@ -1171,7 +1171,7 @@ func newSessionService(
 	// The bind that proves a password against a directory, and the person the
 	// first bind creates. Prove reads the provider row, spends the bind budget,
 	// and dials. Provision reads the row again and writes the person, the
-	// Identity Link, and the audit event on one transaction. The console build
+	// Federation Link, and the audit event on one transaction. The console build
 	// of the same service, in mountAdmin, carries the rest.
 	//
 	// The budget lives in Redis alone. A cache failure refuses the sign-in
@@ -1187,7 +1187,7 @@ func newSessionService(
 		// entry a link of this provider does not name signs nobody in. See
 		// Service.PersonOf.
 		Linked: federations.LinkedFederations,
-		// The one read that says whether the person an Identity Link names may
+		// The one read that says whether the person a Federation Link names may
 		// still sign in. FindByID filters the state, the account type, and the
 		// soft delete inside the query, so a deactivated, deleted, or machine
 		// row reads as absent.
@@ -1200,7 +1200,7 @@ func newSessionService(
 		},
 		// The read that refuses a first bind for a person the tenant already
 		// holds. It is the resolver's read, and the write needs one of its own
-		// because Provider Resolution case 1 answers a claimed domain before
+		// because Federation Resolution case 1 answers a claimed domain before
 		// the resolver runs it. See Service.heldAlready.
 		Held:         users.HoldsIdentifier,
 		CreatePerson: directoryPerson(users, organization.NewRepository(bdb, log)),
@@ -1210,12 +1210,12 @@ func newSessionService(
 	})
 
 	return session.NewService(session.Deps{
-		Identity: identityFinder(users),
-		Provider: resolver.Resolve,
-		Steps:    steps,
-		// The bind, translated into the vocabulary of the login session domain.
+		Identity:   identityFinder(users),
+		Federation: resolver.Resolve,
+		Steps:      steps,
+		// The proof, translated into the vocabulary of the login session domain.
 		//
-		// PersonOf names the person the proved account signs in as: the Identity
+		// PersonOf names the person the proved account signs in as: the Federation
 		// Link first, by the stable external id, then the person the session
 		// already names, and the first bind creates them only when neither read
 		// named anybody. A later bind changes no attribute, so a rename in the
@@ -1225,14 +1225,14 @@ func newSessionService(
 		// keys the bind budget. Both forms of one identifier therefore spend one
 		// counter. An identifier step that named nobody passes an empty id, which
 		// the budget keys on the typed string instead. That form still ends at a
-		// person when the Identity Link names one, so such a person keeps a
+		// person when the Federation Link names one, so such a person keeps a
 		// second counter. See userfederation.proofKey.
 		//
 		// The email address of the directory entry comes back beside the person.
 		// It is the one Provision writes to a person the first bind creates, and
 		// it is what a session that named nobody at the identifier step carries
 		// from there on.
-		Bind: func(
+		Prove: func(
 			ctx context.Context, tenantID, federationID, userID, identifier, password string,
 		) (session.Identity, error) {
 			// The four strings the login session hands over are named here once,
@@ -1276,7 +1276,7 @@ func newSessionService(
 // directoryReProof composes the two answers the portal takes about the Directory
 // that proves one person: which Directory does, and the bind that re-proves them.
 //
-// One read answers both, and that is the point. Provider Resolution decides the
+// One read answers both, and that is the point. Federation Resolution decides the
 // credential, and the two answers must never disagree: a person the first answer
 // sends to the bind, and the second refuses, holds four portal routes that are
 // shut on them for ever. The read names the provider and the username, and the
@@ -1306,7 +1306,7 @@ func newSessionService(
 func directoryReProof(
 	bdb *bun.DB, rdb cache.Client, cipher *crypto.Cipher,
 	users *user.Repository, log logger.Logger,
-) (user.DirectoryResolver, user.DirectoryProver) {
+) (user.FederationResolver, user.Prover) {
 	federations := userfederation.NewRepository(bdb, cipher, log)
 	resolver := userfederation.NewResolver(userfederation.ResolverDeps{
 		DomainOwner: federations.FindByDomain,
@@ -1334,22 +1334,22 @@ func directoryReProof(
 //
 // Both refusals are permanent. A person whom no single directory proves, and a
 // person a directory owns whose row carries no username, each hold an account
-// that only an administrator can mend. Both answer ErrDirectoryNoEntry, and
+// that only an administrator can mend. Both answer ErrFederationNoAccount, and
 // neither says "try again". See .scratch/directory-sign-in/issues/25.
 func directoryReProver(
 	prove func(ctx context.Context, a userfederation.Attempt, plain string) (userfederation.Identity, error),
 	log logger.Logger,
-) user.DirectoryProver {
+) user.Prover {
 	return func(ctx context.Context, tenantID, federationID, userID, username, plain string) error {
 		if federationID == "" {
 			log.Warn("refused a re-proof that no single directory proves",
 				logger.String("tenant_id", tenantID), logger.String("user_id", userID))
-			return user.ErrDirectoryNoEntry
+			return user.ErrFederationNoAccount
 		}
 		if username == "" {
 			log.Warn("refused a directory re-proof of a person who holds no username",
 				logger.String("tenant_id", tenantID), logger.String("user_id", userID))
-			return user.ErrDirectoryNoEntry
+			return user.ErrFederationNoAccount
 		}
 		// The username the user domain holds is the identifier the search runs
 		// on. Naming the fields here is what keeps a swap of the four a compile
@@ -1393,19 +1393,19 @@ func accountDirectoryError(err error) error {
 	case errors.Is(err, userfederation.ErrWrongPassword):
 		return user.ErrBadPassword
 	case errors.Is(err, userfederation.ErrNoEntry):
-		return user.ErrDirectoryNoEntry
+		return user.ErrFederationNoAccount
 	default:
-		return user.ErrDirectoryUnavailable
+		return user.ErrFederationUnavailable
 	}
 }
 
 // directoryOf names the Directory that proves one person, beside the username
 // the bind searches on. It answers an empty id when the local password compare
-// proves them, which is what Provider Resolution answers for a local person.
+// proves them, which is what Federation Resolution answers for a local person.
 //
-// The portal asks Provider Resolution, and never the stored hash. Case 1 routes
-// a person whose email domain a live active provider claims, and the claim
-// writes no row: the person keeps the hash it retired, and holds no Identity
+// The portal asks Federation Resolution, and never the stored hash. Case 1 routes
+// a person whose email domain a live active federation claims, and the claim
+// writes no row: the person keeps the hash it retired, and holds no Federation
 // Link. A re-proof that read either column would answer that person wrong. See
 // .scratch/directory-sign-in/issues/21.
 //
@@ -1443,7 +1443,7 @@ func directoryOf(
 // matched twice answer alike, because which of the three happened says which
 // people a directory holds.
 //
-// Two configuration faults of the first bind answer ErrDirectoryMisconfigured: a
+// Two configuration faults of the first bind answer ErrFederationMisconfigured: a
 // provider that names no organization to create people in, and a directory entry
 // that carries no username. Both are permanent, so neither may borrow the answer
 // that tells the person to try again. A slug that names a configuration fault
@@ -1463,7 +1463,7 @@ func directoryOf(
 // tenant already holds. Each one would say which people a tenant holds, so each
 // keeps the answer below. Ticket 12 and ticket 15 settled it.
 //
-// Everything the switch does not name answers ErrDirectoryUnavailable: a dial
+// Everything the switch does not name answers ErrFederationUnavailable: a dial
 // failure, a timeout, a TLS failure, a failed bind of the service credential, a
 // budget nobody could read, a broken read of the provider row, and a first bind
 // whose person could not be written, such as a username another person of the
@@ -1477,14 +1477,14 @@ func directoryError(err error) error {
 		errors.Is(err, userfederation.ErrNoEntry):
 		return session.ErrBadCredentials
 	case errors.Is(err, userfederation.ErrDisabled):
-		return session.ErrDirectoryDisabled
+		return session.ErrFederationDisabled
 	case errors.Is(err, userfederation.ErrTooManyProofs):
 		return session.ErrTooManyBinds
 	case errors.Is(err, userfederation.ErrNoOrganization),
 		errors.Is(err, userfederation.ErrNoUsername):
-		return session.ErrDirectoryMisconfigured
+		return session.ErrFederationMisconfigured
 	default:
-		return session.ErrDirectoryUnavailable
+		return session.ErrFederationUnavailable
 	}
 }
 

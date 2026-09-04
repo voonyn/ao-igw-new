@@ -323,7 +323,7 @@ func TestAccountRemove_CarriesTheBrokenAccountOfADirectoryPerson(t *testing.T) {
 			return user.User{ID: userID, TenantID: tenantID, PasswordHash: ""}, nil
 		},
 		ProveDirectory: func(context.Context, string, string, string, string, string) error {
-			return user.ErrDirectoryNoEntry
+			return user.ErrFederationNoAccount
 		},
 		Directory: func(context.Context, string, string) (string, string, error) {
 			return "idp-one", "alice", nil
@@ -345,15 +345,15 @@ func TestAccountRemove_CarriesTheBrokenAccountOfADirectoryPerson(t *testing.T) {
 
 	who := Principal{UserID: testUserID}
 	err := svc.AccountRemove(t.Context(), testTenantID, who, "AQID", "the-directory-password")
-	if !errors.Is(err, user.ErrDirectoryNoEntry) {
-		t.Fatalf("the removal answered %v, want %v", err, user.ErrDirectoryNoEntry)
+	if !errors.Is(err, user.ErrFederationNoAccount) {
+		t.Fatalf("the removal answered %v, want %v", err, user.ErrFederationNoAccount)
 	}
 }
 
 // TestAccountRemove_BindsForAClaimedPersonWhoKeepsAStaleHash proves the seam for
 // the second person the Directory owns: the one a domain claim routes.
 //
-// Provider Resolution case 1 claims the email domain of a person the tenant
+// Federation Resolution case 1 claims the email domain of a person the tenant
 // already held. The claim writes no row, so password_hash keeps the value it
 // held, and the bind signs the person in from that moment. A compare against the
 // stale hash would refuse the password that signs them in, and this removal

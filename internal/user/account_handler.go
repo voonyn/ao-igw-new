@@ -23,14 +23,14 @@ func init() {
 
 	// A directory that could not answer is not a wrong password. The person is
 	// told to try again, and never that the password they typed is wrong.
-	response.Map(ErrDirectoryUnavailable, fiber.StatusServiceUnavailable,
-		"directory_unavailable", "Service Unavailable")
+	response.Map(ErrFederationUnavailable, fiber.StatusServiceUnavailable,
+		"federation_unavailable", "Service Unavailable")
 
 	// A person whom no single directory entry proves holds a broken account. The
 	// state stays until somebody edits the links or the directory, so the answer
 	// is 409 and not the 503 that reads as a directory down for a moment. The
 	// message never tells the person to try again, because no try can work.
-	response.Map(ErrDirectoryNoEntry, fiber.StatusConflict, "directory_no_entry",
+	response.Map(ErrFederationNoAccount, fiber.StatusConflict, "federation_no_account",
 		"Your account is not linked to a single directory entry. Ask an administrator to correct it.")
 }
 

@@ -310,7 +310,7 @@ func TestTheTwoRoutesCarryTheBrokenAccountOfADirectoryPerson(t *testing.T) {
 				return user.User{ID: userID, TenantID: tenantID, PasswordHash: ""}, nil
 			},
 			ProveDirectory: func(context.Context, string, string, string, string, string) error {
-				return user.ErrDirectoryNoEntry
+				return user.ErrFederationNoAccount
 			},
 			Directory: func(context.Context, string, string) (string, string, error) {
 				return "idp-one", "alice", nil
@@ -326,8 +326,8 @@ func TestTheTwoRoutesCarryTheBrokenAccountOfADirectoryPerson(t *testing.T) {
 		svc.deps.VerifyPassword = prove
 
 		err := svc.AccountRemove(t.Context(), statusTenantID, manager(), "the-directory-password")
-		if !errors.Is(err, user.ErrDirectoryNoEntry) {
-			t.Fatalf("AccountRemove answered %v, want %v", err, user.ErrDirectoryNoEntry)
+		if !errors.Is(err, user.ErrFederationNoAccount) {
+			t.Fatalf("AccountRemove answered %v, want %v", err, user.ErrFederationNoAccount)
 		}
 		if calls.cleared {
 			t.Error("the factor was cleared for an account no directory entry proves")
@@ -340,8 +340,8 @@ func TestTheTwoRoutesCarryTheBrokenAccountOfADirectoryPerson(t *testing.T) {
 
 		_, err := svc.AccountReplaceRecoveryCodes(
 			t.Context(), statusTenantID, manager(), "the-directory-password")
-		if !errors.Is(err, user.ErrDirectoryNoEntry) {
-			t.Fatalf("AccountReplaceRecoveryCodes answered %v, want %v", err, user.ErrDirectoryNoEntry)
+		if !errors.Is(err, user.ErrFederationNoAccount) {
+			t.Fatalf("AccountReplaceRecoveryCodes answered %v, want %v", err, user.ErrFederationNoAccount)
 		}
 		if calls.saved != nil {
 			t.Error("the codes were replaced for an account no directory entry proves")
@@ -352,7 +352,7 @@ func TestTheTwoRoutesCarryTheBrokenAccountOfADirectoryPerson(t *testing.T) {
 // TestTheTwoRoutesBindForAClaimedPersonWhoKeepsAStaleHash proves the seam for
 // the second person the Directory owns: the one a domain claim routes.
 //
-// Provider Resolution case 1 claims the email domain of a person the tenant
+// Federation Resolution case 1 claims the email domain of a person the tenant
 // already held. The claim writes no row, so password_hash keeps the value it
 // held, and the bind signs the person in from that moment. A compare against the
 // stale hash would refuse the password that signs them in, and both destructive

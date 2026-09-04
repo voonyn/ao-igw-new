@@ -404,7 +404,7 @@ func TestClearPasskeysRemovesEveryPasskey(t *testing.T) {
 	}
 }
 
-// TestHoldsIdentifier is the second read Provider Resolution makes. It reads
+// TestHoldsIdentifier is the second read Federation Resolution makes. It reads
 // whether the tenant holds an account at all, so it filters neither the state,
 // nor the soft delete, nor the type of the account.
 //
