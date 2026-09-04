@@ -52,8 +52,8 @@ test("every gateway slug maps to a message of its own", function () {
     "passkey_duplicate",
     "passkey_not_found",
     "invalid_credentials",
-    "directory_unavailable",
-    "directory_no_entry",
+    "federation_unavailable",
+    "federation_no_account",
     "mfa_unavailable",
     "rate_limited",
     "invalid_input",
@@ -86,7 +86,7 @@ test("a wrong password is not read as a lost session", function () {
 // A directory that did not answer is not a wrong password, and a message that
 // said it was would send that person hunting for a password that is right.
 test("a directory that did not answer is not read as a wrong password", function () {
-  const message = passkeyMessage(503, "directory_unavailable")
+  const message = passkeyMessage(503, "federation_unavailable")
   assert.match(message, /directory/i)
   assert.doesNotMatch(message, /incorrect/i)
 })
@@ -95,7 +95,7 @@ test("a directory that did not answer is not read as a wrong password", function
 // they do makes the next try work, so the copy must send them to an administrator
 // and never to the retry the outage copy offers.
 test("a broken directory account is not told to try again", function () {
-  const message = passkeyMessage(409, "directory_no_entry")
+  const message = passkeyMessage(409, "federation_no_account")
   assert.match(message, /administrator/i)
   assert.doesNotMatch(message, /try again/i)
 })

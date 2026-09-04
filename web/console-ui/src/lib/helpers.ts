@@ -121,7 +121,7 @@ export const PAGE_PATH: Record<string, string> = {
   groups: "/groups",
   roles: "/roles",
   policies: "/policies",
-  idps: "/identity-providers",
+  federation: "/user-federation",
   audit: "/audit",
   catalog: "/catalog",
 };
@@ -149,7 +149,7 @@ export const PAGE_TITLES: Record<string, string> = {
   groups: "Groups",
   roles: "Custom Roles",
   policies: "Auth Policy",
-  idps: "Identity Providers",
+  federation: "User Federation",
   audit: "Audit Log",
   catalog: "App Catalog",
 };

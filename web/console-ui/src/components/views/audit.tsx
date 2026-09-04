@@ -50,6 +50,15 @@ const ACTION_LABEL: Record<string, string> = {
   "domain.removed": "Tenant domain removed",
   "signing_key.rotated": "Signing key rotated",
   "signing_key.retired": "Signing key retired",
+  // Every user federation action. A row written before the rename carries the
+  // old `idp.` prefix and still renders as a raw slug: an audit row records a
+  // fact and is never edited, so the history reads two prefixes.
+  "federation.created": "User federation created",
+  "federation.updated": "User federation updated",
+  "federation.deleted": "User federation deleted",
+  "federation.tested": "User federation tested",
+  "federation.linked": "Federation link created",
+  "federation.unlinked": "Federation link removed",
 };
 
 function labelOf(action: string): string {

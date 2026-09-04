@@ -23,10 +23,10 @@ const MESSAGES: Record<string, string> = {
   // A person their organization's directory owns re-proves with a bind, so a
   // directory that did not answer refuses the change. It is never a wrong
   // password, and it must not read as one.
-  directory_unavailable: "Your organization's directory did not respond. Please try again in a moment.",
+  federation_unavailable: "Your organization's directory did not respond. Please try again in a moment.",
   // No single directory entry proves the person. The state stays until somebody
   // edits the directory, so the copy never asks them to try again.
-  directory_no_entry: "Your account is not linked to a single directory entry. Please tell your administrator.",
+  federation_no_account: "Your account is not linked to a single directory entry. Please tell your administrator.",
 }
 
 // accountMessage answers the shared copy for a slug, and "" when the slug is not

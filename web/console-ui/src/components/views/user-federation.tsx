@@ -12,32 +12,32 @@ import { lines, orgName, PAGE_TITLES } from "@/lib/helpers";
 import {
   canManageTenant,
   describeStatus,
-  identityProvidersApi,
-  IDP_MODE_LDAPS,
-  IDP_MODE_PLAIN,
-  IDP_MODE_SCHEMES,
-  IDP_MODE_STARTTLS,
+  userFederationsApi,
+  MODE_LDAPS,
+  MODE_PLAIN,
+  MODE_SCHEMES,
+  MODE_STARTTLS,
   MutationError,
   mutationMessage,
   UnauthorizedError,
   type ClaimPreview,
   type ConnectionTestResult,
-  type IdentityProvider,
-  type IdentityProviderBody,
+  type Federation,
+  type FederationBody,
   type OrgRef,
   type Outcome,
 } from "@/lib/console-api";
 
-/** The noun `describeStatus` builds every identity-provider sentence from. */
-const IDP_RESOURCE = "identity providers";
+/** The noun `describeStatus` builds every user-federation sentence from. */
+const FEDERATION_RESOURCE = "user federations";
 
 /** The role a tenant-wide directory registration needs. */
-const IDP_ROLE = "IAM_OWNER or IAM_ADMIN";
+const FEDERATION_ROLE = "IAM_OWNER or IAM_ADMIN";
 
 const MODES = [
-  { v: IDP_MODE_LDAPS, label: "LDAPS — ldaps://, TLS from the first byte" },
-  { v: IDP_MODE_STARTTLS, label: "StartTLS — ldap://, upgraded in place" },
-  { v: IDP_MODE_PLAIN, label: "Plain — ldap://, no encryption" },
+  { v: MODE_LDAPS, label: "LDAPS — ldaps://, TLS from the first byte" },
+  { v: MODE_STARTTLS, label: "StartTLS — ldap://, upgraded in place" },
+  { v: MODE_PLAIN, label: "Plain — ldap://, no encryption" },
 ];
 
 /** The two states a directory is written in. `oneof=1 2` on the gateway body:
@@ -58,7 +58,7 @@ const ATTRS: { key: AttrKey; label: string; placeholder: string; required?: bool
     label: "Stable id",
     placeholder: "objectGUID",
     required: true,
-    note: "The identity link stores this value, so a username changed in the directory never orphans the person.",
+    note: "The federation link stores this value, so a username changed in the directory never orphans the person.",
   },
   { key: "attrUsername", label: "Username", placeholder: "sAMAccountName", required: true },
   { key: "attrEmail", label: "Email (optional)", placeholder: "mail" },
@@ -98,50 +98,50 @@ const POLICY_NOTE =
 const PLAINTEXT_CONFIRM =
   "I understand that passwords travel in clear, and I choose the plain transport.";
 
-/** The domains of this form that another provider of the tenant already holds.
+/** The domains of this form that another federation of the tenant already holds.
  *
  * The gateway answers `domain_already_claimed` with one sentence and no domain,
- * because the mapped message is fixed. The console holds every other provider of
+ * because the mapped message is fixed. The console holds every other federation of
  * the tenant, so it names the domain itself. */
-function claimedBy(mine: string[], others: IdentityProvider[]): string[] {
+function claimedBy(mine: string[], others: Federation[]): string[] {
   const taken = new Set(others.flatMap((p) => p.domains));
   return mine.filter((d) => taken.has(d));
 }
 
-export function IdentityProvidersView({ initial }: { initial?: Outcome<IdentityProvider[]> } = {}) {
+export function UserFederationView({ initial }: { initial?: Outcome<Federation[]> } = {}) {
   const { me } = useConsole();
 
   // Registering a directory is tenant-wide authority: a claimed domain routes
   // every person of the tenant whose email carries it. The nav hides this item
   // from everybody else, and a typed URL reads the same sentence a 403 gives.
   if (!canManageTenant(me)) {
-    const gate = describeStatus({ state: "forbidden" }, IDP_RESOURCE, IDP_ROLE)!;
+    const gate = describeStatus({ state: "forbidden" }, FEDERATION_RESOURCE, FEDERATION_ROLE)!;
     return (
       <div className="fade-in">
-        <PageHead page="idps" sub="Directories this tenant signs people in against." />
+        <PageHead page="federation" sub="Directories this tenant signs people in against." />
         <ViewNotice title={gate.title} body={gate.body} icon="lock" />
       </div>
     );
   }
 
-  return <IdentityProvidersManager orgs={me.accessibleOrgs} initial={initial} />;
+  return <UserFederationManager orgs={me.accessibleOrgs} initial={initial} />;
 }
 
-function IdentityProvidersManager({ orgs, initial }: { orgs: OrgRef[]; initial?: Outcome<IdentityProvider[]> }) {
-  const [rows, setRows] = useState<IdentityProvider[] | null>(initial?.ok ? initial.data : null);
+function UserFederationManager({ orgs, initial }: { orgs: OrgRef[]; initial?: Outcome<Federation[]> }) {
+  const [rows, setRows] = useState<Federation[] | null>(initial?.ok ? initial.data : null);
   const [error, setError] = useState<{ title: string; body: string } | null>(
-    initial && !initial.ok ? describeStatus({ state: initial.reason }, IDP_RESOURCE, IDP_ROLE) : null,
+    initial && !initial.ok ? describeStatus({ state: initial.reason }, FEDERATION_RESOURCE, FEDERATION_ROLE) : null,
   );
   // `null` is the list, "new" is the create form, and a row is the edit form.
-  const [open, setOpen] = useState<IdentityProvider | "new" | null>(null);
+  const [open, setOpen] = useState<Federation | "new" | null>(null);
 
   const load = useCallback(() => {
-    return identityProvidersApi
+    return userFederationsApi
       .list()
       .then((out) => {
         if (!out.ok) {
           setRows([]);
-          setError(describeStatus({ state: out.reason }, IDP_RESOURCE, IDP_ROLE));
+          setError(describeStatus({ state: out.reason }, FEDERATION_RESOURCE, FEDERATION_ROLE));
           return;
         }
         setError(null);
@@ -150,7 +150,7 @@ function IdentityProvidersManager({ orgs, initial }: { orgs: OrgRef[]; initial?:
       .catch((e: unknown) => {
         if (e instanceof UnauthorizedError) throw e;
         setRows([]);
-        setError(describeStatus({ state: "error", message: mutationMessage(e) }, IDP_RESOURCE));
+        setError(describeStatus({ state: "error", message: mutationMessage(e) }, FEDERATION_RESOURCE));
       });
   }, []);
 
@@ -165,11 +165,11 @@ function IdentityProvidersManager({ orgs, initial }: { orgs: OrgRef[]; initial?:
   }, [load]);
 
   if (open) {
-    const provider = open === "new" ? null : open;
+    const federation = open === "new" ? null : open;
     return (
-      <ProviderForm
-        provider={provider}
-        others={(rows ?? []).filter((p) => p.id !== provider?.id)}
+      <FederationForm
+        federation={federation}
+        others={(rows ?? []).filter((p) => p.id !== federation?.id)}
         orgs={orgs}
         onClose={() => setOpen(null)}
         onChanged={load}
@@ -180,7 +180,7 @@ function IdentityProvidersManager({ orgs, initial }: { orgs: OrgRef[]; initial?:
   return (
     <div className="fade-in">
       <PageHead
-        page="idps"
+        page="federation"
         sub={
           <>
             Directories this tenant signs people in against. A person whose email carries a claimed domain proves their
@@ -199,7 +199,7 @@ function IdentityProvidersManager({ orgs, initial }: { orgs: OrgRef[]; initial?:
         <ViewNotice title={error.title} body={error.body} onRetry={() => void load()} />
       ) : (
         <div className="card" style={{ overflow: "auto hidden" }}>
-          <table className="tbl" aria-label="Identity providers">
+          <table className="tbl" aria-label="User federations">
             <thead>
               <tr>
                 <th scope="col">Name</th>
@@ -219,7 +219,7 @@ function IdentityProvidersManager({ orgs, initial }: { orgs: OrgRef[]; initial?:
                   <td>
                     <EntityStateBadge state={p.state} />
                   </td>
-                  <td className="hide-md mono">{IDP_MODE_SCHEMES[p.mode] ?? p.mode}</td>
+                  <td className="hide-md mono">{MODE_SCHEMES[p.mode] ?? p.mode}</td>
                   <td className="mono">{p.domains.length > 0 ? p.domains.join(", ") : "—"}</td>
                 </tr>
               ))}
@@ -238,57 +238,57 @@ function IdentityProvidersManager({ orgs, initial }: { orgs: OrgRef[]; initial?:
   );
 }
 
-function ProviderForm({
-  provider,
+function FederationForm({
+  federation,
   others,
   orgs,
   onClose,
   onChanged,
 }: {
-  /** The provider being edited, or null to register a new one. */
-  provider: IdentityProvider | null;
-  /** Every other provider of the tenant, so a claimed domain can be named. */
-  others: IdentityProvider[];
+  /** The federation being edited, or null to register a new one. */
+  federation: Federation | null;
+  /** Every other federation of the tenant, so a claimed domain can be named. */
+  others: Federation[];
   orgs: OrgRef[];
   onClose: () => void;
   onChanged: () => Promise<void>;
 }) {
-  const isNew = provider === null;
+  const isNew = federation === null;
   const passwordId = useId();
 
-  const [name, setName] = useState(provider?.name ?? "");
-  const [state, setState] = useState(provider?.state ?? 1);
-  // The level. "" is the tenant-wide provider, and a UUID is that organization's
-  // own. A provider stays at the level it was created at, so an edit shows it.
-  const [level, setLevel] = useState(provider?.orgId ?? "");
-  const [defaultOrgId, setDefaultOrgId] = useState(provider?.defaultOrgId ?? "");
+  const [name, setName] = useState(federation?.name ?? "");
+  const [state, setState] = useState(federation?.state ?? 1);
+  // The level. "" is the tenant-wide federation, and a UUID is that organization's
+  // own. A federation stays at the level it was created at, so an edit shows it.
+  const [level, setLevel] = useState(federation?.orgId ?? "");
+  const [defaultOrgId, setDefaultOrgId] = useState(federation?.defaultOrgId ?? "");
 
-  const [mode, setMode] = useState(provider?.mode ?? IDP_MODE_LDAPS);
+  const [mode, setMode] = useState(federation?.mode ?? MODE_LDAPS);
   const [plaintextOk, setPlaintextOk] = useState(false);
-  const [servers, setServers] = useState((provider?.servers ?? []).join("\n"));
-  const [rootCa, setRootCa] = useState(provider?.rootCa ?? "");
+  const [servers, setServers] = useState((federation?.servers ?? []).join("\n"));
+  const [rootCa, setRootCa] = useState(federation?.rootCa ?? "");
   // Held as the raw input text, not a number: `Number("")` is 0, so clearing the
   // box would submit a zero-second deadline rather than nothing.
-  const [timeoutText, setTimeoutText] = useState(String(provider?.timeoutSeconds ?? 5));
+  const [timeoutText, setTimeoutText] = useState(String(federation?.timeoutSeconds ?? 5));
 
-  const [bindDn, setBindDn] = useState(provider?.bindDn ?? "");
+  const [bindDn, setBindDn] = useState(federation?.bindDn ?? "");
   const [password, setPassword] = useState(""); // write-only; empty = keep stored
   const [changePassword, setChangePassword] = useState(false);
-  const [baseDn, setBaseDn] = useState(provider?.baseDn ?? "");
-  const [userBase, setUserBase] = useState(provider?.userBase ?? "");
-  const [objectClasses, setObjectClasses] = useState((provider?.userObjectClasses ?? []).join("\n"));
-  const [filters, setFilters] = useState((provider?.userFilters ?? []).join("\n"));
+  const [baseDn, setBaseDn] = useState(federation?.baseDn ?? "");
+  const [userBase, setUserBase] = useState(federation?.userBase ?? "");
+  const [objectClasses, setObjectClasses] = useState((federation?.userObjectClasses ?? []).join("\n"));
+  const [filters, setFilters] = useState((federation?.userFilters ?? []).join("\n"));
 
   const [attrs, setAttrs] = useState<Record<AttrKey, string>>({
-    attrId: provider?.attrId ?? "",
-    attrUsername: provider?.attrUsername ?? "",
-    attrEmail: provider?.attrEmail ?? "",
-    attrFirstName: provider?.attrFirstName ?? "",
-    attrLastName: provider?.attrLastName ?? "",
-    attrDisplayName: provider?.attrDisplayName ?? "",
+    attrId: federation?.attrId ?? "",
+    attrUsername: federation?.attrUsername ?? "",
+    attrEmail: federation?.attrEmail ?? "",
+    attrFirstName: federation?.attrFirstName ?? "",
+    attrLastName: federation?.attrLastName ?? "",
+    attrDisplayName: federation?.attrDisplayName ?? "",
   });
 
-  const [domains, setDomains] = useState((provider?.domains ?? []).join("\n"));
+  const [domains, setDomains] = useState((federation?.domains ?? []).join("\n"));
 
   const [fieldError, setFieldError] = useState<{ field: "name" | "domains"; text: string } | null>(null);
   const [result, setResult] = useState<ConnectionTestResult | null>(null);
@@ -300,7 +300,7 @@ function ProviderForm({
 
   // The people the domains in the box would move onto this directory.
   //
-  // The gateway answers it. Provider Resolution owns the rule for who moves —
+  // The gateway answers it. Federation Resolution owns the rule for who moves —
   // case 1 outranks every case below it, so a claim routes every person whose
   // email carries the domain, the people who hold a local password and no
   // directory account included. A copy of that rule here would drift from the
@@ -320,7 +320,7 @@ function ProviderForm({
     if (domainKey === "") return;
     let live = true;
     const timer = setTimeout(() => {
-      identityProvidersApi
+      userFederationsApi
         .previewClaim(level, domainList)
         .then((result) => {
           if (live) setPreview({ key: domainKey, result });
@@ -338,7 +338,7 @@ function ProviderForm({
     };
   }, [domainKey, domainList, level]);
 
-  const scheme = IDP_MODE_SCHEMES[mode];
+  const scheme = MODE_SCHEMES[mode];
   // The gateway refuses a server string that does not match the transport. This
   // marks the box before the save, so the operator never reads a 422 for it.
   const schemeBad = serverList.some((s) => !s.toLowerCase().startsWith(scheme));
@@ -346,8 +346,8 @@ function ProviderForm({
   const timeoutBad = !Number.isInteger(timeoutNum) || timeoutNum < 1 || timeoutNum > 60;
   // A plain bind puts the password of every person on the wire in clear, so the
   // gateway refuses mode 1 without an explicit confirmation.
-  const plaintextPending = mode === IDP_MODE_PLAIN && !plaintextOk;
-  // `users.org_id` is mandatory, so a tenant-wide provider that names no
+  const plaintextPending = mode === MODE_PLAIN && !plaintextOk;
+  // `users.org_id` is mandatory, so a tenant-wide federation that names no
   // organization would create nobody.
   const defaultOrgMissing = level === "" && defaultOrgId === "";
 
@@ -364,8 +364,8 @@ function ProviderForm({
     lines(filters).length > 0 &&
     ATTRS.every((a) => !a.required || attrs[a.key].trim() !== "");
 
-  function body(): IdentityProviderBody {
-    const b: IdentityProviderBody = {
+  function body(): FederationBody {
+    const b: FederationBody = {
       // The level is sent on an update too: the gateway compares it with the
       // stored one and refuses a body that names another.
       orgId: level,
@@ -408,12 +408,12 @@ function ProviderForm({
    * The slug decides the sentence and the field, never the message text. A
    * claimed domain is the one case the console can say more about than the
    * gateway: the mapped message names no domain, and the console holds the
-   * domains every other provider of this tenant claims. */
+   * domains every other federation of this tenant claims. */
   function refusal(e: MutationError): string {
     if (e.code === "domain_already_claimed") {
       const taken = claimedBy(domainList, others);
       if (taken.length > 0) {
-        return `${taken.join(", ")} is already claimed by another identity provider of this tenant.`;
+        return `${taken.join(", ")} is already claimed by another user federation of this tenant.`;
       }
     }
     return mutationMessage(e);
@@ -422,7 +422,7 @@ function ProviderForm({
   async function save() {
     setFieldError(null);
     const write = () =>
-      (isNew ? identityProvidersApi.create(body()) : identityProvidersApi.update(provider.id, body())).catch(
+      (isNew ? userFederationsApi.create(body()) : userFederationsApi.update(federation.id, body())).catch(
         (e: unknown) => {
           if (e instanceof MutationError && SAVE_ERROR_FIELD[e.code]) {
             setFieldError({ field: SAVE_ERROR_FIELD[e.code], text: refusal(e) });
@@ -439,36 +439,36 @@ function ProviderForm({
 
   async function test() {
     // The form on screen is what is tested, so an operator checks values nobody
-    // saved yet. A stored provider is named in the path, which is how the test
+    // saved yet. A stored federation is named in the path, which is how the test
     // runs without retyping a write-only bind password.
     setResult(null);
-    await runTest(() => identityProvidersApi.test(body(), provider?.id).then(setResult), {
+    await runTest(() => userFederationsApi.test(body(), federation?.id).then(setResult), {
       after: async () => {},
     });
   }
 
   async function del() {
     const ok = await confirmAction({
-      title: `Delete the directory “${provider!.name}”?`,
-      body: `Every person tied to this directory stops signing in immediately, and the ${provider!.domains.length} domain claim(s) it holds are released. The people it created keep their accounts and hold no password here, so grant them one or register the directory again.`,
+      title: `Delete the directory “${federation!.name}”?`,
+      body: `Every person tied to this directory stops signing in immediately, and the ${federation!.domains.length} domain claim(s) it holds are released. The people it created keep their accounts and hold no password here, so grant them one or register the directory again.`,
       confirmLabel: "Delete directory",
       destructive: true,
     });
     if (!ok) return;
-    if (await runSave(() => identityProvidersApi.remove(provider!.id), { ok: "Directory deleted", after: onChanged })) {
+    if (await runSave(() => userFederationsApi.remove(federation!.id), { ok: "Directory deleted", after: onChanged })) {
       onClose();
     }
   }
 
   return (
-    <FullPage backLabel={PAGE_TITLES.idps} crumb={isNew ? "Register a directory" : provider.name} onBack={onClose}>
+    <FullPage backLabel={PAGE_TITLES.federation} crumb={isNew ? "Register a directory" : federation.name} onBack={onClose}>
       <EntityHeader
         tile={
           <span className="entity-tile">
             <Icon name="link" size={26} />
           </span>
         }
-        title={isNew ? "Register a directory" : provider.name}
+        title={isNew ? "Register a directory" : federation.name}
         meta={
           <>
             <span className="badge">{level ? orgName(orgs, level) : "Tenant-wide"}</span>
@@ -565,7 +565,7 @@ function ProviderForm({
           </Field>
         </div>
 
-        {mode === IDP_MODE_PLAIN && (
+        {mode === MODE_PLAIN && (
           <div
             style={{
               padding: 14,
@@ -600,7 +600,7 @@ function ProviderForm({
               value={servers}
               aria-invalid={schemeBad || undefined}
               onChange={(e) => setServers(e.target.value)}
-              placeholder={`${scheme}dc1.corp.example:${mode === IDP_MODE_LDAPS ? "636" : "389"}`}
+              placeholder={`${scheme}dc1.corp.example:${mode === MODE_LDAPS ? "636" : "389"}`}
             />
           </Field>
           {schemeBad && <FieldError text={`This transport takes ${scheme}. Fix every server that starts otherwise.`} />}
@@ -660,7 +660,7 @@ function ProviderForm({
           </label>
           {/* Write-only. No read path answers the value in any shape, so the
               view renders the boolean the API sends and nothing else. */}
-          {!isNew && provider.bindPasswordSet && !changePassword ? (
+          {!isNew && federation.bindPasswordSet && !changePassword ? (
             <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
               <span className="badge accent">configured</span>
               <button type="button" className="btn sm ghost" onClick={() => setChangePassword(true)}>
@@ -678,7 +678,7 @@ function ProviderForm({
                 placeholder={isNew ? "Bind password" : "Enter a new password"}
                 autoComplete="new-password"
               />
-              {!isNew && provider.bindPasswordSet && (
+              {!isNew && federation.bindPasswordSet && (
                 <button
                   type="button"
                   className="btn sm ghost"
@@ -692,7 +692,7 @@ function ProviderForm({
               )}
             </div>
           )}
-          {!isNew && !provider.bindPasswordSet && (
+          {!isNew && !federation.bindPasswordSet && (
             <div style={{ fontSize: 12.5, color: "var(--muted)" }}>No bind password is stored for this directory.</div>
           )}
         </div>
@@ -796,7 +796,7 @@ function ProviderForm({
           <Btn className="btn" disabled={!canSubmit} pending={testing} onClick={test}>
             <Icon name="send" size={14} /> Run the test
           </Btn>
-          {!isNew && provider.bindPasswordSet && !changePassword && (
+          {!isNew && federation.bindPasswordSet && !changePassword && (
             <div style={{ fontSize: 12.5, color: "var(--muted)", marginTop: 8 }}>
               The stored bind password is used. It is never sent back to this screen.
             </div>
@@ -872,7 +872,7 @@ function FieldError({ text }: { text: string }) {
  * where there is truly nothing to say.
  *
  * The sentence is in the present tense, because the form prefills the domains a
- * stored provider already claims. "Moves when you save" would assert a change
+ * stored federation already claims. "Moves when you save" would assert a change
  * that already happened. */
 function ClaimPreviewNote({ answered, preview }: { answered: boolean; preview: ClaimPreview | null }) {
   const note = (text: string, tone?: string) => (

@@ -59,13 +59,13 @@ export function messageForError(code: unknown): string {
     // gateway so that this copy can name the directory: the person waits, and the
     // one helpdesk that can tell them more is their organization's. The default
     // below names nobody, and it is what this case exists to avoid.
-    case "directory_unavailable":
+    case "federation_unavailable":
       return "Your organization's directory did not respond. Please try again in a moment."
     // The password was proved, and the directory cannot create the account it
-    // proved: the provider names no organization, or the entry carries no
+    // proved: the federation names no organization, or the entry carries no
     // username. Only an administrator can mend it, so the copy never says "try
     // again". The default below does, and it is what this case exists to avoid.
-    case "directory_misconfigured":
+    case "federation_misconfigured":
       return "Your organization's directory is not set up for sign-in. Please ask an administrator to correct it."
     default:
       return "Something went wrong. Please try again."
