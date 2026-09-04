@@ -1,4 +1,4 @@
-package identityprovider
+package userfederation
 
 import (
 	"context"
@@ -11,7 +11,7 @@ import (
 	"alphaomega/identitygateway/internal/platform/logger"
 )
 
-// ErrNoOrganization reports a provider that names no organization to create
+// ErrNoOrganization reports a federation that names no organization to create
 // people in. users.org_id is mandatory, so a tenant-wide row with an empty
 // default_org_id creates nobody.
 //
@@ -28,7 +28,7 @@ var ErrNoUsername = errors.New("the directory entry carries no username")
 // rows it writes.
 //
 // It carries five of the six mapped attributes. The sixth is the stable external
-// id, which the Identity Link holds and no column of the person does.
+// id, which the Federation Link holds and no column of the person does.
 //
 // There is no password hash. A person the directory owns holds none, ever.
 type Person struct {
@@ -43,8 +43,8 @@ type Person struct {
 
 // PersonOf answers the person one proved directory account signs in as.
 //
-// The Identity Link is read first, by the stable external id the bind read from
-// the entry. It is the only key that holds. A provider maps the username and the
+// The Federation Link is read first, by the stable external id the bind read from
+// the entry. It is the only key that holds. A federation maps the username and the
 // email, and the person can type a third form that is neither, such as a User
 // Principal Name, so the identifier step finds nobody. A sign-in that read "first
 // bind" from that miss alone created the same person twice, and the second write
@@ -52,8 +52,8 @@ type Person struct {
 //
 // The person the session already names answers next. That is the local account a
 // domain claim routed to a directory: the identifier step found them, they hold
-// no Identity Link, and no bind writes one. A person who holds a link with this
-// provider is refused there instead, because the link names an entry the bind
+// no Federation Link, and no bind writes one. A person who holds a link with this
+// federation is refused there instead, because the link names an entry the bind
 // did not prove.
 //
 // Provision runs last, and only when neither read named anybody. That is the
@@ -64,12 +64,12 @@ type Person struct {
 // holds an account for it, and the identifier step could not have found one.
 func (s *Service) PersonOf(ctx context.Context, a Attempt, identity Identity) (string, error) {
 	s.log.Debug("name the person the directory proved",
-		logger.String("tenant_id", a.TenantID), logger.String("idp_id", a.IdpID), logger.RequestID(ctx))
+		logger.String("tenant_id", a.TenantID), logger.String("idp_id", a.FederationID), logger.RequestID(ctx))
 
-	linked, err := s.deps.FindLink(ctx, a.TenantID, a.IdpID, identity.ExternalID)
+	linked, err := s.deps.FindLink(ctx, a.TenantID, a.FederationID, identity.ExternalID)
 	if err != nil && !errors.Is(err, ErrLinkNotFound) {
 		s.log.Error("read the identity link of a proved directory account",
-			logger.String("tenant_id", a.TenantID), logger.String("idp_id", a.IdpID), logger.Err(err))
+			logger.String("tenant_id", a.TenantID), logger.String("idp_id", a.FederationID), logger.Err(err))
 		return "", err
 	}
 	if linked != "" {
@@ -81,25 +81,25 @@ func (s *Service) PersonOf(ctx context.Context, a Attempt, identity Identity) (s
 		live, err := s.deps.CanSignIn(ctx, a.TenantID, linked)
 		if err != nil {
 			s.log.Error("read whether the person of an identity link can sign in",
-				logger.String("tenant_id", a.TenantID), logger.String("idp_id", a.IdpID),
+				logger.String("tenant_id", a.TenantID), logger.String("idp_id", a.FederationID),
 				logger.String("user_id", linked), logger.Err(err))
 			return "", err
 		}
 		if !live {
 			s.log.Warn("refused a directory sign-in of a person who cannot sign in",
-				logger.String("tenant_id", a.TenantID), logger.String("idp_id", a.IdpID),
+				logger.String("tenant_id", a.TenantID), logger.String("idp_id", a.FederationID),
 				logger.String("user_id", linked))
 			return "", fmt.Errorf("%w: tenant %s, user %s", ErrDirectory, a.TenantID, linked)
 		}
 
 		s.log.Debug("the identity link names the person of this sign-in",
-			logger.String("tenant_id", a.TenantID), logger.String("idp_id", a.IdpID),
+			logger.String("tenant_id", a.TenantID), logger.String("idp_id", a.FederationID),
 			logger.String("user_id", linked), logger.RequestID(ctx))
 		return linked, nil
 	}
 	if a.UserID != "" {
 		// The link read missed, and that means one of two things. The person
-		// holds no link with this provider, which is the local account a domain
+		// holds no link with this federation, which is the local account a domain
 		// claim routed to a directory, and the fallback below is right. Or the
 		// person holds one and it names another entry of the same directory,
 		// which is a directory that gave one identifier to a second entry: a
@@ -113,18 +113,18 @@ func (s *Service) PersonOf(ctx context.Context, a Attempt, identity Identity) (s
 		holds, err := s.deps.Linked(ctx, a.TenantID, a.UserID)
 		if err != nil {
 			s.log.Error("read the identity links of the person the session names",
-				logger.String("tenant_id", a.TenantID), logger.String("idp_id", a.IdpID),
+				logger.String("tenant_id", a.TenantID), logger.String("idp_id", a.FederationID),
 				logger.String("user_id", a.UserID), logger.Err(err))
 			return "", err
 		}
-		if slices.Contains(holds, a.IdpID) {
+		if slices.Contains(holds, a.FederationID) {
 			s.log.Warn("refused a directory sign-in whose entry another identity link names",
-				logger.String("tenant_id", a.TenantID), logger.String("idp_id", a.IdpID),
+				logger.String("tenant_id", a.TenantID), logger.String("idp_id", a.FederationID),
 				logger.String("user_id", a.UserID))
-			return "", fmt.Errorf("%w: tenant %s, provider %s", ErrDirectory, a.TenantID, a.IdpID)
+			return "", fmt.Errorf("%w: tenant %s, provider %s", ErrDirectory, a.TenantID, a.FederationID)
 		}
 		s.log.Debug("the login session names the person of this sign-in",
-			logger.String("tenant_id", a.TenantID), logger.String("idp_id", a.IdpID),
+			logger.String("tenant_id", a.TenantID), logger.String("idp_id", a.FederationID),
 			logger.String("user_id", a.UserID), logger.RequestID(ctx))
 		return a.UserID, nil
 	}
@@ -134,13 +134,13 @@ func (s *Service) PersonOf(ctx context.Context, a Attempt, identity Identity) (s
 		return "", err
 	}
 	s.log.Debug("the first bind created the person of this sign-in",
-		logger.String("tenant_id", a.TenantID), logger.String("idp_id", a.IdpID),
+		logger.String("tenant_id", a.TenantID), logger.String("idp_id", a.FederationID),
 		logger.String("user_id", created), logger.RequestID(ctx))
 	return created, nil
 }
 
 // Provision creates the person one directory account names, and writes the
-// Identity Link that ties the two together. It answers the id of the person it
+// Federation Link that ties the two together. It answers the id of the person it
 // created.
 //
 // It runs on the first successful bind of somebody this gateway does not hold,
@@ -155,7 +155,7 @@ func (s *Service) PersonOf(ctx context.Context, a Attempt, identity Identity) (s
 // together or none do.
 //
 // The row is written active, with a NULL password hash, in the organization the
-// provider names, and it holds no role. Not state 5: Invite writes state 5 with a
+// federation names, and it holds no role. Not state 5: Invite writes state 5 with a
 // NULL hash and SetPassword requires an active account, so an invited person can
 // never set a first password, and this path must not ride on that defect.
 //
@@ -163,23 +163,23 @@ func (s *Service) PersonOf(ctx context.Context, a Attempt, identity Identity) (s
 // caller can ask for one.
 func (s *Service) Provision(ctx context.Context, a Attempt, identity Identity) (string, error) {
 	s.log.Debug("create the person the directory proved",
-		logger.String("tenant_id", a.TenantID), logger.String("idp_id", a.IdpID), logger.RequestID(ctx))
+		logger.String("tenant_id", a.TenantID), logger.String("idp_id", a.FederationID), logger.RequestID(ctx))
 
-	// The provider is read again, and not carried over from the bind, because
+	// The federation is read again, and not carried over from the bind, because
 	// the row holds the bind credential in the clear and no layer above this
-	// package handles it. The state is re-read with it, so a provider switched
+	// package handles it. The state is re-read with it, so a federation switched
 	// off between the bind and this write creates nobody.
-	row, err := s.deps.Find(ctx, a.TenantID, a.IdpID)
+	row, err := s.deps.Find(ctx, a.TenantID, a.FederationID)
 	if errors.Is(err, ErrNotFound) {
-		return "", fmt.Errorf("%w: tenant %s, provider %s", ErrDisabled, a.TenantID, a.IdpID)
+		return "", fmt.Errorf("%w: tenant %s, provider %s", ErrDisabled, a.TenantID, a.FederationID)
 	}
 	if err != nil {
 		s.log.Error("read the identity provider of the first bind",
-			logger.String("tenant_id", a.TenantID), logger.String("idp_id", a.IdpID), logger.Err(err))
+			logger.String("tenant_id", a.TenantID), logger.String("idp_id", a.FederationID), logger.Err(err))
 		return "", err
 	}
 	if row.State != StateActive {
-		return "", fmt.Errorf("%w: tenant %s, provider %s", ErrDisabled, a.TenantID, a.IdpID)
+		return "", fmt.Errorf("%w: tenant %s, provider %s", ErrDisabled, a.TenantID, a.FederationID)
 	}
 
 	orgID := row.OrgID
@@ -188,13 +188,13 @@ func (s *Service) Provision(ctx context.Context, a Attempt, identity Identity) (
 	}
 	if orgID == "" {
 		s.log.Error("the identity provider names no organization to create people in",
-			logger.String("tenant_id", a.TenantID), logger.String("idp_id", a.IdpID))
-		return "", fmt.Errorf("%w: tenant %s, provider %s", ErrNoOrganization, a.TenantID, a.IdpID)
+			logger.String("tenant_id", a.TenantID), logger.String("idp_id", a.FederationID))
+		return "", fmt.Errorf("%w: tenant %s, provider %s", ErrNoOrganization, a.TenantID, a.FederationID)
 	}
 	if identity.Username == "" {
 		s.log.Error("the directory entry carries no username",
-			logger.String("tenant_id", a.TenantID), logger.String("idp_id", a.IdpID))
-		return "", fmt.Errorf("%w: tenant %s, provider %s", ErrNoUsername, a.TenantID, a.IdpID)
+			logger.String("tenant_id", a.TenantID), logger.String("idp_id", a.FederationID))
+		return "", fmt.Errorf("%w: tenant %s, provider %s", ErrNoUsername, a.TenantID, a.FederationID)
 	}
 	if err := s.heldAlready(ctx, a, identity); err != nil {
 		return "", err
@@ -217,11 +217,11 @@ func (s *Service) Provision(ctx context.Context, a Attempt, identity Identity) (
 		userID = created
 
 		if err := s.deps.WriteLink(ctx, Link{
-			TenantID:   a.TenantID,
-			IdpID:      a.IdpID,
-			ExternalID: identity.ExternalID,
-			UserID:     userID,
-			CreatedAt:  time.Now().UTC(),
+			TenantID:     a.TenantID,
+			FederationID: a.FederationID,
+			ExternalID:   identity.ExternalID,
+			UserID:       userID,
+			CreatedAt:    time.Now().UTC(),
 		}); err != nil {
 			return err
 		}
@@ -232,7 +232,7 @@ func (s *Service) Provision(ctx context.Context, a Attempt, identity Identity) (
 			ActorID:    userID,
 			Action:     audit.ActionIdpLinked,
 			EntityType: audit.EntityIdentityProvider,
-			EntityID:   a.IdpID,
+			EntityID:   a.FederationID,
 			Metadata:   map[string]any{"user_id": userID, "org_id": orgID},
 		})
 	})
@@ -241,13 +241,13 @@ func (s *Service) Provision(ctx context.Context, a Attempt, identity Identity) (
 		// the transaction rolled back, so the refused sign-in leaves no half
 		// person behind. The identifier is personal data, so it is not logged.
 		s.log.Error("create the person the directory proved",
-			logger.String("tenant_id", a.TenantID), logger.String("idp_id", a.IdpID), logger.Err(err))
+			logger.String("tenant_id", a.TenantID), logger.String("idp_id", a.FederationID), logger.Err(err))
 		return "", err
 	}
 
 	s.log.Info("created the person the directory proved",
 		logger.String("tenant_id", a.TenantID),
-		logger.String("idp_id", a.IdpID),
+		logger.String("idp_id", a.FederationID),
 		logger.String("org_id", orgID),
 		logger.String("user_id", userID))
 	return userID, nil
@@ -258,7 +258,7 @@ func (s *Service) Provision(ctx context.Context, a Attempt, identity Identity) (
 //
 // The identifier step reads active people alone, so a deactivated person and a
 // soft-deleted one both name nobody there, and the sign-in reaches this write as
-// a first bind. Provider Resolution carries a read that catches them, and case 1
+// a first bind. Federation Resolution carries a read that catches them, and case 1
 // answers a claimed domain before it runs, so the claim alone routes an
 // offboarded person straight here. See docs/specs/0002-directory-sign-in.md.
 //
@@ -270,11 +270,11 @@ func (s *Service) Provision(ctx context.Context, a Attempt, identity Identity) (
 // both.
 //
 // Three identifiers are read. What the person typed is the first, and it is the
-// read Provider Resolution case 4 would have made: case 1 answers a claimed
+// read Federation Resolution case 4 would have made: case 1 answers a claimed
 // domain and returns before it, so this is where it lands instead. The username
 // and the email address of the directory entry follow, because either one names
 // a person the identifier step would have found under a form the person did not
-// type. A provider that maps no email attribute leaves that one empty, and a
+// type. A federation that maps no email attribute leaves that one empty, and a
 // person can be held under one form and not another, so a single read is not
 // enough.
 //
@@ -303,7 +303,7 @@ func (s *Service) heldAlready(ctx context.Context, a Attempt, identity Identity)
 		held, err := s.deps.Held(ctx, a.TenantID, name)
 		if err != nil {
 			s.log.Error("read whether the tenant already holds the account of a first bind",
-				logger.String("tenant_id", a.TenantID), logger.String("idp_id", a.IdpID), logger.Err(err))
+				logger.String("tenant_id", a.TenantID), logger.String("idp_id", a.FederationID), logger.Err(err))
 			return err
 		}
 		if !held {
@@ -311,8 +311,8 @@ func (s *Service) heldAlready(ctx context.Context, a Attempt, identity Identity)
 		}
 
 		s.log.Warn("refused a first bind for a person the tenant already holds",
-			logger.String("tenant_id", a.TenantID), logger.String("idp_id", a.IdpID))
-		return fmt.Errorf("%w: tenant %s, provider %s", ErrDirectory, a.TenantID, a.IdpID)
+			logger.String("tenant_id", a.TenantID), logger.String("idp_id", a.FederationID))
+		return fmt.Errorf("%w: tenant %s, provider %s", ErrDirectory, a.TenantID, a.FederationID)
 	}
 	return nil
 }

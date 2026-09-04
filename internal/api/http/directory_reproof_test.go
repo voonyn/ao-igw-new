@@ -5,9 +5,9 @@ import (
 	"errors"
 	"testing"
 
-	"alphaomega/identitygateway/internal/identityprovider"
 	"alphaomega/identitygateway/internal/platform/logger"
 	"alphaomega/identitygateway/internal/user"
+	"alphaomega/identitygateway/internal/userfederation"
 )
 
 // The read that names the Directory of one person, and the username the bind
@@ -53,12 +53,12 @@ func TestDirectoryOfAsksTheResolverAboutThePerson(t *testing.T) {
 		},
 	)
 
-	idpID, username, err := directory(t.Context(), reproveTenantID, reproveUserID)
+	federationID, username, err := directory(t.Context(), reproveTenantID, reproveUserID)
 	if err != nil {
 		t.Fatalf("directoryOf: %v", err)
 	}
-	if idpID != "idp-one" {
-		t.Errorf("the read named %q, want the provider the resolver named", idpID)
+	if federationID != "idp-one" {
+		t.Errorf("the read named %q, want the provider the resolver named", federationID)
 	}
 	if username != "alice" {
 		t.Errorf("the read named the username %q, want the one the person holds", username)
@@ -89,12 +89,12 @@ func TestDirectoryOfAnswersALocalPersonWithNoProvider(t *testing.T) {
 		},
 	)
 
-	idpID, _, err := directory(t.Context(), reproveTenantID, reproveUserID)
+	federationID, _, err := directory(t.Context(), reproveTenantID, reproveUserID)
 	if err != nil {
 		t.Fatalf("directoryOf: %v", err)
 	}
-	if idpID != "" {
-		t.Errorf("the read named %q, want no provider at all", idpID)
+	if federationID != "" {
+		t.Errorf("the read named %q, want no provider at all", federationID)
 	}
 }
 
@@ -140,10 +140,10 @@ func TestDirectoryOfCarriesABrokenRead(t *testing.T) {
 // .scratch/directory-sign-in/issues/25.
 func TestDirectoryReProverRefusals(t *testing.T) {
 	cases := []struct {
-		name     string
-		idpID    string
-		username string
-		want     error
+		name         string
+		federationID string
+		username     string
+		want         error
 	}{
 		{"no single directory", "", "alice", user.ErrDirectoryNoEntry},
 		{"a person who holds no username", "idp-one", "", user.ErrDirectoryNoEntry},
@@ -152,15 +152,15 @@ func TestDirectoryReProverRefusals(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			reprove := directoryReProver(
-				func(context.Context, identityprovider.Attempt, string) (identityprovider.Identity, error) {
+				func(context.Context, userfederation.Attempt, string) (userfederation.Identity, error) {
 					t.Error("the bind ran on a re-proof the guard must refuse")
-					return identityprovider.Identity{}, nil
+					return userfederation.Identity{}, nil
 				},
 				logger.New(),
 			)
 
 			err := reprove(t.Context(),
-				reproveTenantID, c.idpID, reproveUserID, c.username, "the typed password")
+				reproveTenantID, c.federationID, reproveUserID, c.username, "the typed password")
 			if !errors.Is(err, c.want) {
 				t.Errorf("the re-proof answered %v, want %v", err, c.want)
 			}
@@ -193,8 +193,8 @@ func TestOnePasswordProofResolvesTheDirectoryOnce(t *testing.T) {
 		},
 		Directory: directory,
 		ProveDirectory: directoryReProver(
-			func(context.Context, identityprovider.Attempt, string) (identityprovider.Identity, error) {
-				return identityprovider.Identity{}, nil
+			func(context.Context, userfederation.Attempt, string) (userfederation.Identity, error) {
+				return userfederation.Identity{}, nil
 			},
 			logger.New(),
 		),
@@ -218,12 +218,12 @@ func TestOnePasswordProofResolvesTheDirectoryOnce(t *testing.T) {
 // username the person holds reaches the bind as the search value, and the typed
 // password travels with it.
 func TestDirectoryReProverBindsOnTheUsername(t *testing.T) {
-	var asked identityprovider.Attempt
+	var asked userfederation.Attempt
 	var askedPassword string
 	reprove := directoryReProver(
-		func(_ context.Context, a identityprovider.Attempt, password string) (identityprovider.Identity, error) {
+		func(_ context.Context, a userfederation.Attempt, password string) (userfederation.Identity, error) {
 			asked, askedPassword = a, password
-			return identityprovider.Identity{}, nil
+			return userfederation.Identity{}, nil
 		},
 		logger.New(),
 	)
@@ -234,8 +234,8 @@ func TestDirectoryReProverBindsOnTheUsername(t *testing.T) {
 		t.Fatalf("a proved re-proof answered %v, want nil", err)
 	}
 
-	want := identityprovider.Attempt{
-		TenantID: reproveTenantID, IdpID: "idp-one", UserID: reproveUserID, Identifier: "alice",
+	want := userfederation.Attempt{
+		TenantID: reproveTenantID, FederationID: "idp-one", UserID: reproveUserID, Identifier: "alice",
 	}
 	if asked != want {
 		t.Errorf("the bind was asked %+v, want %+v", asked, want)

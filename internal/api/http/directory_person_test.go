@@ -6,11 +6,11 @@ import (
 	"errors"
 	"testing"
 
-	"alphaomega/identitygateway/internal/identityprovider"
 	"alphaomega/identitygateway/internal/organization"
 	"alphaomega/identitygateway/internal/platform/db/dbtest"
 	"alphaomega/identitygateway/internal/platform/logger"
 	"alphaomega/identitygateway/internal/user"
+	"alphaomega/identitygateway/internal/userfederation"
 )
 
 const (
@@ -20,7 +20,7 @@ const (
 
 // alice is the person one first bind creates, as the provider domain hands her
 // over.
-var alice = identityprovider.Person{
+var alice = userfederation.Person{
 	TenantID: personTenantID, OrgID: personOrgID, Username: "alice",
 	Email: "alice@corp.example", FirstName: "Alice", LastName: "Adams",
 	DisplayName: "Alice Adams",

@@ -1,4 +1,4 @@
-package identityprovider
+package userfederation
 
 import (
 	"context"
@@ -33,8 +33,8 @@ var ErrWrongPassword = errors.New("the directory refused the password")
 // those is a credential failure, and the caller answers directory_unavailable.
 //
 // Three permanent refusals of provision.go reuse it, and that is deliberate: the
-// offboarded person an Identity Link names, a bind whose entry another link of
-// the same provider names, and a first bind for an identifier the tenant already
+// offboarded person a Federation Link names, a bind whose entry another link of
+// the same federation names, and a first bind for an identifier the tenant already
 // holds. Each one is proved and refused, and a slug of its own would say which
 // people a tenant holds, which the sign-in must not. Ticket 12 and ticket 15
 // settled it.
@@ -44,37 +44,37 @@ var ErrWrongPassword = errors.New("the directory refused the password")
 // the state is permanent.
 var ErrDirectory = errors.New("the directory did not answer")
 
-// ErrDisabled reports a provider that is inactive or soft deleted. The two
+// ErrDisabled reports a federation that is inactive or soft deleted. The two
 // behave alike at sign-in: both refuse every person tied to them.
 //
 // The sign-in answers it with the slug an unknown identifier gets. A slug of its
 // own would name every directory-owned person of the tenant for as long as the
-// provider stays off, which is a permanent enumeration oracle at the password
+// federation stays off, which is a permanent enumeration oracle at the password
 // step. directory_disabled is an audit reason and never a slug.
 //
 // Prove raises it, and the sign-in and the portal re-proof both call Prove. The
 // re-proof maps it onto ErrDirectoryUnavailable, which tells a caller who already
 // proved who they are to try again, and names no person. The admin and the test
-// routes read the state off the provider row and raise nothing, so a misconfigured
+// routes read the state off the federation row and raise nothing, so a misconfigured
 // directory can be fixed and tested before it goes active again. See
 // docs/specs/0002-directory-sign-in.md.
 var ErrDisabled = errors.New("the identity provider is disabled")
 
-// ErrTooManyBinds reports a person who spent their whole bind budget, or the
+// ErrTooManyProofs reports a person who spent their whole bind budget, or the
 // typed identifier that spent it when the identifier step named nobody. The
 // directory is not dialled, and the caller waits out the window.
-var ErrTooManyBinds = errors.New("too many directory binds")
+var ErrTooManyProofs = errors.New("too many directory binds")
 
-// ErrBindUnavailable reports a bind budget nobody could read. Redis holds the
+// ErrProofUnavailable reports a bind budget nobody could read. Redis holds the
 // whole counter, so a bind that ran without it would leave an outbound call into
 // a customer network unmetered for as long as Redis is down.
 //
-// It is not ErrTooManyBinds. Both refuse, and the two mean different things: one
+// It is not ErrTooManyProofs. Both refuse, and the two mean different things: one
 // says the caller guessed too often, and one says the gateway cannot meter the
 // call at all.
-var ErrBindUnavailable = errors.New("the bind budget is unavailable")
+var ErrProofUnavailable = errors.New("the bind budget is unavailable")
 
-// Attempt is the one bind a caller is making: the tenant, the provider, the
+// Attempt is the one bind a caller is making: the tenant, the federation, the
 // person the identifier step named, and the string the person typed. The four
 // travel together through the whole bind path, and every one of them is a
 // string, so a positional list lets the compiler take them in any order.
@@ -91,10 +91,10 @@ var ErrBindUnavailable = errors.New("the bind budget is unavailable")
 // in a function value. It carries no credential: the typed password is a
 // parameter of its own.
 type Attempt struct {
-	TenantID   string
-	IdpID      string
-	UserID     string
-	Identifier string
+	TenantID     string
+	FederationID string
+	UserID       string
+	Identifier   string
 }
 
 // bindLimit and bindWindow cap how many binds one person of one tenant drives.
@@ -107,11 +107,11 @@ type Attempt struct {
 // Ceiling: the key names the person the session already named, so both forms of
 // one identifier spend one counter. A typed form the identifier step cannot
 // resolve names nobody, and that one key counts the typed string instead. Such a
-// form still ends at a person, because the Identity Link names them after the
+// form still ends at a person, because the Federation Link names them after the
 // bind. A person addressable by an unresolvable form therefore keeps a second
 // counter of ten beside the counter of their person, and the cap on them is
 // twenty. The second key folds the typed string, so case and space alone open no
-// third counter. See bindKey for the fold it makes and the fold it does not. Any
+// third counter. See proofKey for the fold it makes and the fold it does not. Any
 // caller can drive either key. Two things follow. A spray across
 // many identifiers still reaches the directory. Eleven wrong guesses lock one
 // named person out of the directory sign-in for the rest of the window, and out
@@ -134,7 +134,7 @@ const (
 	bindWindow = 15 * time.Minute
 )
 
-// bindKey names the bind budget of one person of one tenant, and falls back to
+// proofKey names the bind budget of one person of one tenant, and falls back to
 // the identifier they typed when the sign-in names no person.
 //
 // The person is the cap. A tenant that lets one person type either a username or
@@ -147,7 +147,7 @@ const (
 // names this person.
 //
 // A first bind is one caller of the fallback and not the only one. A person the
-// Identity Link names after the bind reaches it too, and they hold a counter of
+// Federation Link names after the bind reaches it too, and they hold a counter of
 // their own beside it. See the ceiling on bindLimit.
 //
 // The fallback folds the typed string before it digests it. The directory
@@ -164,17 +164,17 @@ const (
 // address itself. A Redis key is read by every operator who lists the keyspace.
 // A user id is not personal data here, and log lines of this package already
 // carry it.
-func bindKey(a Attempt) string {
+func proofKey(a Attempt) string {
 	if a.UserID != "" {
-		return fmt.Sprintf("idp_binds:%s:user:%s", a.TenantID, a.UserID)
+		return fmt.Sprintf("federation_proofs:%s:user:%s", a.TenantID, a.UserID)
 	}
 	folded := strings.ToLower(strings.TrimSpace(a.Identifier))
-	return fmt.Sprintf("idp_binds:%s:%s", a.TenantID, aocrypto.Digest(folded))
+	return fmt.Sprintf("federation_proofs:%s:%s", a.TenantID, aocrypto.Digest(folded))
 }
 
 // defaultTimeoutMS bounds a row that carries no timeout. The column defaults to
 // 5000 and the body requires a value, so this floor catches only a row written
-// around both. A deadline of zero would refuse every bind of that provider.
+// around both. A deadline of zero would refuse every bind of that federation.
 const defaultTimeoutMS = 5000
 
 // The port each transport dials when the server string names none. A plain bind
@@ -194,14 +194,14 @@ const (
 	StageSearch = "search"
 )
 
-// Identity is one directory account, read by the attribute names the provider
+// Identity is one directory account, read by the attribute names the federation
 // row carries.
 //
 // ExternalID is the stable id of the directory, objectGUID in Active Directory.
-// The Identity Link stores it, so a username the directory later changes never
+// The Federation Link stores it, so a username the directory later changes never
 // orphans the person.
 //
-// The three name fields are optional. A provider that maps no display name
+// The three name fields are optional. A federation that maps no display name
 // answers an empty display name, and that is not a failure.
 type Identity struct {
 	DN          string
@@ -222,9 +222,9 @@ type Identity struct {
 // password. Nothing else does.
 //
 // The typed password reaches the second bind and nothing else. No log line of
-// this package carries it, or the bind password of the provider, or the DN of
+// this package carries it, or the bind password of the federation, or the DN of
 // the bind account.
-func (s *Service) Bind(ctx context.Context, p Provider, identifier, password string) (Identity, error) {
+func (s *Service) Bind(ctx context.Context, p Federation, identifier, password string) (Identity, error) {
 	s.log.Debug("bind against the directory",
 		logger.String("tenant_id", p.TenantID), logger.String("idp_id", p.ID),
 		logger.RequestID(ctx))
@@ -235,13 +235,13 @@ func (s *Service) Bind(ctx context.Context, p Provider, identifier, password str
 		return Identity{}, fmt.Errorf("%w: the password is empty", ErrWrongPassword)
 	}
 	if p.BindDN == "" || p.BindPassword == "" {
-		return Identity{}, fmt.Errorf("%w: provider %s carries no bind credential", ErrDirectory, p.ID)
+		return Identity{}, fmt.Errorf("%w: federation %s carries no bind credential", ErrDirectory, p.ID)
 	}
 	// A row that maps no filter builds a filter that names no identifier, and
 	// that search matches whichever person the base holds. The columns are
 	// nullable and only the body requires them, so the guard runs here too.
 	if len(p.UserObjectClasses) == 0 || len(p.UserFilters) == 0 {
-		return Identity{}, fmt.Errorf("%w: provider %s carries no user filter", ErrDirectory, p.ID)
+		return Identity{}, fmt.Errorf("%w: federation %s carries no user filter", ErrDirectory, p.ID)
 	}
 
 	conn, _, err := dial(ctx, p)
@@ -266,7 +266,7 @@ func (s *Service) Bind(ctx context.Context, p Provider, identifier, password str
 	}
 
 	person := identityOf(p, entry)
-	// Without the stable id the Identity Link holds no key, so a bind that
+	// Without the stable id the Federation Link holds no key, so a bind that
 	// proved the password would tie the person to nobody.
 	if person.ExternalID == "" {
 		return Identity{}, fmt.Errorf("%w: the entry carries no %s", ErrNoEntry, p.AttrID)
@@ -290,13 +290,13 @@ func (s *Service) Bind(ctx context.Context, p Provider, identifier, password str
 //
 // Three steps run in this order, and the order is the point:
 //
-//  1. Read the provider. An inactive one and a soft-deleted one both refuse, and
+//  1. Read the federation. An inactive one and a soft-deleted one both refuse, and
 //     neither dials anything.
 //  2. Refuse an empty password. An unauthenticated bind proves nothing, so it
 //     never reaches the wire, and a value that never reaches the wire must not
 //     cost the person the budget a bind costs.
 //  3. Spend one bind of the budget. Nothing above this line reaches the network,
-//     so a refused provider and an empty password each cost none of it.
+//     so a refused federation and an empty password each cost none of it.
 //  4. Bind.
 //  5. Give the bind back if the directory did not answer.
 //
@@ -315,29 +315,29 @@ func (s *Service) Bind(ctx context.Context, p Provider, identifier, password str
 //
 // a.UserID is the person the sign-in already named at the identifier step, and
 // it keys the budget. An identifier step that named nobody carries an empty
-// string, and the budget keys on the typed identifier instead. See bindKey. The
+// string, and the budget keys on the typed identifier instead. See proofKey. The
 // value never reaches the directory: the search runs on a.Identifier.
 //
 // The typed password reaches Bind and nothing else. No log line of this method
-// carries it, or the identifier, or the bind credential of the provider.
+// carries it, or the identifier, or the bind credential of the federation.
 func (s *Service) Prove(ctx context.Context, a Attempt, password string) (Identity, error) {
 	s.log.Debug("prove a password against the directory",
-		logger.String("tenant_id", a.TenantID), logger.String("idp_id", a.IdpID),
+		logger.String("tenant_id", a.TenantID), logger.String("idp_id", a.FederationID),
 		logger.RequestID(ctx))
 
-	row, err := s.deps.Find(ctx, a.TenantID, a.IdpID)
+	row, err := s.deps.Find(ctx, a.TenantID, a.FederationID)
 	if errors.Is(err, ErrNotFound) {
-		return Identity{}, fmt.Errorf("%w: tenant %s, provider %s", ErrDisabled, a.TenantID, a.IdpID)
+		return Identity{}, fmt.Errorf("%w: tenant %s, provider %s", ErrDisabled, a.TenantID, a.FederationID)
 	}
 	if err != nil {
 		s.log.Error("read the identity provider of the sign-in",
-			logger.String("tenant_id", a.TenantID), logger.String("idp_id", a.IdpID), logger.Err(err))
+			logger.String("tenant_id", a.TenantID), logger.String("idp_id", a.FederationID), logger.Err(err))
 		return Identity{}, err
 	}
 	if row.State != StateActive {
 		s.log.Warn("refused a sign-in against a disabled directory",
-			logger.String("tenant_id", a.TenantID), logger.String("idp_id", a.IdpID))
-		return Identity{}, fmt.Errorf("%w: tenant %s, provider %s", ErrDisabled, a.TenantID, a.IdpID)
+			logger.String("tenant_id", a.TenantID), logger.String("idp_id", a.FederationID))
+		return Identity{}, fmt.Errorf("%w: tenant %s, provider %s", ErrDisabled, a.TenantID, a.FederationID)
 	}
 
 	// The guard is in Bind as well, where it is what keeps an unauthenticated
@@ -347,24 +347,24 @@ func (s *Service) Prove(ctx context.Context, a Attempt, password string) (Identi
 		return Identity{}, fmt.Errorf("%w: the password is empty", ErrWrongPassword)
 	}
 
-	if err := s.spendBind(ctx, a); err != nil {
+	if err := s.spendProof(ctx, a); err != nil {
 		return Identity{}, err
 	}
 
 	person, err := s.Bind(ctx, row, a.Identifier, password)
 	if errors.Is(err, ErrDirectory) {
-		s.releaseBind(ctx, a)
+		s.releaseProof(ctx, a)
 	}
 	return person, err
 }
 
-// releaseBind gives one spent bind back, and it runs on the answers of
+// releaseProof gives one spent bind back, and it runs on the answers of
 // ErrDirectory alone. A wrong password and an unknown entry are answers the
 // person drove, and both keep the spend, which is what makes the cap reachable.
 //
 // Four of the refunded faults are the ones the spec names: a dial failure, a
 // timeout, a TLS failure, and a bind failure of the service credential. Two more
-// are the provider row that carries no bind credential and the one that maps no
+// are the federation row that carries no bind credential and the one that maps no
 // user filter. Those two are permanent, and refunding them costs nothing that
 // the budget bounds: both refuse before the dial, so the loop they open reaches
 // no directory, the same way the empty-password guard does.
@@ -378,17 +378,17 @@ func (s *Service) Prove(ctx context.Context, a Attempt, password string) (Identi
 // A failed release writes one error line and changes nothing else. The person
 // keeps the answer they earned, and the counter drifts high by one and never
 // low.
-func (s *Service) releaseBind(ctx context.Context, a Attempt) {
-	if err := s.deps.Release(ctx, bindKey(a)); err != nil {
+func (s *Service) releaseProof(ctx context.Context, a Attempt) {
+	if err := s.deps.Release(ctx, proofKey(a)); err != nil {
 		s.log.Error("give back the bind of a directory that did not answer",
-			logger.String("tenant_id", a.TenantID), logger.String("idp_id", a.IdpID),
+			logger.String("tenant_id", a.TenantID), logger.String("idp_id", a.FederationID),
 			logger.String("user_id", a.UserID), logger.Err(err))
 	}
 }
 
-// spendBind spends one bind of the person's trailing-window budget, and refuses
+// spendProof spends one bind of the person's trailing-window budget, and refuses
 // the sign-in when nothing is left. A sign-in whose identifier step named no
-// person spends the budget of the identifier they typed. See bindKey.
+// person spends the budget of the identifier they typed. See proofKey.
 //
 // A cache failure refuses the bind. Redis is only a cache elsewhere in this
 // gateway, and here it is the whole budget: a failure that let the bind through
@@ -399,13 +399,13 @@ func (s *Service) releaseBind(ctx context.Context, a Attempt) {
 // ponytail: a refused read costs every directory-owned person their sign-in
 // while Redis is down. The local password path keeps working, because it spends
 // nothing.
-func (s *Service) spendBind(ctx context.Context, a Attempt) error {
-	allowed, err := s.deps.Allow(ctx, bindKey(a), bindLimit, bindWindow)
+func (s *Service) spendProof(ctx context.Context, a Attempt) error {
+	allowed, err := s.deps.Allow(ctx, proofKey(a), bindLimit, bindWindow)
 	if err != nil {
 		s.log.Error("read the directory bind budget",
-			logger.String("tenant_id", a.TenantID), logger.String("idp_id", a.IdpID),
+			logger.String("tenant_id", a.TenantID), logger.String("idp_id", a.FederationID),
 			logger.String("user_id", a.UserID), logger.Err(err))
-		return fmt.Errorf("%w: tenant %s", ErrBindUnavailable, a.TenantID)
+		return fmt.Errorf("%w: tenant %s", ErrProofUnavailable, a.TenantID)
 	}
 	if allowed {
 		return nil
@@ -414,14 +414,14 @@ func (s *Service) spendBind(ctx context.Context, a Attempt) error {
 	// user_id is empty when the identifier step named nobody. The identifier
 	// that keyed that counter is personal data and stays out of the line.
 	s.log.Warn("refused a directory bind over the budget",
-		logger.String("tenant_id", a.TenantID), logger.String("idp_id", a.IdpID),
+		logger.String("tenant_id", a.TenantID), logger.String("idp_id", a.FederationID),
 		logger.String("user_id", a.UserID))
-	return fmt.Errorf("%w: tenant %s", ErrTooManyBinds, a.TenantID)
+	return fmt.Errorf("%w: tenant %s", ErrTooManyProofs, a.TenantID)
 }
 
-// search runs one search under the base of the provider, and answers the single
+// search runs one search under the base of the federation, and answers the single
 // entry it matched.
-func search(conn *ldap.Conn, p Provider, identifier string) (*ldap.Entry, error) {
+func search(conn *ldap.Conn, p Federation, identifier string) (*ldap.Entry, error) {
 	req := ldap.NewSearchRequest(
 		searchBase(p),
 		ldap.ScopeWholeSubtree, ldap.NeverDerefAliases,
@@ -456,7 +456,7 @@ func search(conn *ldap.Conn, p Provider, identifier string) (*ldap.Entry, error)
 // with no time left. A refused server and an unreachable server both fail at
 // once, which is the common failure, and the failover works there. A budget for
 // each server is the upgrade, and it needs a second column to stay bounded.
-func dial(ctx context.Context, p Provider) (*ldap.Conn, string, error) {
+func dial(ctx context.Context, p Federation) (*ldap.Conn, string, error) {
 	if len(p.Servers) == 0 {
 		return nil, StageDial, errors.New("the provider names no server")
 	}
@@ -488,7 +488,7 @@ func dial(ctx context.Context, p Provider) (*ldap.Conn, string, error) {
 // its own after it. LDAPS wraps the socket at once and StartTLS wraps it after
 // the LDAP hello, so a certificate a client refuses reads as a TLS failure on
 // both, and never as a directory that is down.
-func dialOne(ctx context.Context, p Provider, server string, deadline time.Time) (*ldap.Conn, string, error) {
+func dialOne(ctx context.Context, p Federation, server string, deadline time.Time) (*ldap.Conn, string, error) {
 	addr, host, err := address(p.Mode, server)
 	if err != nil {
 		return nil, StageDial, err
@@ -560,15 +560,15 @@ func address(mode int, server string) (addr, host string, err error) {
 	return net.JoinHostPort(host, port), host, nil
 }
 
-// tlsConfig is the TLS of one provider. Certificate checks are on and the
+// tlsConfig is the TLS of one federation. Certificate checks are on and the
 // minimum version is pinned, the way cmd/server.go pins the Redis connection.
 // The egress precedent of this repository, internal/di/di.go, configures no TLS
 // at all, and it is not copied here.
 //
-// root_ca, when it is set, is the only authority this provider trusts: the PEM
+// root_ca, when it is set, is the only authority this federation trusts: the PEM
 // replaces the system store instead of joining it, which is what redisTLSConfig
 // does with its own CA bundle.
-func tlsConfig(p Provider, host string) (*tls.Config, error) {
+func tlsConfig(p Federation, host string) (*tls.Config, error) {
 	cfg := &tls.Config{ServerName: host, MinVersion: tls.VersionTLS12}
 	if p.RootCA == "" {
 		return cfg, nil
@@ -585,7 +585,7 @@ func tlsConfig(p Provider, host string) (*tls.Config, error) {
 // searchBase is the subtree the search runs under. user_base, when it is set, is
 // a subtree of base_dn such as ou=people, so it is prefixed and never replaces
 // the base.
-func searchBase(p Provider) string {
+func searchBase(p Federation) string {
 	if p.UserBase == "" {
 		return p.BaseDN
 	}
@@ -599,7 +599,7 @@ func searchBase(p Provider) string {
 //
 // Every value is escaped, so a hostile identifier cannot close a parenthesis and
 // widen the search to every person of the directory.
-func searchFilter(p Provider, identifier string) string {
+func searchFilter(p Federation, identifier string) string {
 	safe := ldap.EscapeFilter(identifier)
 
 	parts := make([]string, 0, len(p.UserObjectClasses)+1)
@@ -623,7 +623,7 @@ func searchFilter(p Provider, identifier string) string {
 //
 // The connection test searches with it. A test counts the people the base holds
 // and proves nothing about one of them, so it names nobody.
-func classFilter(p Provider) string {
+func classFilter(p Federation) string {
 	parts := make([]string, 0, len(p.UserObjectClasses))
 	for _, class := range p.UserObjectClasses {
 		parts = append(parts, fmt.Sprintf("(objectClass=%s)", ldap.EscapeFilter(class)))
@@ -647,7 +647,7 @@ func join(op string, parts []string) string {
 // attributes are the names the row maps, and no others. A row that maps no first
 // name asks the directory for nothing, and the answer carries an empty first
 // name.
-func attributes(p Provider) []string {
+func attributes(p Federation) []string {
 	mapped := []string{p.AttrID, p.AttrUsername, p.AttrEmail, p.AttrFirstName, p.AttrLastName, p.AttrDisplayName}
 
 	names := make([]string, 0, len(mapped))
@@ -659,8 +659,8 @@ func attributes(p Provider) []string {
 	return names
 }
 
-// identityOf reads one entry by the attribute names the provider row carries.
-func identityOf(p Provider, entry *ldap.Entry) Identity {
+// identityOf reads one entry by the attribute names the federation row carries.
+func identityOf(p Federation, entry *ldap.Entry) Identity {
 	return Identity{
 		DN:          entry.DN,
 		ExternalID:  stableID(entry, p.AttrID),
@@ -710,9 +710,9 @@ func control(r rune) bool {
 }
 
 // unavailable logs one directory that did not answer, and returns ErrDirectory.
-// The line names the provider, and never the bind DN, the bind password, or the
+// The line names the federation, and never the bind DN, the bind password, or the
 // password the person typed.
-func (s *Service) unavailable(p Provider, what string, err error) error {
+func (s *Service) unavailable(p Federation, what string, err error) error {
 	s.log.Warn("the directory did not answer",
 		logger.String("tenant_id", p.TenantID),
 		logger.String("idp_id", p.ID),

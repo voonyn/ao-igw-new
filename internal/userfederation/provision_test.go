@@ -1,4 +1,4 @@
-package identityprovider
+package userfederation
 
 import (
 	"context"
@@ -20,13 +20,13 @@ const typed = "alice@corp.example"
 // firstBind is the attempt every provisioning test makes: alice types the email
 // address a claimed domain routes, and the identifier step named nobody. Tests
 // that name a person copy it and set UserID.
-var firstBind = Attempt{TenantID: testTenantID, IdpID: tenantIdpID, Identifier: typed}
+var firstBind = Attempt{TenantID: testTenantID, FederationID: tenantFederationID, Identifier: typed}
 
 // sessionBind is the same attempt for a person the identifier step already
-// named. The Identity Link is still read first, so the two differ only in the
+// named. The Federation Link is still read first, so the two differ only in the
 // fallback each one reaches.
 var sessionBind = Attempt{
-	TenantID: testTenantID, IdpID: tenantIdpID, UserID: testUserID, Identifier: typed,
+	TenantID: testTenantID, FederationID: tenantFederationID, UserID: testUserID, Identifier: typed,
 }
 
 // alice is the directory account every provisioning test binds as. It carries
@@ -42,10 +42,10 @@ var alice = Identity{
 }
 
 // TestProvision covers the person one first bind creates. The row lands in the
-// organization the provider names, the link holds the stable directory id, and
+// organization the federation names, the link holds the stable directory id, and
 // the trail records that the sign-in created the person.
 func TestProvision(t *testing.T) {
-	svc := testService(t, deps{rows: []Provider{storedProvider(testOrgID)}})
+	svc := testService(t, deps{rows: []Federation{storedFederation(testOrgID)}})
 
 	userID, err := svc.Provision(context.Background(), firstBind, alice)
 	if err != nil {
@@ -75,9 +75,9 @@ func TestProvision(t *testing.T) {
 	if linked[0].ExternalID != alice.ExternalID {
 		t.Errorf("the link holds %q, want the stable directory id", linked[0].ExternalID)
 	}
-	if linked[0].UserID != createdUserID || linked[0].IdpID != tenantIdpID {
+	if linked[0].UserID != createdUserID || linked[0].FederationID != tenantFederationID {
 		t.Errorf("the link ties %q to %q, want %q to %q",
-			linked[0].UserID, linked[0].IdpID, createdUserID, tenantIdpID)
+			linked[0].UserID, linked[0].FederationID, createdUserID, tenantFederationID)
 	}
 	if linked[0].TenantID != testTenantID {
 		t.Errorf("the link belongs to tenant %q, want %q", linked[0].TenantID, testTenantID)
@@ -89,22 +89,22 @@ func TestProvision(t *testing.T) {
 	if len(events) != 1 || events[0].Action != string(audit.ActionIdpLinked) {
 		t.Fatalf("the trail holds %v, want one %s row", events, audit.ActionIdpLinked)
 	}
-	if events[0].ActorID != createdUserID || events[0].EntityID != tenantIdpID {
+	if events[0].ActorID != createdUserID || events[0].EntityID != tenantFederationID {
 		t.Errorf("the trail names actor %q on %q, want %q on %q",
-			events[0].ActorID, events[0].EntityID, createdUserID, tenantIdpID)
+			events[0].ActorID, events[0].EntityID, createdUserID, tenantFederationID)
 	}
 	if !strings.Contains(events[0].Metadata, createdUserID) {
 		t.Errorf("the trail recorded %q, want the person the bind created", events[0].Metadata)
 	}
 }
 
-// TestProvisionUsesTheDefaultOrganization covers a tenant-wide provider. It
+// TestProvisionUsesTheDefaultOrganization covers a tenant-wide federation. It
 // belongs to no organization, so the column of its own names the one the people
 // it creates land in: users.org_id is mandatory.
 func TestProvisionUsesTheDefaultOrganization(t *testing.T) {
-	row := storedProvider("")
+	row := storedFederation("")
 	row.DefaultOrgID = otherOrgID
-	svc := testService(t, deps{rows: []Provider{row}})
+	svc := testService(t, deps{rows: []Federation{row}})
 
 	if _, err := svc.Provision(context.Background(), firstBind, alice); err != nil {
 		t.Fatalf("Provision: %v", err)
@@ -118,7 +118,7 @@ func TestProvisionUsesTheDefaultOrganization(t *testing.T) {
 // default organization. The service refuses to save one, so a row that reaches
 // this was written around both it and the console, and it creates nobody.
 func TestProvisionWithoutAnOrganization(t *testing.T) {
-	svc := testService(t, deps{rows: []Provider{storedProvider("")}})
+	svc := testService(t, deps{rows: []Federation{storedFederation("")}})
 
 	_, err := svc.Provision(context.Background(), firstBind, alice)
 	if !errors.Is(err, ErrNoOrganization) {
@@ -129,11 +129,11 @@ func TestProvisionWithoutAnOrganization(t *testing.T) {
 	}
 }
 
-// TestProvisionWithoutAUsername covers a directory entry the provider read no
+// TestProvisionWithoutAUsername covers a directory entry the federation read no
 // username from. The person would hold no identifier to sign in with, so nobody
 // is created.
 func TestProvisionWithoutAUsername(t *testing.T) {
-	svc := testService(t, deps{rows: []Provider{storedProvider(testOrgID)}})
+	svc := testService(t, deps{rows: []Federation{storedFederation(testOrgID)}})
 
 	nameless := alice
 	nameless.Username = ""
@@ -147,16 +147,16 @@ func TestProvisionWithoutAUsername(t *testing.T) {
 	}
 }
 
-// TestProvisionRefusesADisabledProvider covers a provider switched off, or soft
+// TestProvisionRefusesADisabledFederation covers a federation switched off, or soft
 // deleted, between the bind and this write. Both behave alike, and neither
 // creates anybody.
-func TestProvisionRefusesADisabledProvider(t *testing.T) {
-	off := storedProvider(testOrgID)
+func TestProvisionRefusesADisabledFederation(t *testing.T) {
+	off := storedFederation(testOrgID)
 	off.State = StateInactive
 
 	for name, d := range map[string]deps{
-		"an inactive provider": {rows: []Provider{off}},
-		"a deleted provider":   {},
+		"an inactive federation": {rows: []Federation{off}},
+		"a deleted federation":   {},
 	} {
 		t.Run(name, func(t *testing.T) {
 			svc := testService(t, d)
@@ -177,7 +177,7 @@ func TestProvisionRefusesADisabledProvider(t *testing.T) {
 // person, nor a link, nor an audit row behind.
 func TestProvisionLeavesNoHalfPerson(t *testing.T) {
 	taken := errors.New("duplicate username")
-	svc := testService(t, deps{rows: []Provider{storedProvider(testOrgID)}, createFails: taken})
+	svc := testService(t, deps{rows: []Federation{storedFederation(testOrgID)}, createFails: taken})
 
 	_, err := svc.Provision(context.Background(), firstBind, alice)
 	if !errors.Is(err, taken) {
@@ -195,7 +195,7 @@ func TestProvisionLeavesNoHalfPerson(t *testing.T) {
 // person is rolled back with it, because a person with no link would sign in
 // against a local password hash that does not exist.
 func TestProvisionRollsTheLinkBack(t *testing.T) {
-	svc := testService(t, deps{rows: []Provider{storedProvider(testOrgID)}})
+	svc := testService(t, deps{rows: []Federation{storedFederation(testOrgID)}})
 	broken := errors.New("the link could not be written")
 	svc.deps.WriteLink = func(context.Context, Link) error { return broken }
 
@@ -208,10 +208,10 @@ func TestProvisionRollsTheLinkBack(t *testing.T) {
 }
 
 // TestProvisionLogsNoCredential proves that nothing this write logs carries the
-// bind password of the provider, or the identifier of the person. The row is
+// bind password of the federation, or the identifier of the person. The row is
 // read again here, and it holds the credential in the clear.
 func TestProvisionLogsNoCredential(t *testing.T) {
-	svc := testService(t, deps{rows: []Provider{storedProvider(testOrgID)}})
+	svc := testService(t, deps{rows: []Federation{storedFederation(testOrgID)}})
 
 	if _, err := svc.Provision(context.Background(), firstBind, alice); err != nil {
 		t.Fatalf("Provision: %v", err)
@@ -229,11 +229,11 @@ func TestProvisionLogsNoCredential(t *testing.T) {
 	}
 }
 
-// aliceLink is the Identity Link the first bind of alice wrote. It holds the
+// aliceLink is the Federation Link the first bind of alice wrote. It holds the
 // stable directory id and the person that bind created.
 func aliceLink() Link {
 	return Link{
-		TenantID: testTenantID, IdpID: tenantIdpID,
+		TenantID: testTenantID, FederationID: tenantFederationID,
 		ExternalID: alice.ExternalID, UserID: personID,
 	}
 }
@@ -241,13 +241,13 @@ func aliceLink() Link {
 // TestPersonOfAnswersTheLinkedPerson covers every sign-in after the first one.
 // The person types a User Principal Name that matches neither the username nor
 // the email the first bind stored, so the identifier step found nobody. The
-// Identity Link holds the stable directory id, and it names the person.
+// Federation Link holds the stable directory id, and it names the person.
 //
 // Before this read, the empty session person read as a first bind, the create
 // ran again, and uq_username refused it. The person was told for ever that the
 // directory was unavailable.
 func TestPersonOfAnswersTheLinkedPerson(t *testing.T) {
-	svc := testService(t, deps{rows: []Provider{storedProvider(testOrgID)}, links: []Link{aliceLink()}})
+	svc := testService(t, deps{rows: []Federation{storedFederation(testOrgID)}, links: []Link{aliceLink()}})
 
 	userID, err := svc.PersonOf(context.Background(), firstBind, alice)
 	if err != nil {
@@ -264,7 +264,7 @@ func TestPersonOfAnswersTheLinkedPerson(t *testing.T) {
 // TestPersonOfAnswersOnePersonWhateverTheIdentifier covers the three forms one
 // person signs in with: the bare username and the mapped email, which the
 // identifier step matches, and an unmapped User Principal Name, which it does
-// not. The Identity Link answers the same person for all three.
+// not. The Federation Link answers the same person for all three.
 func TestPersonOfAnswersOnePersonWhateverTheIdentifier(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -278,15 +278,15 @@ func TestPersonOfAnswersOnePersonWhateverTheIdentifier(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			svc := testService(t, deps{
-				rows:  []Provider{storedProvider(testOrgID)},
+				rows:  []Federation{storedFederation(testOrgID)},
 				links: []Link{aliceLink()},
 			})
 
 			attempt := Attempt{
-				TenantID:   testTenantID,
-				IdpID:      tenantIdpID,
-				UserID:     c.session,
-				Identifier: typed,
+				TenantID:     testTenantID,
+				FederationID: tenantFederationID,
+				UserID:       c.session,
+				Identifier:   typed,
 			}
 
 			userID, err := svc.PersonOf(context.Background(), attempt, alice)
@@ -307,7 +307,7 @@ func TestPersonOfAnswersOnePersonWhateverTheIdentifier(t *testing.T) {
 // routed to a directory. The identifier step found them, they hold no Identity
 // Link, and the bind writes none: the sign-in creates nobody.
 func TestPersonOfAnswersTheSessionPerson(t *testing.T) {
-	svc := testService(t, deps{rows: []Provider{storedProvider(testOrgID)}})
+	svc := testService(t, deps{rows: []Federation{storedFederation(testOrgID)}})
 
 	userID, err := svc.PersonOf(context.Background(), sessionBind, alice)
 	if err != nil {
@@ -327,7 +327,7 @@ func TestPersonOfAnswersTheSessionPerson(t *testing.T) {
 func TestPersonOfProvisionsWhenNoLinkHoldsTheExternalID(t *testing.T) {
 	other := aliceLink()
 	other.ExternalID = "a-stable-id-of-somebody-else"
-	svc := testService(t, deps{rows: []Provider{storedProvider(testOrgID)}, links: []Link{other}})
+	svc := testService(t, deps{rows: []Federation{storedFederation(testOrgID)}, links: []Link{other}})
 
 	userID, err := svc.PersonOf(context.Background(), firstBind, alice)
 	if err != nil {
@@ -346,7 +346,7 @@ func TestPersonOfProvisionsWhenNoLinkHoldsTheExternalID(t *testing.T) {
 // exists, and a create that ran on it would double the person.
 func TestPersonOfRefusesABrokenLinkRead(t *testing.T) {
 	svc := testService(t, deps{
-		rows:          []Provider{storedProvider(testOrgID)},
+		rows:          []Federation{storedFederation(testOrgID)},
 		findLinkFails: errors.New("the database is down"),
 	})
 
@@ -360,14 +360,14 @@ func TestPersonOfRefusesABrokenLinkRead(t *testing.T) {
 
 // TestPersonOfRefusesAnOffboardedLinkedPerson covers the person an administrator
 // deactivated or soft deleted while their directory account still lives. The
-// Identity Link still holds them, and the sign-in must refuse.
+// Federation Link still holds them, and the sign-in must refuse.
 //
 // The refusal says that the gateway cannot carry on. It is not a wrong password,
 // because the password was proved, and a slug of its own would say which people
 // the tenant holds.
 func TestPersonOfRefusesAnOffboardedLinkedPerson(t *testing.T) {
 	svc := testService(t, deps{
-		rows:             []Provider{storedProvider(testOrgID)},
+		rows:             []Federation{storedFederation(testOrgID)},
 		links:            []Link{aliceLink()},
 		personOffboarded: true,
 	})
@@ -384,7 +384,7 @@ func TestPersonOfRefusesAnOffboardedLinkedPerson(t *testing.T) {
 // TestProvisionRefusesAnAccountTheTenantHolds covers the first bind of somebody
 // this gateway already holds in a state the identifier step reads as absent.
 //
-// Provider Resolution case 1 answers a claimed domain and returns before the
+// Federation Resolution case 1 answers a claimed domain and returns before the
 // read that would have caught them, so the sign-in reaches the bind naming
 // nobody. Without this guard a soft-deleted person whose directory account still
 // lives is created again as a brand-new active person, and the offboarding is
@@ -411,7 +411,7 @@ func TestProvisionRefusesAnAccountTheTenantHolds(t *testing.T) {
 		"held under the email of the entry":          {alice.Email},
 	} {
 		t.Run(name, func(t *testing.T) {
-			svc := testService(t, deps{rows: []Provider{storedProvider(testOrgID)}, held: held})
+			svc := testService(t, deps{rows: []Federation{storedFederation(testOrgID)}, held: held})
 
 			_, err := svc.PersonOf(context.Background(), firstBind, alice)
 			if !errors.Is(err, ErrDirectory) {
@@ -427,7 +427,7 @@ func TestProvisionRefusesAnAccountTheTenantHolds(t *testing.T) {
 	}
 }
 
-// TestProvisionReadsTheTypedIdentifier covers a provider that maps no email
+// TestProvisionReadsTheTypedIdentifier covers a federation that maps no email
 // attribute, and a directory username the local row does not hold. The person
 // types the address the soft-deleted row carries, and that address is the only
 // form that names them. A guard that read the entry alone would create them
@@ -437,7 +437,7 @@ func TestProvisionReadsTheTypedIdentifier(t *testing.T) {
 	entry.Username = "a.adams"
 	entry.Email = ""
 
-	svc := testService(t, deps{rows: []Provider{storedProvider(testOrgID)}, held: []string{typed}})
+	svc := testService(t, deps{rows: []Federation{storedFederation(testOrgID)}, held: []string{typed}})
 
 	_, err := svc.Provision(context.Background(), firstBind, entry)
 	if !errors.Is(err, ErrDirectory) {
@@ -452,7 +452,7 @@ func TestProvisionReadsTheTypedIdentifier(t *testing.T) {
 // tenant already holds the account. A read that broke creates nobody: a first
 // bind that carried on would write the person the read was there to refuse.
 func TestProvisionRefusesABrokenHeldRead(t *testing.T) {
-	svc := testService(t, deps{rows: []Provider{storedProvider(testOrgID)}, heldBroken: true})
+	svc := testService(t, deps{rows: []Federation{storedFederation(testOrgID)}, heldBroken: true})
 
 	_, err := svc.Provision(context.Background(), firstBind, alice)
 	if err == nil {
@@ -464,11 +464,11 @@ func TestProvisionRefusesABrokenHeldRead(t *testing.T) {
 }
 
 // TestProvisionLogsNoIdentifierOnARefusal proves that the refusal of an account
-// the tenant already holds names the tenant and the provider, and never the
+// the tenant already holds names the tenant and the federation, and never the
 // identifier. The identifier is personal data, and the refusal is the one answer
 // that would say the tenant holds a row for it.
 func TestProvisionLogsNoIdentifierOnARefusal(t *testing.T) {
-	svc := testService(t, deps{rows: []Provider{storedProvider(testOrgID)}, held: []string{alice.Username}})
+	svc := testService(t, deps{rows: []Federation{storedFederation(testOrgID)}, held: []string{alice.Username}})
 
 	if _, err := svc.Provision(context.Background(), firstBind, alice); err == nil {
 		t.Fatal("the held account was created, want a refusal")
@@ -488,17 +488,17 @@ func TestProvisionLogsNoIdentifierOnARefusal(t *testing.T) {
 // hands it to somebody else, and the search of the next sign-in matches that
 // second entry alone.
 //
-// The bind proves the password of the second entry, and the Identity Link read
+// The bind proves the password of the second entry, and the Federation Link read
 // misses on its stable id. The person the session names holds a link with this
-// provider already, and that link names the first entry. The bind proved
+// federation already, and that link names the first entry. The bind proved
 // somebody else, so the sign-in stops.
 //
 // The refusal is ErrDirectory, and never a credential failure. The password was
 // proved, and a slug of its own would say which people the tenant holds.
 func TestPersonOfRefusesAnEntryAnotherLinkNames(t *testing.T) {
 	svc := testService(t, deps{
-		rows:   []Provider{storedProvider(testOrgID)},
-		linked: []string{tenantIdpID},
+		rows:   []Federation{storedFederation(testOrgID)},
+		linked: []string{tenantFederationID},
 	})
 
 	_, err := svc.PersonOf(context.Background(), sessionBind, alice)
@@ -514,13 +514,13 @@ func TestPersonOfRefusesAnEntryAnotherLinkNames(t *testing.T) {
 }
 
 // TestPersonOfAnswersTheSessionPersonLinkedElsewhere covers the documented
-// fallback of a person who holds a link with another provider. The link of this
-// provider is the one that must name the proved entry, and the person holds
+// fallback of a person who holds a link with another federation. The link of this
+// federation is the one that must name the proved entry, and the person holds
 // none, so the session person still answers.
 func TestPersonOfAnswersTheSessionPersonLinkedElsewhere(t *testing.T) {
 	svc := testService(t, deps{
-		rows:   []Provider{storedProvider(testOrgID)},
-		linked: []string{otherIdpID},
+		rows:   []Federation{storedFederation(testOrgID)},
+		linked: []string{otherFederationID},
 	})
 
 	userID, err := svc.PersonOf(context.Background(), sessionBind, alice)
@@ -534,9 +534,9 @@ func TestPersonOfAnswersTheSessionPersonLinkedElsewhere(t *testing.T) {
 
 // TestPersonOfRefusesABrokenLinkedRead covers the read of the links the session
 // person holds. A read that did not answer says nothing about whether the person
-// is linked to this provider, so the sign-in stops there.
+// is linked to this federation, so the sign-in stops there.
 func TestPersonOfRefusesABrokenLinkedRead(t *testing.T) {
-	svc := testService(t, deps{rows: []Provider{storedProvider(testOrgID)}})
+	svc := testService(t, deps{rows: []Federation{storedFederation(testOrgID)}})
 	broken := errors.New("the database is down")
 	svc.deps.Linked = func(context.Context, string, string) ([]string, error) { return nil, broken }
 

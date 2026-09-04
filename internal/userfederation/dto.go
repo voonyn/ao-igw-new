@@ -1,4 +1,4 @@
-package identityprovider
+package userfederation
 
 import (
 	"fmt"
@@ -15,16 +15,16 @@ var modeSchemes = map[int]string{
 	ModeLDAPS:    "ldaps://",
 }
 
-// Body is the body of one provider write. The console submits the whole form,
+// Body is the body of one federation write. The console submits the whole form,
 // so every field except the bind password replaces what is stored.
 //
 // BindPassword is the one write-only field, and it is a pointer because three
 // answers are possible: absent keeps the stored credential, an empty string
 // clears it, and a value replaces it. No read path answers it in any shape.
 //
-// OrgID carries the level. An empty string is the tenant-wide provider, and a
+// OrgID carries the level. An empty string is the tenant-wide federation, and a
 // UUID is that organization's own. DefaultOrgID is required at tenant level,
-// because users.org_id is mandatory and a tenant-wide provider that names no
+// because users.org_id is mandatory and a tenant-wide federation that names no
 // organization would create nobody.
 //
 // ConfirmPlaintext is the explicit confirmation a plain bind needs. A plain bind
@@ -32,7 +32,7 @@ var modeSchemes = map[int]string{
 // without it.
 //
 // AttrID and AttrUsername are the two attributes the gateway cannot work
-// without: the id keys the Identity Link, and the username keys the person.
+// without: the id keys the Federation Link, and the username keys the person.
 // Every other mapped attribute is optional, AttrEmail included. A directory
 // that publishes no mail attribute is a real directory, and the read of one
 // entry already answers the empty case.
@@ -68,7 +68,7 @@ type Body struct {
 	Domains []string `json:"domains" validate:"omitempty,max=50,dive,required,fqdn,max=255"`
 }
 
-// View is one provider as the console reads it.
+// View is one federation as the console reads it.
 //
 // BindPasswordSet reports that a credential is stored. The value is never
 // carried: the console renders a badge and a change button from this one flag.
@@ -109,7 +109,7 @@ type View struct {
 //
 // OrgID carries the level, the same way Body.OrgID does. The preview names the
 // people of the tenant, so the level decides nothing about the answer and
-// everything about who may read it: a caller who cannot write a provider at that
+// everything about who may read it: a caller who cannot write a federation at that
 // level cannot list the people a claim there would move.
 //
 // The bounds match Body.Domains. A preview of a list the save would refuse as
@@ -144,22 +144,22 @@ type MovedPerson struct {
 	Email    string `json:"email"`
 }
 
-// LinkView is one Identity Link as the console reads it.
+// LinkView is one Federation Link as the console reads it.
 //
-// IdpID is the handle the unlink route takes. One person holds at most one
-// account per provider, which the unique key enforces, so the provider names
+// FederationID is the handle the unlink route takes. One person holds at most one
+// account per federation, which the unique key enforces, so the federation names
 // exactly one link of one person.
 type LinkView struct {
-	IdpID      string    `json:"idpId"`
-	IdpName    string    `json:"idpName"`
-	ExternalID string    `json:"externalId"`
-	UserID     string    `json:"userId"`
-	Created    time.Time `json:"created"`
+	FederationID   string    `json:"idpId"`
+	FederationName string    `json:"idpName"`
+	ExternalID     string    `json:"externalId"`
+	UserID         string    `json:"userId"`
+	Created        time.Time `json:"created"`
 }
 
-// newView maps one provider into the answer. The bind password is not in it, in
+// newView maps one federation into the answer. The bind password is not in it, in
 // any shape: the flag reports that one is stored and nothing more.
-func newView(row Provider) View {
+func newView(row Federation) View {
 	return View{
 		ID:           row.ID,
 		TenantID:     row.TenantID,
@@ -193,14 +193,14 @@ func newView(row Provider) View {
 	}
 }
 
-// newLinkView maps one Identity Link into the answer.
+// newLinkView maps one Federation Link into the answer.
 func newLinkView(row Link) LinkView {
 	return LinkView{
-		IdpID:      row.IdpID,
-		IdpName:    row.ProviderName,
-		ExternalID: row.ExternalID,
-		UserID:     row.UserID,
-		Created:    row.CreatedAt,
+		FederationID:   row.FederationID,
+		FederationName: row.FederationName,
+		ExternalID:     row.ExternalID,
+		UserID:         row.UserID,
+		Created:        row.CreatedAt,
 	}
 }
 
@@ -220,10 +220,10 @@ func list(values []string) []string {
 // is stored, an empty string clears it, and a value replaces it.
 //
 // The level is not written here. A create takes it from the body and an update
-// keeps the stored one, so no write moves a provider between the two levels.
-func (b Body) apply(stored Provider) Provider {
+// keeps the stored one, so no write moves a federation between the two levels.
+func (b Body) apply(stored Federation) Federation {
 	stored.Name = b.Name
-	stored.Type = TypeLDAP
+	stored.Type = TypeDirectory
 	stored.State = b.State
 	stored.DefaultOrgID = b.DefaultOrgID
 

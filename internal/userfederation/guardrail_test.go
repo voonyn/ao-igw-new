@@ -1,4 +1,4 @@
-package identityprovider
+package userfederation
 
 import (
 	"context"
@@ -23,13 +23,13 @@ var (
 )
 
 // ownerRoles is the caller of every test here: a tenant manager, who writes a
-// provider at either level.
+// federation at either level.
 func ownerRoles() []string { return []string{tenant.RoleIAMOwner} }
 
 // TestCreateRefusesAClaimThatTakesTheLastLocalOwner covers the first guard rail
 // of docs/specs/0002-directory-sign-in.md at the domain claim.
 //
-// Provider Resolution case 1 outranks case 3, so the claim routes every person
+// Federation Resolution case 1 outranks case 3, so the claim routes every person
 // whose email address carries corp.example to the directory, the people who hold
 // a local password included. The only local owner of the tenant is one of them.
 func TestCreateRefusesAClaimThatTakesTheLastLocalOwner(t *testing.T) {
@@ -74,15 +74,15 @@ func TestCreateIgnoresTheRailForATenantWithNoLocalOwner(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 	if len(written) != 1 {
-		t.Errorf("the create wrote %d providers, want one", len(written))
+		t.Errorf("the create wrote %d federations, want one", len(written))
 	}
 }
 
-// TestAnInactiveProviderClaimsNobody covers the state the write stores. An
-// inactive provider routes nobody, so its claim takes no owner and the rail says
+// TestAnInactiveFederationClaimsNobody covers the state the write stores. An
+// inactive federation routes nobody, so its claim takes no owner and the rail says
 // nothing. This is how an administrator prepares a directory before they switch
 // it on.
-func TestAnInactiveProviderClaimsNobody(t *testing.T) {
+func TestAnInactiveFederationClaimsNobody(t *testing.T) {
 	off := body()
 	off.State = StateInactive
 	svc := testService(t, deps{
@@ -94,21 +94,21 @@ func TestAnInactiveProviderClaimsNobody(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 	if len(written) != 1 {
-		t.Errorf("the create wrote %d providers, want one", len(written))
+		t.Errorf("the create wrote %d federations, want one", len(written))
 	}
 }
 
 // TestUpdateRefusesAClaimThatTakesTheLastLocalOwner covers the same rail on the
-// update. A provider switched on with a claim ties the same people the create
+// update. A federation switched on with a claim ties the same people the create
 // would.
 func TestUpdateRefusesAClaimThatTakesTheLastLocalOwner(t *testing.T) {
 	svc := testService(t, deps{
 		tenantRoles: ownerRoles(),
-		rows:        []Provider{storedProvider(testOrgID)},
+		rows:        []Federation{storedFederation(testOrgID)},
 		localOwners: []tenant.LocalOwner{claimedOwner},
 	})
 
-	_, err := svc.Update(context.Background(), admin, tenantIdpID, body())
+	_, err := svc.Update(context.Background(), admin, tenantFederationID, body())
 	if !errors.Is(err, tenant.ErrLastLocalOwner) {
 		t.Fatalf("err = %v, want tenant.ErrLastLocalOwner", err)
 	}
@@ -124,11 +124,11 @@ func TestUnlinkRefusesTheLastLinkOfAPersonWithNoPassword(t *testing.T) {
 	svc := testService(t, deps{
 		tenantRoles: ownerRoles(),
 		userOrg:     testOrgID,
-		links:       []Link{{TenantID: testTenantID, IdpID: tenantIdpID, UserID: personID}},
-		linked:      []string{tenantIdpID},
+		links:       []Link{{TenantID: testTenantID, FederationID: tenantFederationID, UserID: personID}},
+		linked:      []string{tenantFederationID},
 	})
 
-	err := svc.Unlink(context.Background(), admin, personID, tenantIdpID)
+	err := svc.Unlink(context.Background(), admin, personID, tenantFederationID)
 	if !errors.Is(err, ErrLastLink) {
 		t.Fatalf("err = %v, want ErrLastLink", err)
 	}
@@ -145,11 +145,11 @@ func TestUnlinkAllowsAPersonWhoHoldsAPassword(t *testing.T) {
 		tenantRoles: ownerRoles(),
 		userOrg:     testOrgID,
 		hasPassword: true,
-		links:       []Link{{TenantID: testTenantID, IdpID: tenantIdpID, UserID: personID}},
-		linked:      []string{tenantIdpID},
+		links:       []Link{{TenantID: testTenantID, FederationID: tenantFederationID, UserID: personID}},
+		linked:      []string{tenantFederationID},
 	})
 
-	if err := svc.Unlink(context.Background(), admin, personID, tenantIdpID); err != nil {
+	if err := svc.Unlink(context.Background(), admin, personID, tenantFederationID); err != nil {
 		t.Fatalf("Unlink: %v", err)
 	}
 	if len(unlinked) != 1 {
@@ -164,13 +164,13 @@ func TestUnlinkAllowsOneLinkOfTwo(t *testing.T) {
 		tenantRoles: ownerRoles(),
 		userOrg:     testOrgID,
 		links: []Link{
-			{TenantID: testTenantID, IdpID: tenantIdpID, UserID: personID},
-			{TenantID: testTenantID, IdpID: orgIdpID, UserID: personID},
+			{TenantID: testTenantID, FederationID: tenantFederationID, UserID: personID},
+			{TenantID: testTenantID, FederationID: orgFederationID, UserID: personID},
 		},
-		linked: []string{orgIdpID, tenantIdpID},
+		linked: []string{orgFederationID, tenantFederationID},
 	})
 
-	if err := svc.Unlink(context.Background(), admin, personID, tenantIdpID); err != nil {
+	if err := svc.Unlink(context.Background(), admin, personID, tenantFederationID); err != nil {
 		t.Fatalf("Unlink: %v", err)
 	}
 	if len(unlinked) != 1 {
@@ -178,34 +178,34 @@ func TestUnlinkAllowsOneLinkOfTwo(t *testing.T) {
 	}
 }
 
-// TestUnlinkLeavesTheMissToTheDelete covers a provider the person holds no link
+// TestUnlinkLeavesTheMissToTheDelete covers a federation the person holds no link
 // with. The rail must not turn that into a refusal of its own: DeleteLink
 // answers the miss, and the route answers not_found.
 func TestUnlinkLeavesTheMissToTheDelete(t *testing.T) {
 	svc := testService(t, deps{
 		tenantRoles: ownerRoles(),
 		userOrg:     testOrgID,
-		links:       []Link{{TenantID: testTenantID, IdpID: orgIdpID, UserID: personID}},
-		linked:      []string{orgIdpID},
+		links:       []Link{{TenantID: testTenantID, FederationID: orgFederationID, UserID: personID}},
+		linked:      []string{orgFederationID},
 	})
 
-	if err := svc.Unlink(context.Background(), admin, personID, tenantIdpID); err != nil {
+	if err := svc.Unlink(context.Background(), admin, personID, tenantFederationID); err != nil {
 		t.Fatalf("Unlink: %v", err)
 	}
 }
 
-// TestUnlinkAllowsTheLinkOfADeadProvider covers the rail against the third one.
-// The person is tied to a provider that is inactive or soft deleted, so nothing
+// TestUnlinkAllowsTheLinkOfADeadFederation covers the rail against the third one.
+// The person is tied to a federation that is inactive or soft deleted, so nothing
 // signs them in already, and a refusal would only trap the administrator who is
 // moving them off a directory that is gone for good.
-func TestUnlinkAllowsTheLinkOfADeadProvider(t *testing.T) {
+func TestUnlinkAllowsTheLinkOfADeadFederation(t *testing.T) {
 	svc := testService(t, deps{
 		tenantRoles: ownerRoles(),
 		userOrg:     testOrgID,
-		links:       []Link{{TenantID: testTenantID, IdpID: tenantIdpID, UserID: personID}},
+		links:       []Link{{TenantID: testTenantID, FederationID: tenantFederationID, UserID: personID}},
 	})
 
-	if err := svc.Unlink(context.Background(), admin, personID, tenantIdpID); err != nil {
+	if err := svc.Unlink(context.Background(), admin, personID, tenantFederationID); err != nil {
 		t.Fatalf("Unlink: %v", err)
 	}
 	if len(unlinked) != 1 {
@@ -313,7 +313,7 @@ var (
 // people a claim moves before it saves.
 //
 // The claim on corp.example moves a local IAM_OWNER and a person who holds no
-// role. Provider Resolution case 1 outranks every case below it, so the preview
+// role. Federation Resolution case 1 outranks every case below it, so the preview
 // names both. A preview that named the owner subset would read as the whole
 // blast radius, and the person it dropped would still move.
 func TestPreviewClaimNamesEverybodyTheClaimMoves(t *testing.T) {
@@ -343,7 +343,7 @@ func TestPreviewClaimNamesEverybodyTheClaimMoves(t *testing.T) {
 	}
 }
 
-// TestPreviewClaimReadsBothFormsOfTheIdentifier covers the second form Provider
+// TestPreviewClaimReadsBothFormsOfTheIdentifier covers the second form Federation
 // Resolution case 1 reads. A person whose username is an address at a claimed
 // domain is routed by the claim even when the tenant holds another address for
 // them, so a preview that read the email alone would under-report.
@@ -387,11 +387,11 @@ func TestPreviewClaimAnswersNobodyForAnEmptyList(t *testing.T) {
 	}
 }
 
-// TestPreviewClaimRefusesACallerWhoCannotWriteTheProvider covers the gate. The
+// TestPreviewClaimRefusesACallerWhoCannotWriteTheFederation covers the gate. The
 // preview names the people of the tenant, so the right to read it is the right
 // to write the claim. An ORG_OWNER of one organization asks for a tenant-wide
 // claim here.
-func TestPreviewClaimRefusesACallerWhoCannotWriteTheProvider(t *testing.T) {
+func TestPreviewClaimRefusesACallerWhoCannotWriteTheFederation(t *testing.T) {
 	svc := testService(t, deps{
 		memberships: []organization.Membership{{OrgID: testOrgID, Roles: []string{organization.RoleOrgOwner}}},
 		moves:       []tenant.DomainPerson{movedOwner, movedPerson},

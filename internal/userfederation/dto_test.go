@@ -1,4 +1,4 @@
-package identityprovider
+package userfederation
 
 import (
 	"testing"
@@ -6,7 +6,7 @@ import (
 	"github.com/go-playground/validator/v10"
 )
 
-// TestBodyRules covers the tags on the provider body. The backend is the
+// TestBodyRules covers the tags on the federation body. The backend is the
 // enforcement point, so the rules are proved here and not in the console.
 //
 // The plaintext confirmation is the one that matters most: mode 1 puts the
@@ -26,7 +26,7 @@ func TestBodyRules(t *testing.T) {
 		body  Body
 		valid bool
 	}{
-		{"an LDAPS provider of one organization", body(), true},
+		{"an LDAPS federation of one organization", body(), true},
 		{"a plain bind without the confirmation", with(func(b *Body) {
 			b.Mode, b.Servers = ModePlain, []string{"ldap://dc1.corp.example:389"}
 		}), false},

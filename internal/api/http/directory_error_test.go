@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"testing"
 
-	"alphaomega/identitygateway/internal/identityprovider"
 	"alphaomega/identitygateway/internal/session"
 	"alphaomega/identitygateway/internal/user"
+	"alphaomega/identitygateway/internal/userfederation"
 )
 
 // TestDirectoryError covers the crossing between the LDAP client and the login
@@ -23,27 +23,27 @@ func TestDirectoryError(t *testing.T) {
 		want error
 	}{
 		{"a bind that proved the password", nil, nil},
-		{"a wrong password", identityprovider.ErrWrongPassword, session.ErrBadCredentials},
-		{"no such entry", identityprovider.ErrNoEntry, session.ErrBadCredentials},
-		{"a disabled provider", identityprovider.ErrDisabled, session.ErrDirectoryDisabled},
-		{"a spent budget", identityprovider.ErrTooManyBinds, session.ErrTooManyBinds},
-		{"a directory that did not answer", identityprovider.ErrDirectory, session.ErrDirectoryUnavailable},
-		{"a budget nobody could read", identityprovider.ErrBindUnavailable, session.ErrDirectoryUnavailable},
+		{"a wrong password", userfederation.ErrWrongPassword, session.ErrBadCredentials},
+		{"no such entry", userfederation.ErrNoEntry, session.ErrBadCredentials},
+		{"a disabled provider", userfederation.ErrDisabled, session.ErrDirectoryDisabled},
+		{"a spent budget", userfederation.ErrTooManyProofs, session.ErrTooManyBinds},
+		{"a directory that did not answer", userfederation.ErrDirectory, session.ErrDirectoryUnavailable},
+		{"a budget nobody could read", userfederation.ErrProofUnavailable, session.ErrDirectoryUnavailable},
 		{"a broken read of the row", errors.New("the database is down"), session.ErrDirectoryUnavailable},
 		{
 			"a provider that names no organization",
-			identityprovider.ErrNoOrganization, session.ErrDirectoryMisconfigured,
+			userfederation.ErrNoOrganization, session.ErrDirectoryMisconfigured,
 		},
 		{
 			"an entry that carries no username",
-			identityprovider.ErrNoUsername, session.ErrDirectoryMisconfigured,
+			userfederation.ErrNoUsername, session.ErrDirectoryMisconfigured,
 		},
 		// The three deliberate refusals of provision.go carry ErrDirectory, and
 		// they keep the answer above. Each one is proved and refused, and a slug
 		// of its own would say which people a tenant holds.
 		{
 			"a person an identity link names who cannot sign in",
-			fmt.Errorf("%w: tenant t-1, user u-1", identityprovider.ErrDirectory),
+			fmt.Errorf("%w: tenant t-1, user u-1", userfederation.ErrDirectory),
 			session.ErrDirectoryUnavailable,
 		},
 	}
@@ -104,12 +104,12 @@ func TestAccountDirectoryError(t *testing.T) {
 		want error
 	}{
 		{"a bind that proved the password", nil, nil},
-		{"a wrong password", identityprovider.ErrWrongPassword, user.ErrBadPassword},
-		{"no single directory entry proves the person", identityprovider.ErrNoEntry, user.ErrDirectoryNoEntry},
-		{"a disabled provider", identityprovider.ErrDisabled, user.ErrDirectoryUnavailable},
-		{"a spent budget", identityprovider.ErrTooManyBinds, user.ErrDirectoryUnavailable},
-		{"a directory that did not answer", identityprovider.ErrDirectory, user.ErrDirectoryUnavailable},
-		{"a budget nobody could read", identityprovider.ErrBindUnavailable, user.ErrDirectoryUnavailable},
+		{"a wrong password", userfederation.ErrWrongPassword, user.ErrBadPassword},
+		{"no single directory entry proves the person", userfederation.ErrNoEntry, user.ErrDirectoryNoEntry},
+		{"a disabled provider", userfederation.ErrDisabled, user.ErrDirectoryUnavailable},
+		{"a spent budget", userfederation.ErrTooManyProofs, user.ErrDirectoryUnavailable},
+		{"a directory that did not answer", userfederation.ErrDirectory, user.ErrDirectoryUnavailable},
+		{"a budget nobody could read", userfederation.ErrProofUnavailable, user.ErrDirectoryUnavailable},
 		{"a broken read of the row", errors.New("the database is down"), user.ErrDirectoryUnavailable},
 	}
 

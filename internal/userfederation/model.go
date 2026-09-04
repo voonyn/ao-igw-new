@@ -1,11 +1,11 @@
-// Package identityprovider holds the directories a tenant registers: the
-// connection, the search, the attribute names, the domains a provider claims,
-// and the Identity Link that ties one directory account to one person.
+// Package userfederation holds the directories a tenant registers: the
+// connection, the search, the attribute names, the domains a federation claims,
+// and the Federation Link that ties one directory account to one person.
 //
 // The package imports neither the user domain nor the login session domain. It
 // takes what it needs as function values in Deps, so the composition root wires
 // every crossing.
-package identityprovider
+package userfederation
 
 import (
 	"time"
@@ -13,20 +13,31 @@ import (
 	"github.com/uptrace/bun"
 )
 
-// The values identity_providers.type holds. LDAP is the only type this gateway
-// serves. A redirect provider adds a value here and columns beside the LDAP
-// ones. See docs/adr/0013.
-const TypeLDAP = 1
+// The values user_federations.type holds. Type names the Federation Method,
+// which is the shape of the row and the code path. Directory is the only method
+// this gateway serves. The database method is recorded and adds nullable columns
+// beside the directory ones. See docs/adr/0014.
+const TypeDirectory = 1
 
-// The values identity_providers.state holds. An inactive provider and a
-// soft-deleted provider behave alike at sign-in: both refuse every person tied
+// The values user_federations.server_type holds. ServerType names the server the
+// method talks to, and no code branches on it today. It exists so the console
+// reopens a saved form and shows the server that was picked. The values are
+// numbered globally and never restart per method, so a database method takes 3
+// and 4. See docs/adr/0014.
+const (
+	ServerTypeLDAP            = 1
+	ServerTypeActiveDirectory = 2
+)
+
+// The values user_federations.state holds. An inactive federation and a
+// soft-deleted federation behave alike at sign-in: both refuse every person tied
 // to them.
 const (
 	StateActive   = 1
 	StateInactive = 2
 )
 
-// The values identity_providers.mode holds. It is the transport of one LDAP
+// The values user_federations.mode holds. It is the transport of one LDAP
 // connection, and it defaults to LDAPS. A boolean cannot tell StartTLS from
 // LDAPS, because those two differ in port and in handshake.
 const (
@@ -35,7 +46,7 @@ const (
 	ModeLDAPS    = 3
 )
 
-// Provider is one row of identity_providers.
+// Federation is one row of user_federations.
 //
 // OrgID carries the level: an empty string is the tenant-wide row, and a UUID is
 // that organization's own. DefaultOrgID names the organization a bind creates
@@ -46,16 +57,17 @@ const (
 // it on the way in and opens it on the way out, so no other layer handles the
 // ciphertext. No view and no log line ever carries either one.
 //
-// Domains is not a column. It is the claim list of identity_provider_domains,
+// Domains is not a column. It is the claim list of user_federation_domains,
 // which the service reads beside the row.
-type Provider struct {
-	bun.BaseModel `bun:"table:identity_providers,alias:ip"`
+type Federation struct {
+	bun.BaseModel `bun:"table:user_federations,alias:uf"`
 
 	ID           string `bun:"id,pk"`
 	TenantID     string `bun:"tenant_id,pk"`
 	OrgID        string `bun:"org_id"`
 	Name         string `bun:"name"`
 	Type         int    `bun:"type"`
+	ServerType   int    `bun:"server_type"`
 	State        int    `bun:"state"`
 	DefaultOrgID string `bun:"default_org_id,nullzero"`
 
@@ -85,40 +97,40 @@ type Provider struct {
 	Domains      []string `bun:"-"`
 }
 
-// Domain is one row of identity_provider_domains: one email domain a provider
+// Domain is one row of user_federation_domains: one email domain a federation
 // claims. The claim is an entity, so it carries deleted_at, and a re-claim
 // revives the deleted row.
 //
 // (tenant_id, domain) is the primary key, so one domain belongs to at most one
-// provider of a tenant and the database refuses the second claim.
+// federation of a tenant and the database refuses the second claim.
 type Domain struct {
-	bun.BaseModel `bun:"table:identity_provider_domains,alias:ipd"`
+	bun.BaseModel `bun:"table:user_federation_domains,alias:ufd"`
 
-	TenantID string `bun:"tenant_id,pk"`
-	Domain   string `bun:"domain,pk"`
-	IdpID    string `bun:"idp_id"`
+	TenantID     string `bun:"tenant_id,pk"`
+	Domain       string `bun:"domain,pk"`
+	FederationID string `bun:"federation_id"`
 
 	DeletedAt time.Time `bun:",soft_delete,nullzero"`
 }
 
-// Link is one row of identity_provider_user_links: the Identity Link that ties
+// Link is one row of user_federation_links: the Federation Link that ties
 // one directory account to one person.
 //
 // It is not an entity. It carries no deleted_at and it is hard deleted, because
 // nobody re-reads an unlinked account: the idp.unlinked audit row is the record.
 //
 // ExternalID is the stable id of the directory, objectGUID in Active Directory,
-// and never the username. ProviderName is read from identity_providers, because
+// and never the username. FederationName is read from user_federations, because
 // the console renders the directory a person is tied to.
 type Link struct {
-	bun.BaseModel `bun:"table:identity_provider_user_links,alias:ipl"`
+	bun.BaseModel `bun:"table:user_federation_links,alias:ufl"`
 
-	TenantID   string `bun:"tenant_id,pk"`
-	IdpID      string `bun:"idp_id,pk"`
-	ExternalID string `bun:"external_id,pk"`
-	UserID     string `bun:"user_id"`
+	TenantID     string `bun:"tenant_id,pk"`
+	FederationID string `bun:"federation_id,pk"`
+	ExternalID   string `bun:"external_id,pk"`
+	UserID       string `bun:"user_id"`
 
 	CreatedAt time.Time `bun:"created_at,nullzero"`
 
-	ProviderName string `bun:"provider_name,scanonly"`
+	FederationName string `bun:"federation_name,scanonly"`
 }

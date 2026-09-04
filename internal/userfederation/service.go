@@ -1,4 +1,4 @@
-package identityprovider
+package userfederation
 
 import (
 	"context"
@@ -22,20 +22,20 @@ import (
 var ErrNotAdmin = errors.New("no administrative role")
 
 // ErrForbidden reports that the person administers this tenant or another
-// organization, but not the level the provider belongs to. A tenant-wide
-// provider is written by a tenant manager alone.
+// organization, but not the level the federation belongs to. A tenant-wide
+// federation is written by a tenant manager alone.
 var ErrForbidden = errors.New("cannot write this identity provider")
 
 // ErrServerScheme reports a server string that does not match the transport. A
 // plain bind and a StartTLS bind carry ldap://, and LDAPS carries ldaps://.
 var ErrServerScheme = errors.New("the server does not match the transport")
 
-// ErrLevelFixed reports a write that would move a provider between the tenant
+// ErrLevelFixed reports a write that would move a federation between the tenant
 // level and an organization. The level decides which organization a bind creates
 // people in, so a move would relocate every person the next bind creates.
 var ErrLevelFixed = errors.New("an identity provider does not move between levels")
 
-// ErrLastLink reports the removal of the last Identity Link of a person who
+// ErrLastLink reports the removal of the last Federation Link of a person who
 // holds no password hash. That person signs in through the directory and through
 // nothing else, so the removal locks them out for ever.
 //
@@ -57,41 +57,41 @@ type Actor actor.Actor
 // The reads and writes the service composes its answers from. Each one is a
 // function value, so the logic is testable without a database.
 type (
-	// Lister reads every live provider of one tenant.
-	Lister func(ctx context.Context, tenantID string) ([]Provider, error)
+	// Lister reads every live federation of one tenant.
+	Lister func(ctx context.Context, tenantID string) ([]Federation, error)
 
-	// Finder reads one live provider. It returns ErrNotFound on a miss.
-	Finder func(ctx context.Context, tenantID, idpID string) (Provider, error)
+	// Finder reads one live federation. It returns ErrNotFound on a miss.
+	Finder func(ctx context.Context, tenantID, federationID string) (Federation, error)
 
-	// Inserter writes one new provider.
-	Inserter func(ctx context.Context, row Provider) error
+	// Inserter writes one new federation.
+	Inserter func(ctx context.Context, row Federation) error
 
-	// Updater writes every field of one provider.
-	Updater func(ctx context.Context, row Provider) error
+	// Updater writes every field of one federation.
+	Updater func(ctx context.Context, row Federation) error
 
-	// Deleter marks one provider deleted and releases the domains it claimed.
-	Deleter func(ctx context.Context, tenantID, idpID string) error
+	// Deleter marks one federation deleted and releases the domains it claimed.
+	Deleter func(ctx context.Context, tenantID, federationID string) error
 
-	// DomainLister reads the live claims of the providers it is given.
-	DomainLister func(ctx context.Context, tenantID string, idpIDs []string) ([]Domain, error)
+	// DomainLister reads the live claims of the federations it is given.
+	DomainLister func(ctx context.Context, tenantID string, federationIDs []string) ([]Domain, error)
 
-	// Claimer replaces the whole domain list of one provider. It returns
-	// ErrDomainClaimed when another live provider already holds one of them.
-	Claimer func(ctx context.Context, tenantID, idpID string, claimed []string) error
+	// Claimer replaces the whole domain list of one federation. It returns
+	// ErrDomainClaimed when another live federation already holds one of them.
+	Claimer func(ctx context.Context, tenantID, federationID string, claimed []string) error
 
-	// LinkLister reads every Identity Link of one person.
+	// LinkLister reads every Federation Link of one person.
 	LinkLister func(ctx context.Context, tenantID, userID string) ([]Link, error)
 
-	// LinkDeleter removes the Identity Link one person holds with one provider.
-	LinkDeleter func(ctx context.Context, tenantID, idpID, userID string) error
+	// LinkDeleter removes the Federation Link one person holds with one federation.
+	LinkDeleter func(ctx context.Context, tenantID, federationID, userID string) error
 
-	// LinkWriter writes one Identity Link. It runs on the caller's transaction.
+	// LinkWriter writes one Federation Link. It runs on the caller's transaction.
 	LinkWriter func(ctx context.Context, row Link) error
 
 	// LinkedUserFinder answers the person one directory account is tied to, by
-	// the stable external id the Identity Link holds. A miss answers
+	// the stable external id the Federation Link holds. A miss answers
 	// ErrLinkNotFound.
-	LinkedUserFinder func(ctx context.Context, tenantID, idpID, externalID string) (string, error)
+	LinkedUserFinder func(ctx context.Context, tenantID, federationID, externalID string) (string, error)
 
 	// SignInReporter reports whether one person can still sign in. A person the
 	// tenant does not hold, a deactivated one, a soft-deleted one, and a machine
@@ -148,7 +148,7 @@ type (
 	RateLimiter func(ctx context.Context, key string, limit int, window time.Duration) (bool, error)
 
 	// RateReleaser gives one hit of key back. cache.Client.ReleaseInWindow
-	// satisfies it. See Service.releaseBind.
+	// satisfies it. See Service.releaseProof.
 	RateReleaser func(ctx context.Context, key string) error
 )
 
@@ -164,11 +164,11 @@ type Deps struct {
 
 	Links LinkLister
 
-	// Linked is the live active providers that take a typed password and that
-	// one person holds an Identity Link with. The resolver names the provider of
+	// Linked is the live active federations that take a typed password and that
+	// one person holds a Federation Link with. The resolver names the federation of
 	// a sign-in with it, the guard rail on the unlink counts the links that
 	// still sign somebody in, and Service.PersonOf refuses a bind whose entry
-	// another link of the same provider names.
+	// another link of the same federation names.
 	Linked       LinkedFinder
 	DeleteLink   LinkDeleter
 	WriteLink    LinkWriter
@@ -193,7 +193,7 @@ type Deps struct {
 
 	// The two reads behind the guard rails. LocalOwners refuses a domain claim
 	// that would take the last local IAM_OWNER of the tenant, and HasPassword
-	// refuses the removal of the last Identity Link of a person who holds no
+	// refuses the removal of the last Federation Link of a person who holds no
 	// password hash. See docs/specs/0002-directory-sign-in.md.
 	LocalOwners LocalOwnerLister
 	HasPassword PasswordReporter
@@ -206,12 +206,12 @@ type Deps struct {
 	// Allow is the connection test budget and the sign-in bind budget. Both are
 	// Redis-only exceptions to the stateless rule CLAUDE.md lists: no table holds
 	// either counter, and a cache failure refuses the call instead of letting an
-	// outbound call through. See Service.spendTest and Service.spendBind.
+	// outbound call through. See Service.spendTest and Service.spendProof.
 	//
 	// Release gives one bind back when the directory did not answer, so an outage
 	// costs the person nothing. Only Service.Prove releases: the connection test
 	// meters a call its own administrator drove, and a refund there would leave
-	// that call unmetered. See Service.releaseBind.
+	// that call unmetered. See Service.releaseProof.
 	Allow   RateLimiter
 	Release RateReleaser
 
@@ -220,7 +220,7 @@ type Deps struct {
 	Log   logger.Logger
 }
 
-// Service serves the identity providers of one tenant to the console.
+// Service serves the user federations of one tenant to the console.
 //
 // No method of this service ever puts a bind password in a log line, in an audit
 // row, or in an answer. The repository opens the credential on a read because
@@ -234,7 +234,7 @@ func NewService(deps Deps) *Service {
 	return &Service{deps: deps, log: deps.Log}
 }
 
-// List reads every live provider of the tenant, with the domains each one
+// List reads every live federation of the tenant, with the domains each one
 // claims.
 //
 // Every administrator of the tenant reads the whole list, the same way the
@@ -261,14 +261,14 @@ func (s *Service) List(ctx context.Context, a Actor) ([]View, error) {
 	if err != nil {
 		return nil, s.fail(a, "read the claimed domains", err)
 	}
-	byProvider := make(map[string][]string, len(rows))
+	byFederation := make(map[string][]string, len(rows))
 	for _, claim := range claims {
-		byProvider[claim.IdpID] = append(byProvider[claim.IdpID], claim.Domain)
+		byFederation[claim.FederationID] = append(byFederation[claim.FederationID], claim.Domain)
 	}
 
 	views := make([]View, 0, len(rows))
 	for _, row := range rows {
-		row.Domains = byProvider[row.ID]
+		row.Domains = byFederation[row.ID]
 		views = append(views, newView(row))
 	}
 
@@ -278,31 +278,31 @@ func (s *Service) List(ctx context.Context, a Actor) ([]View, error) {
 	return views, nil
 }
 
-// Find reads one live provider of the tenant, with the domains it claims. An id
-// nobody holds, and a soft-deleted provider, both answer ErrNotFound.
-func (s *Service) Find(ctx context.Context, a Actor, idpID string) (View, error) {
+// Find reads one live federation of the tenant, with the domains it claims. An id
+// nobody holds, and a soft-deleted federation, both answer ErrNotFound.
+func (s *Service) Find(ctx context.Context, a Actor, federationID string) (View, error) {
 	s.log.Debug("read identity provider",
-		logger.String("tenant_id", a.TenantID), logger.String("idp_id", idpID), logger.RequestID(ctx))
+		logger.String("tenant_id", a.TenantID), logger.String("idp_id", federationID), logger.RequestID(ctx))
 
 	if _, err := s.admitted(ctx, a); err != nil {
 		return View{}, err
 	}
 
-	row, err := s.withDomains(ctx, a, idpID)
+	row, err := s.withDomains(ctx, a, federationID)
 	if err != nil {
 		return View{}, err
 	}
 
 	s.log.Debug("read the identity provider",
-		logger.String("tenant_id", a.TenantID), logger.String("idp_id", idpID), logger.RequestID(ctx))
+		logger.String("tenant_id", a.TenantID), logger.String("idp_id", federationID), logger.RequestID(ctx))
 	return newView(row), nil
 }
 
 // Create registers one directory at the level the body names. A tenant manager
 // creates one anywhere, and an ORG_OWNER creates one in its own organization.
 //
-// The provider, its domain claims, and the audit event land on one transaction.
-// A domain another live provider already holds answers ErrDomainClaimed and
+// The federation, its domain claims, and the audit event land on one transaction.
+// A domain another live federation already holds answers ErrDomainClaimed and
 // leaves nothing behind.
 func (s *Service) Create(ctx context.Context, a Actor, body Body) (View, error) {
 	s.log.Debug("create identity provider",
@@ -320,7 +320,7 @@ func (s *Service) Create(ctx context.Context, a Actor, body Body) (View, error) 
 		return View{}, err
 	}
 
-	row := body.apply(Provider{
+	row := body.apply(Federation{
 		ID:        utils.NewUUIDv7(),
 		TenantID:  a.TenantID,
 		OrgID:     body.OrgID,
@@ -350,24 +350,24 @@ func (s *Service) Create(ctx context.Context, a Actor, body Body) (View, error) 
 	return newView(row), nil
 }
 
-// Update writes every field of one provider, and replaces the domains it claims.
+// Update writes every field of one federation, and replaces the domains it claims.
 //
-// The level is not writable. A provider that moved between the tenant level and
+// The level is not writable. A federation that moved between the tenant level and
 // an organization would relocate every person the next bind creates, so a body
 // that names another level answers ErrLevelFixed.
 //
 // The bind password is write-only. An absent field keeps the stored credential,
 // an empty string clears it, and a value replaces it.
-func (s *Service) Update(ctx context.Context, a Actor, idpID string, body Body) (View, error) {
+func (s *Service) Update(ctx context.Context, a Actor, federationID string, body Body) (View, error) {
 	s.log.Debug("update identity provider",
-		logger.String("tenant_id", a.TenantID), logger.String("idp_id", idpID), logger.RequestID(ctx))
+		logger.String("tenant_id", a.TenantID), logger.String("idp_id", federationID), logger.RequestID(ctx))
 
-	stored, err := s.writable(ctx, a, idpID, "update an identity provider")
+	stored, err := s.writable(ctx, a, federationID, "update an identity provider")
 	if err != nil {
 		return View{}, err
 	}
 	if body.OrgID != stored.OrgID {
-		return View{}, fmt.Errorf("%w: provider %s", ErrLevelFixed, idpID)
+		return View{}, fmt.Errorf("%w: provider %s", ErrLevelFixed, federationID)
 	}
 	if err := s.checkBody(ctx, a, body); err != nil {
 		return View{}, err
@@ -398,22 +398,22 @@ func (s *Service) Update(ctx context.Context, a Actor, idpID string, body Body) 
 	return newView(row), nil
 }
 
-// Delete marks one provider deleted. The row stays in the database, the console
+// Delete marks one federation deleted. The row stays in the database, the console
 // never shows it again, and the domains it claimed are released.
-func (s *Service) Delete(ctx context.Context, a Actor, idpID string) error {
+func (s *Service) Delete(ctx context.Context, a Actor, federationID string) error {
 	s.log.Debug("delete identity provider",
-		logger.String("tenant_id", a.TenantID), logger.String("idp_id", idpID), logger.RequestID(ctx))
+		logger.String("tenant_id", a.TenantID), logger.String("idp_id", federationID), logger.RequestID(ctx))
 
-	stored, err := s.writable(ctx, a, idpID, "delete an identity provider")
+	stored, err := s.writable(ctx, a, federationID, "delete an identity provider")
 	if err != nil {
 		return err
 	}
 
 	err = s.deps.InTx(ctx, func(ctx context.Context) error {
-		if err := s.deps.Delete(ctx, a.TenantID, idpID); err != nil {
+		if err := s.deps.Delete(ctx, a.TenantID, federationID); err != nil {
 			return err
 		}
-		return s.deps.Audit.Record(ctx, a.entry(audit.ActionIdpDeleted, idpID, stored.OrgID))
+		return s.deps.Audit.Record(ctx, a.entry(audit.ActionIdpDeleted, federationID, stored.OrgID))
 	})
 	if err != nil {
 		return s.fail(a, "delete identity provider", err)
@@ -422,11 +422,11 @@ func (s *Service) Delete(ctx context.Context, a Actor, idpID string) error {
 	s.log.Info("deleted identity provider",
 		logger.String("tenant_id", a.TenantID),
 		logger.String("user_id", a.UserID),
-		logger.String("idp_id", idpID))
+		logger.String("idp_id", federationID))
 	return nil
 }
 
-// Links reads every Identity Link of one person. Every administrator of the
+// Links reads every Federation Link of one person. Every administrator of the
 // tenant reads them, the same way the user list reads.
 func (s *Service) Links(ctx context.Context, a Actor, userID string) ([]LinkView, error) {
 	s.log.Debug("list identity links",
@@ -457,15 +457,15 @@ func (s *Service) Links(ctx context.Context, a Actor, userID string) ([]LinkView
 	return views, nil
 }
 
-// Unlink removes the Identity Link one person holds with one provider. The row
+// Unlink removes the Federation Link one person holds with one federation. The row
 // is hard deleted, and the idp.unlinked audit row is the record.
 //
 // A tenant manager unlinks anybody, and an ORG_OWNER unlinks a person of its own
 // organization.
-func (s *Service) Unlink(ctx context.Context, a Actor, userID, idpID string) error {
+func (s *Service) Unlink(ctx context.Context, a Actor, userID, federationID string) error {
 	s.log.Debug("delete identity link",
 		logger.String("tenant_id", a.TenantID), logger.String("user_id", a.UserID),
-		logger.String("subject_id", userID), logger.String("idp_id", idpID), logger.RequestID(ctx))
+		logger.String("subject_id", userID), logger.String("idp_id", federationID), logger.RequestID(ctx))
 
 	held, err := s.admitted(ctx, a)
 	if err != nil {
@@ -476,17 +476,17 @@ func (s *Service) Unlink(ctx context.Context, a Actor, userID, idpID string) err
 		return err
 	}
 	if !held.CanWrite(orgID) {
-		return s.refuse(a, idpID, "unlink an identity")
+		return s.refuse(a, federationID, "unlink an identity")
 	}
-	if err := s.keepsACredential(ctx, a, userID, idpID); err != nil {
+	if err := s.keepsACredential(ctx, a, userID, federationID); err != nil {
 		return err
 	}
 
 	err = s.deps.InTx(ctx, func(ctx context.Context) error {
-		if err := s.deps.DeleteLink(ctx, a.TenantID, idpID, userID); err != nil {
+		if err := s.deps.DeleteLink(ctx, a.TenantID, federationID, userID); err != nil {
 			return err
 		}
-		entry := a.entry(audit.ActionIdpUnlinked, idpID, orgID)
+		entry := a.entry(audit.ActionIdpUnlinked, federationID, orgID)
 		entry.Metadata["user_id"] = userID
 		return s.deps.Audit.Record(ctx, entry)
 	})
@@ -501,7 +501,7 @@ func (s *Service) Unlink(ctx context.Context, a Actor, userID, idpID string) err
 		logger.String("tenant_id", a.TenantID),
 		logger.String("user_id", a.UserID),
 		logger.String("subject_id", userID),
-		logger.String("idp_id", idpID))
+		logger.String("idp_id", federationID))
 	return nil
 }
 
@@ -543,16 +543,16 @@ func (s *Service) checkBody(ctx context.Context, a Actor, body Body) error {
 // keepsALocalOwner refuses a domain claim that would leave the tenant with no
 // IAM_OWNER whom the local password compare signs in.
 //
-// A claim ties people the same way an Identity Link does, and it is the easier
-// one to miss. Provider Resolution case 1 outranks case 3, so claiming
+// A claim ties people the same way a Federation Link does, and it is the easier
+// one to miss. Federation Resolution case 1 outranks case 3, so claiming
 // corp.example routes every person whose email address carries it to the
 // directory, including the people who hold a local password and no directory
 // account. One directory outage would then lock every administrator out of the
 // console.
 //
-// An inactive provider claims nothing that routes anybody, so the guard reads
+// An inactive federation claims nothing that routes anybody, so the guard reads
 // the state the write stores and not the state the row holds. A write that
-// switches a provider on runs the guard with the claims it switches on.
+// switches a federation on runs the guard with the claims it switches on.
 //
 // LocalOwners already drops the owners a live active claim routes today, so a
 // write that stores the claims it already holds refuses nothing new.
@@ -598,16 +598,16 @@ const previewLimit = 50
 // costs while it is still a form.
 //
 // The answer is every person of the tenant whose email address carries one of the
-// domains. Provider Resolution case 1 outranks every case below it, so a claim
+// domains. Federation Resolution case 1 outranks every case below it, so a claim
 // moves all of them, the people who hold a local password and no directory
 // account included. A preview that named a subset would read as the whole blast
 // radius, and the people it dropped would still move.
 //
 // The rule for who moves lives here and not in the browser, because a second
-// copy of Provider Resolution drifts from this one.
+// copy of Federation Resolution drifts from this one.
 //
 // Who may read it is who may write the claim. A person who cannot register a
-// provider at that level cannot list the people a claim there would move, so the
+// federation at that level cannot list the people a claim there would move, so the
 // read is no roster of the tenant for a caller who holds no such right.
 func (s *Service) PreviewClaim(ctx context.Context, a Actor, body ClaimPreviewBody) (ClaimPreview, error) {
 	s.log.Debug("preview a domain claim",
@@ -645,7 +645,7 @@ func (s *Service) PreviewClaim(ctx context.Context, a Actor, body ClaimPreviewBo
 	return ClaimPreview{Total: total, People: people}, nil
 }
 
-// keepsACredential refuses the removal of the last Identity Link of a person who
+// keepsACredential refuses the removal of the last Federation Link of a person who
 // holds no password hash.
 //
 // A person the directory owns holds a NULL password_hash for ever, so the link
@@ -657,11 +657,11 @@ func (s *Service) PreviewClaim(ctx context.Context, a Actor, body ClaimPreviewBo
 // person does not hold at all: DeleteLink answers that miss itself.
 //
 // The read is the resolver's, and not the console list, so it counts the links
-// that still sign somebody in. A link with a provider that is inactive or soft
+// that still sign somebody in. A link with a federation that is inactive or soft
 // deleted signs nobody in already, and refusing its removal would trap the
 // administrator who is moving those people off a directory that is gone. That is
-// the same reason the delete of a provider is never blocked by its live links.
-func (s *Service) keepsACredential(ctx context.Context, a Actor, userID, idpID string) error {
+// the same reason the delete of a federation is never blocked by its live links.
+func (s *Service) keepsACredential(ctx context.Context, a Actor, userID, federationID string) error {
 	held, err := s.deps.HasPassword(ctx, a.TenantID, userID)
 	if err != nil {
 		return s.fail(a, "read whether the person holds a password", err)
@@ -677,8 +677,8 @@ func (s *Service) keepsACredential(ctx context.Context, a Actor, userID, idpID s
 	if len(working) == 0 {
 		return nil
 	}
-	for _, linkedIdpID := range working {
-		if linkedIdpID != idpID {
+	for _, linkedFederationID := range working {
+		if linkedFederationID != federationID {
 			return nil
 		}
 	}
@@ -687,20 +687,20 @@ func (s *Service) keepsACredential(ctx context.Context, a Actor, userID, idpID s
 		logger.String("tenant_id", a.TenantID),
 		logger.String("user_id", a.UserID),
 		logger.String("subject_id", userID),
-		logger.String("idp_id", idpID))
+		logger.String("idp_id", federationID))
 	return fmt.Errorf("%w: tenant %s, user %s", ErrLastLink, a.TenantID, userID)
 }
 
-// withDomains reads one provider and the domains it claims.
-func (s *Service) withDomains(ctx context.Context, a Actor, idpID string) (Provider, error) {
-	row, err := s.find(ctx, a, idpID)
+// withDomains reads one federation and the domains it claims.
+func (s *Service) withDomains(ctx context.Context, a Actor, federationID string) (Federation, error) {
+	row, err := s.find(ctx, a, federationID)
 	if err != nil {
-		return Provider{}, err
+		return Federation{}, err
 	}
 
-	claims, err := s.deps.Domains(ctx, a.TenantID, []string{idpID})
+	claims, err := s.deps.Domains(ctx, a.TenantID, []string{federationID})
 	if err != nil {
-		return Provider{}, s.fail(a, "read the claimed domains", err)
+		return Federation{}, s.fail(a, "read the claimed domains", err)
 	}
 	for _, claim := range claims {
 		row.Domains = append(row.Domains, claim.Domain)
@@ -708,37 +708,37 @@ func (s *Service) withDomains(ctx context.Context, a Actor, idpID string) (Provi
 	return row, nil
 }
 
-// writable reads the provider one write names, once the person is allowed to
+// writable reads the federation one write names, once the person is allowed to
 // write it.
 //
 // The row decides which level the gate reads, so the read runs first. Only an
 // administrator reaches this far, and every administrator already reads the
 // whole list, so the read discloses nothing the list withheld.
-func (s *Service) writable(ctx context.Context, a Actor, idpID, what string) (Provider, error) {
+func (s *Service) writable(ctx context.Context, a Actor, federationID, what string) (Federation, error) {
 	held, err := s.admitted(ctx, a)
 	if err != nil {
-		return Provider{}, err
+		return Federation{}, err
 	}
 
-	row, err := s.find(ctx, a, idpID)
+	row, err := s.find(ctx, a, federationID)
 	if err != nil {
-		return Provider{}, err
+		return Federation{}, err
 	}
 	if !held.CanWrite(row.OrgID) {
-		return Provider{}, s.refuse(a, idpID, what)
+		return Federation{}, s.refuse(a, federationID, what)
 	}
 	return row, nil
 }
 
 // find reads one row. A miss is the caller's answer, not a failure of this
 // service, so only a broken read is logged.
-func (s *Service) find(ctx context.Context, a Actor, idpID string) (Provider, error) {
-	row, err := s.deps.Find(ctx, a.TenantID, idpID)
+func (s *Service) find(ctx context.Context, a Actor, federationID string) (Federation, error) {
+	row, err := s.deps.Find(ctx, a.TenantID, federationID)
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
-			return Provider{}, err
+			return Federation{}, err
 		}
-		return Provider{}, s.fail(a, "read identity provider", err)
+		return Federation{}, s.fail(a, "read identity provider", err)
 	}
 	return row, nil
 }
@@ -779,24 +779,24 @@ func (s *Service) admitted(ctx context.Context, a Actor) (organization.Rights, e
 }
 
 // refuse logs one refused write and returns ErrForbidden.
-func (s *Service) refuse(a Actor, idpID, what string) error {
+func (s *Service) refuse(a Actor, federationID, what string) error {
 	s.log.Warn("refused a write",
 		logger.String("tenant_id", a.TenantID),
 		logger.String("user_id", a.UserID),
-		logger.String("idp_id", idpID),
+		logger.String("idp_id", federationID),
 		logger.String("what", what))
 	return fmt.Errorf("%w: %s, tenant %s, user %s", ErrForbidden, what, a.TenantID, a.UserID)
 }
 
 // entry is the audit event one write of this person records. The metadata names
 // the level, and it never names a credential of any kind.
-func (a Actor) entry(action audit.Action, idpID, orgID string) audit.Entry {
+func (a Actor) entry(action audit.Action, federationID, orgID string) audit.Entry {
 	return audit.Entry{
 		TenantID:   a.TenantID,
 		ActorID:    a.UserID,
 		Action:     action,
 		EntityType: audit.EntityIdentityProvider,
-		EntityID:   idpID,
+		EntityID:   federationID,
 		IP:         a.IP,
 		UserAgent:  a.UserAgent,
 		Metadata:   map[string]any{"org_id": orgID},

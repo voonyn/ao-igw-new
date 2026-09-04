@@ -1,4 +1,4 @@
-package identityprovider
+package userfederation
 
 import (
 	"context"
@@ -48,7 +48,7 @@ const (
 
 // testKey names the connection test budget of one tenant.
 func testKey(tenantID string) string {
-	return fmt.Sprintf("idp_tests:%s", tenantID)
+	return fmt.Sprintf("federation_tests:%s", tenantID)
 }
 
 // testSizeLimit caps the entries one test search reads. A base that holds a
@@ -80,7 +80,7 @@ func failed(stage, detail string) TestResult {
 	return TestResult{Stage: stage, Detail: detail}
 }
 
-// Test dials one directory, binds with the credential of the provider, and runs
+// Test dials one directory, binds with the credential of the federation, and runs
 // one search. It answers which stage failed, so an administrator finds a wrong
 // bind DN before an employee finds it for them.
 //
@@ -91,21 +91,21 @@ func failed(stage, detail string) TestResult {
 // answer is a 200 that names the stage, and the console renders it. An error
 // here means the caller may not run the test at all, or the budget refused it.
 //
-// idpID is empty when the body carries a configuration nobody saved yet, which
+// federationID is empty when the body carries a configuration nobody saved yet, which
 // is how an administrator checks a directory before the first save. A body
 // beside a stored id replaces the stored row for this one test, and an absent
 // bind password in it keeps the stored credential.
-func (s *Service) Test(ctx context.Context, a Actor, idpID string, body *Body) (TestResult, error) {
+func (s *Service) Test(ctx context.Context, a Actor, federationID string, body *Body) (TestResult, error) {
 	s.log.Debug("test identity provider",
 		logger.String("tenant_id", a.TenantID), logger.String("user_id", a.UserID),
-		logger.String("idp_id", idpID), logger.RequestID(ctx))
+		logger.String("idp_id", federationID), logger.RequestID(ctx))
 
-	row, err := s.testable(ctx, a, idpID, body)
+	row, err := s.testable(ctx, a, federationID, body)
 	if err != nil {
 		return TestResult{}, err
 	}
 	// The budget is spent once the caller is admitted, so a person who may not
-	// test a provider never spends the budget of the tenant that holds it.
+	// test a federation never spends the budget of the tenant that holds it.
 	if err := s.spendTest(ctx, a); err != nil {
 		return TestResult{}, err
 	}
@@ -123,7 +123,7 @@ func (s *Service) Test(ctx context.Context, a Actor, idpID string, body *Body) (
 	// nobody saved yet names no stored row, so this is the only record of where
 	// the outbound call went, and the budget above is what bounds how often an
 	// administrator can drive one at a host of their choosing.
-	entry := a.entry(audit.ActionIdpTested, idpID, row.OrgID)
+	entry := a.entry(audit.ActionIdpTested, federationID, row.OrgID)
 	entry.Metadata["stage"] = stage
 	entry.Metadata["servers"] = row.Servers
 
@@ -136,24 +136,24 @@ func (s *Service) Test(ctx context.Context, a Actor, idpID string, body *Body) (
 	s.log.Info("tested identity provider",
 		logger.String("tenant_id", a.TenantID),
 		logger.String("user_id", a.UserID),
-		logger.String("idp_id", idpID),
+		logger.String("idp_id", federationID),
 		logger.String("stage", stage))
 	return result, nil
 }
 
-// testable reads the provider one test runs against, once the person is allowed
+// testable reads the federation one test runs against, once the person is allowed
 // to run it.
 //
 // The gate is the write gate and not the read gate. Every administrator of the
-// tenant reads the whole provider list, but a test spends the credential of the
-// provider on an outbound call, which is what a write does.
-func (s *Service) testable(ctx context.Context, a Actor, idpID string, body *Body) (Provider, error) {
+// tenant reads the whole federation list, but a test spends the credential of the
+// federation on an outbound call, which is what a write does.
+func (s *Service) testable(ctx context.Context, a Actor, federationID string, body *Body) (Federation, error) {
 	// A configuration nobody saved yet. The body is the whole row, so the level
 	// it names is what the gate reads, the way a create reads it.
-	if idpID == "" {
+	if federationID == "" {
 		held, err := s.admitted(ctx, a)
 		if err != nil {
-			return Provider{}, err
+			return Federation{}, err
 		}
 		// The handler binds the body on this path, so a nil body is a caller
 		// this package does not have. An empty one answers ErrServerScheme
@@ -162,29 +162,29 @@ func (s *Service) testable(ctx context.Context, a Actor, idpID string, body *Bod
 			body = &Body{}
 		}
 		if !held.CanWrite(body.OrgID) {
-			return Provider{}, s.refuse(a, "", "test an identity provider")
+			return Federation{}, s.refuse(a, "", "test an identity provider")
 		}
 		if err := s.checkShape(ctx, a, *body); err != nil {
-			return Provider{}, err
+			return Federation{}, err
 		}
-		return body.apply(Provider{TenantID: a.TenantID, OrgID: body.OrgID}), nil
+		return body.apply(Federation{TenantID: a.TenantID, OrgID: body.OrgID}), nil
 	}
 
-	stored, err := s.writable(ctx, a, idpID, "test an identity provider")
+	stored, err := s.writable(ctx, a, federationID, "test an identity provider")
 	if err != nil {
-		return Provider{}, err
+		return Federation{}, err
 	}
 	if body == nil {
 		return stored, nil
 	}
-	// A test of another level would dial with the credential of this provider
+	// A test of another level would dial with the credential of this federation
 	// and report on an organization it does not belong to, so the level of a
 	// stored row is as fixed here as it is on an update.
 	if body.OrgID != stored.OrgID {
-		return Provider{}, fmt.Errorf("%w: provider %s", ErrLevelFixed, idpID)
+		return Federation{}, fmt.Errorf("%w: provider %s", ErrLevelFixed, federationID)
 	}
 	if err := s.checkShape(ctx, a, *body); err != nil {
-		return Provider{}, err
+		return Federation{}, err
 	}
 	return body.apply(stored), nil
 }
@@ -220,7 +220,7 @@ func (s *Service) spendTest(ctx context.Context, a Actor) error {
 // It is a package function and not a method, because it logs nothing. The stage
 // and its message are the answer the console renders, and a log line beside them
 // would say the same thing twice.
-func probe(ctx context.Context, p Provider) TestResult {
+func probe(ctx context.Context, p Federation) TestResult {
 	if p.BindDN == "" || p.BindPassword == "" {
 		return failed(StageBind, "the identity provider carries no bind credential")
 	}
@@ -245,7 +245,7 @@ func probe(ctx context.Context, p Provider) TestResult {
 	return TestResult{OK: true, Matched: matched}
 }
 
-// countEntries runs one search under the base of the provider and answers how
+// countEntries runs one search under the base of the federation and answers how
 // many entries it matched.
 //
 // The request asks for the attribute 1.1, which is the LDAP spelling of no
@@ -254,7 +254,7 @@ func probe(ctx context.Context, p Provider) TestResult {
 //
 // A directory that stops at the size limit answers the entries it sent, because
 // the count is a check on the base and the object classes and not a census.
-func countEntries(conn *ldap.Conn, p Provider) (int, error) {
+func countEntries(conn *ldap.Conn, p Federation) (int, error) {
 	req := ldap.NewSearchRequest(
 		searchBase(p),
 		ldap.ScopeWholeSubtree, ldap.NeverDerefAliases,

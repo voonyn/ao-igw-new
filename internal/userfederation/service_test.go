@@ -1,4 +1,4 @@
-package identityprovider
+package userfederation
 
 import (
 	"context"
@@ -38,12 +38,12 @@ func body() Body {
 	}
 }
 
-// storedProvider is the row the fake repository answers reads with. It carries
+// storedFederation is the row the fake repository answers reads with. It carries
 // the opened bind password, the way the repository hands it up.
-func storedProvider(orgID string) Provider {
-	return Provider{
-		ID: tenantIdpID, TenantID: testTenantID, OrgID: orgID, Name: "Head office",
-		Type: TypeLDAP, State: StateActive, Mode: ModeLDAPS,
+func storedFederation(orgID string) Federation {
+	return Federation{
+		ID: tenantFederationID, TenantID: testTenantID, OrgID: orgID, Name: "Head office",
+		Type: TypeDirectory, State: StateActive, Mode: ModeLDAPS,
 		Servers: []string{"ldaps://dc1.corp.example:636"}, TimeoutMS: 5000,
 		BindDN: "cn=svc,dc=corp,dc=example", BindPassword: theSecret,
 		BaseDN: "dc=corp,dc=example", UserObjectClasses: []string{"inetOrgPerson"},
@@ -68,10 +68,10 @@ func TestListRefusesPersonWithoutAdminRole(t *testing.T) {
 func TestNoAnswerCarriesTheBindPassword(t *testing.T) {
 	svc := testService(t, deps{
 		tenantRoles: []string{tenant.RoleIAMOwner},
-		rows:        []Provider{storedProvider(testOrgID)},
+		rows:        []Federation{storedFederation(testOrgID)},
 	})
 
-	view, err := svc.Find(context.Background(), admin, tenantIdpID)
+	view, err := svc.Find(context.Background(), admin, tenantFederationID)
 	if err != nil {
 		t.Fatalf("Find: %v", err)
 	}
@@ -96,17 +96,17 @@ func TestNoAnswerCarriesTheBindPassword(t *testing.T) {
 func TestNoLogLineCarriesTheBindPassword(t *testing.T) {
 	svc := testService(t, deps{
 		tenantRoles: []string{tenant.RoleIAMOwner},
-		rows:        []Provider{storedProvider(testOrgID)},
+		rows:        []Federation{storedFederation(testOrgID)},
 	})
 	ctx := context.Background()
 
 	if _, err := svc.Create(ctx, admin, body()); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	if _, err := svc.Update(ctx, admin, tenantIdpID, body()); err != nil {
+	if _, err := svc.Update(ctx, admin, tenantFederationID, body()); err != nil {
 		t.Fatalf("Update: %v", err)
 	}
-	if _, err := svc.Find(ctx, admin, tenantIdpID); err != nil {
+	if _, err := svc.Find(ctx, admin, tenantFederationID); err != nil {
 		t.Fatalf("Find: %v", err)
 	}
 
@@ -122,9 +122,9 @@ func TestNoLogLineCarriesTheBindPassword(t *testing.T) {
 	}
 }
 
-// TestCreateRefusesATenantWideProviderFromAnOrgOwner covers the level gate. A
-// tenant-wide provider serves every organization, so a tenant manager writes it.
-func TestCreateRefusesATenantWideProviderFromAnOrgOwner(t *testing.T) {
+// TestCreateRefusesATenantWideFederationFromAnOrgOwner covers the level gate. A
+// tenant-wide federation serves every organization, so a tenant manager writes it.
+func TestCreateRefusesATenantWideFederationFromAnOrgOwner(t *testing.T) {
 	svc := testService(t, deps{
 		memberships: []organization.Membership{{OrgID: testOrgID, Roles: []string{organization.RoleOrgOwner}}},
 	})
@@ -150,7 +150,7 @@ func TestCreateClaimsTheDomainsAndRecordsTheEvent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	if len(written) != 1 || written[0].OrgID != testOrgID || written[0].Type != TypeLDAP {
+	if len(written) != 1 || written[0].OrgID != testOrgID || written[0].Type != TypeDirectory {
 		t.Fatalf("the create wrote %+v, want one LDAP row of %s", written, testOrgID)
 	}
 	if written[0].BindPassword != theSecret {
@@ -202,7 +202,7 @@ func TestCreateRefusesAServerThatDoesNotMatchTheTransport(t *testing.T) {
 
 // TestCreateLeavesNothingBehindWhenADomainIsClaimed covers the refusal and the
 // rollback. The row and the claim land on one transaction, so a refused claim
-// takes the provider with it.
+// takes the federation with it.
 func TestCreateLeavesNothingBehindWhenADomainIsClaimed(t *testing.T) {
 	svc := testService(t, deps{
 		tenantRoles: []string{tenant.RoleIAMOwner},
@@ -234,12 +234,12 @@ func TestUpdateKeepsTheStoredCredentialWhenTheBodyOmitsIt(t *testing.T) {
 	for _, c := range cases {
 		svc := testService(t, deps{
 			tenantRoles: []string{tenant.RoleIAMOwner},
-			rows:        []Provider{storedProvider(testOrgID)},
+			rows:        []Federation{storedFederation(testOrgID)},
 		})
 
 		write := body()
 		write.BindPassword = c.sent
-		if _, err := svc.Update(context.Background(), admin, tenantIdpID, write); err != nil {
+		if _, err := svc.Update(context.Background(), admin, tenantFederationID, write); err != nil {
 			t.Fatalf("%s: Update: %v", c.name, err)
 		}
 		if len(updated) != 1 || updated[0].BindPassword != c.want {
@@ -248,17 +248,17 @@ func TestUpdateKeepsTheStoredCredentialWhenTheBodyOmitsIt(t *testing.T) {
 	}
 }
 
-// TestUpdateRefusesAMoveBetweenLevels covers the fixed level. A provider that
+// TestUpdateRefusesAMoveBetweenLevels covers the fixed level. A federation that
 // moved would relocate every person the next bind creates.
 func TestUpdateRefusesAMoveBetweenLevels(t *testing.T) {
 	svc := testService(t, deps{
 		tenantRoles: []string{tenant.RoleIAMOwner},
-		rows:        []Provider{storedProvider(testOrgID)},
+		rows:        []Federation{storedFederation(testOrgID)},
 	})
 
 	write := body()
 	write.OrgID, write.DefaultOrgID = "", testOrgID
-	if _, err := svc.Update(context.Background(), admin, tenantIdpID, write); !errors.Is(err, ErrLevelFixed) {
+	if _, err := svc.Update(context.Background(), admin, tenantFederationID, write); !errors.Is(err, ErrLevelFixed) {
 		t.Fatalf("err = %v, want ErrLevelFixed", err)
 	}
 	if len(updated) != 0 {
@@ -270,14 +270,14 @@ func TestUpdateRefusesAMoveBetweenLevels(t *testing.T) {
 func TestDeleteRecordsTheEvent(t *testing.T) {
 	svc := testService(t, deps{
 		tenantRoles: []string{tenant.RoleIAMOwner},
-		rows:        []Provider{storedProvider(testOrgID)},
+		rows:        []Federation{storedFederation(testOrgID)},
 	})
 
-	if err := svc.Delete(context.Background(), admin, tenantIdpID); err != nil {
+	if err := svc.Delete(context.Background(), admin, tenantFederationID); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
-	if len(deleted) != 1 || deleted[0] != tenantIdpID {
-		t.Fatalf("the delete removed %v, want %s", deleted, tenantIdpID)
+	if len(deleted) != 1 || deleted[0] != tenantFederationID {
+		t.Fatalf("the delete removed %v, want %s", deleted, tenantFederationID)
 	}
 	if len(events) != 1 || events[0].Action != string(audit.ActionIdpDeleted) {
 		t.Errorf("the delete recorded %+v, want one idp.deleted", events)
@@ -285,11 +285,11 @@ func TestDeleteRecordsTheEvent(t *testing.T) {
 }
 
 // TestFindReportsAMiss answers ErrNotFound for an id nobody holds, which is what
-// a soft-deleted provider reads as.
+// a soft-deleted federation reads as.
 func TestFindReportsAMiss(t *testing.T) {
 	svc := testService(t, deps{tenantRoles: []string{tenant.RoleIAMOwner}})
 
-	if _, err := svc.Find(context.Background(), admin, deadIdpID); !errors.Is(err, ErrNotFound) {
+	if _, err := svc.Find(context.Background(), admin, deadFederationID); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("err = %v, want ErrNotFound", err)
 	}
 }
@@ -301,10 +301,10 @@ func TestUnlinkRecordsTheEventAndNamesThePerson(t *testing.T) {
 		tenantRoles: []string{tenant.RoleIAMOwner},
 		userOrg:     testOrgID,
 		hasPassword: true,
-		links:       []Link{{TenantID: testTenantID, IdpID: tenantIdpID, ExternalID: "a-stable-guid", UserID: personID}},
+		links:       []Link{{TenantID: testTenantID, FederationID: tenantFederationID, ExternalID: "a-stable-guid", UserID: personID}},
 	})
 
-	if err := svc.Unlink(context.Background(), admin, personID, tenantIdpID); err != nil {
+	if err := svc.Unlink(context.Background(), admin, personID, tenantFederationID); err != nil {
 		t.Fatalf("Unlink: %v", err)
 	}
 	if len(unlinked) != 1 || unlinked[0] != personID {
@@ -319,14 +319,14 @@ func TestUnlinkRecordsTheEventAndNamesThePerson(t *testing.T) {
 }
 
 // TestUnlinkRefusesAnOrgOwnerOfAnotherOrganization covers the write gate of the
-// unlink. The organization of the person decides, not the one of the provider.
+// unlink. The organization of the person decides, not the one of the federation.
 func TestUnlinkRefusesAnOrgOwnerOfAnotherOrganization(t *testing.T) {
 	svc := testService(t, deps{
 		memberships: []organization.Membership{{OrgID: otherOrgID, Roles: []string{organization.RoleOrgOwner}}},
 		userOrg:     testOrgID,
 	})
 
-	err := svc.Unlink(context.Background(), admin, personID, tenantIdpID)
+	err := svc.Unlink(context.Background(), admin, personID, tenantFederationID)
 	if !errors.Is(err, ErrForbidden) {
 		t.Fatalf("err = %v, want ErrForbidden", err)
 	}
@@ -345,14 +345,14 @@ func TestLinksReportAMissingPerson(t *testing.T) {
 	}
 }
 
-// TestAProviderThatMapsNoEmailAttribute covers a directory that publishes no
-// mail attribute. The id keys the Identity Link and the username keys the
+// TestAFederationThatMapsNoEmailAttribute covers a directory that publishes no
+// mail attribute. The id keys the Federation Link and the username keys the
 // person, so the third identifier is optional: a create stores the empty value,
 // the answer carries it, and an update clears a stored one.
-func TestAProviderThatMapsNoEmailAttribute(t *testing.T) {
+func TestAFederationThatMapsNoEmailAttribute(t *testing.T) {
 	svc := testService(t, deps{
 		tenantRoles: []string{tenant.RoleIAMOwner},
-		rows:        []Provider{storedProvider(testOrgID)},
+		rows:        []Federation{storedFederation(testOrgID)},
 	})
 	ctx := context.Background()
 
@@ -364,19 +364,19 @@ func TestAProviderThatMapsNoEmailAttribute(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 	if created.AttrEmail != "" {
-		t.Errorf("the created provider maps %q, want no email attribute", created.AttrEmail)
+		t.Errorf("the created federation maps %q, want no email attribute", created.AttrEmail)
 	}
 	if len(written) != 1 || written[0].AttrEmail != "" {
 		t.Fatalf("the create wrote %+v, want a row with no email attribute", written)
 	}
 
 	// The stored row maps "mail", so this update clears it.
-	changed, err := svc.Update(ctx, admin, tenantIdpID, noEmail)
+	changed, err := svc.Update(ctx, admin, tenantFederationID, noEmail)
 	if err != nil {
 		t.Fatalf("Update: %v", err)
 	}
 	if changed.AttrEmail != "" {
-		t.Errorf("the updated provider maps %q, want the stored one cleared", changed.AttrEmail)
+		t.Errorf("the updated federation maps %q, want the stored one cleared", changed.AttrEmail)
 	}
 	if len(updated) != 1 || updated[0].AttrEmail != "" {
 		t.Fatalf("the update wrote %+v, want a row with no email attribute", updated)
@@ -387,7 +387,7 @@ func TestAProviderThatMapsNoEmailAttribute(t *testing.T) {
 type deps struct {
 	tenantRoles []string
 	memberships []organization.Membership
-	rows        []Provider
+	rows        []Federation
 	links       []Link
 	userOrg     string
 	claimTaken  bool
@@ -396,8 +396,8 @@ type deps struct {
 	// An empty list is a tenant with none, which the first guard rail leaves
 	// alone. hasPassword is what the person one unlink names holds.
 	//
-	// linked is the providers that still sign that person in. It is not links: a
-	// link with a provider that is inactive or soft deleted is listed and signs
+	// linked is the federations that still sign that person in. It is not links: a
+	// link with a federation that is inactive or soft deleted is listed and signs
 	// nobody in.
 	localOwners []tenant.LocalOwner
 	hasPassword bool
@@ -416,11 +416,11 @@ type deps struct {
 	// already holds does.
 	createFails error
 
-	// What the Identity Link read of a sign-in answers. A test that sets it
+	// What the Federation Link read of a sign-in answers. A test that sets it
 	// breaks the read, which is what a database that did not answer does.
 	findLinkFails error
 
-	// Whether the person one Identity Link names can still sign in. A test that
+	// Whether the person one Federation Link names can still sign in. A test that
 	// sets it offboards them, which is what a deactivated row and a soft-deleted
 	// row both do.
 	personOffboarded bool
@@ -445,8 +445,8 @@ type deps struct {
 // What the writes of one test did. testService clears them, and the tests of one
 // package run one after another, so each test reads its own writes.
 var (
-	written      []Provider
-	updated      []Provider
+	written      []Federation
+	updated      []Federation
 	deleted      []string
 	claimed      []string
 	unlinked     []string
@@ -476,16 +476,16 @@ func testService(t *testing.T, d deps) *Service {
 	}
 
 	return NewService(Deps{
-		Insert: func(_ context.Context, row Provider) error {
+		Insert: func(_ context.Context, row Federation) error {
 			written = append(written, row)
 			return nil
 		},
-		Update: func(_ context.Context, row Provider) error {
+		Update: func(_ context.Context, row Federation) error {
 			updated = append(updated, row)
 			return nil
 		},
-		Delete: func(_ context.Context, _, idpID string) error {
-			deleted = append(deleted, idpID)
+		Delete: func(_ context.Context, _, federationID string) error {
+			deleted = append(deleted, federationID)
 			return nil
 		},
 		Claim: func(_ context.Context, _, _ string, domains []string) error {
@@ -519,12 +519,12 @@ func testService(t *testing.T, d deps) *Service {
 			}
 			return slices.Contains(d.held, identifier), nil
 		},
-		FindLink: func(_ context.Context, _, idpID, externalID string) (string, error) {
+		FindLink: func(_ context.Context, _, federationID, externalID string) (string, error) {
 			if d.findLinkFails != nil {
 				return "", d.findLinkFails
 			}
 			for _, row := range d.links {
-				if row.IdpID == idpID && row.ExternalID == externalID {
+				if row.FederationID == federationID && row.ExternalID == externalID {
 					return row.UserID, nil
 				}
 			}
@@ -546,14 +546,14 @@ func testService(t *testing.T, d deps) *Service {
 			events = append(events, e)
 			return nil
 		}, log),
-		List: func(context.Context, string) ([]Provider, error) { return d.rows, nil },
-		Find: func(_ context.Context, _, idpID string) (Provider, error) {
+		List: func(context.Context, string) ([]Federation, error) { return d.rows, nil },
+		Find: func(_ context.Context, _, federationID string) (Federation, error) {
 			for _, row := range d.rows {
-				if row.ID == idpID {
+				if row.ID == federationID {
 					return row, nil
 				}
 			}
-			return Provider{}, ErrNotFound
+			return Federation{}, ErrNotFound
 		},
 		Domains: func(context.Context, string, []string) ([]Domain, error) { return nil, nil },
 		Links:   func(context.Context, string, string) ([]Link, error) { return d.links, nil },

@@ -4,9 +4,9 @@ import (
 	"context"
 	"time"
 
-	"alphaomega/identitygateway/internal/identityprovider"
 	"alphaomega/identitygateway/internal/organization"
 	"alphaomega/identitygateway/internal/user"
+	"alphaomega/identitygateway/internal/userfederation"
 	"alphaomega/identitygateway/internal/utils"
 )
 
@@ -35,8 +35,8 @@ import (
 // The email address is not marked verified. It is a trust claim that states what
 // this gateway verified, and this gateway verified nothing: it read the value
 // from a directory.
-func directoryPerson(users *user.Repository, orgs *organization.Repository) identityprovider.PersonCreator {
-	return func(ctx context.Context, p identityprovider.Person) (string, error) {
+func directoryPerson(users *user.Repository, orgs *organization.Repository) userfederation.PersonCreator {
+	return func(ctx context.Context, p userfederation.Person) (string, error) {
 		now := time.Now().UTC()
 		row := user.User{
 			ID:        utils.NewUUIDv7(),

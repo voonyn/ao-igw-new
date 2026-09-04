@@ -1,4 +1,4 @@
-package identityprovider
+package userfederation
 
 import (
 	"github.com/gofiber/fiber/v3"
@@ -162,10 +162,10 @@ func (h *Handler) remove(c fiber.Ctx) error {
 // The path without an id has nothing stored to fall back on, so it requires the
 // body and the validator answers a missing one.
 func (h *Handler) test(c fiber.Ctx) error {
-	idpID := c.Params("id")
+	federationID := c.Params("id")
 
 	var body *Body
-	if idpID == "" || len(c.Body()) > 0 {
+	if federationID == "" || len(c.Body()) > 0 {
 		var sent Body
 		if err := c.Bind().Body(&sent); err != nil {
 			return response.Validation(c, err)
@@ -173,7 +173,7 @@ func (h *Handler) test(c fiber.Ctx) error {
 		body = &sent
 	}
 
-	result, err := h.svc.Test(c.Context(), actorFrom(c), idpID, body)
+	result, err := h.svc.Test(c.Context(), actorFrom(c), federationID, body)
 	if err != nil {
 		return response.Fail(c, err)
 	}

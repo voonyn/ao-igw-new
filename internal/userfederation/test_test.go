@@ -1,4 +1,4 @@
-package identityprovider
+package userfederation
 
 import (
 	"context"
@@ -31,7 +31,7 @@ func TestClassFilter(t *testing.T) {
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got := classFilter(Provider{UserObjectClasses: c.classes})
+			got := classFilter(Federation{UserObjectClasses: c.classes})
 			if got != c.want {
 				t.Fatalf("classFilter = %q, want %q", got, c.want)
 			}
@@ -48,12 +48,12 @@ func TestClassFilter(t *testing.T) {
 func TestProbeNamesTheStageThatFailed(t *testing.T) {
 	cases := []struct {
 		name  string
-		row   func(Provider) Provider
+		row   func(Federation) Federation
 		stage string
 	}{
 		{
 			name: "the dial",
-			row: func(p Provider) Provider {
+			row: func(p Federation) Federation {
 				p.Mode, p.Servers = ModePlain, []string{"ldap://" + closedPort(t)}
 				return p
 			},
@@ -64,7 +64,7 @@ func TestProbeNamesTheStageThatFailed(t *testing.T) {
 			// so the deadline stops the test at the TLS stage and never reports
 			// a directory that is down.
 			name: "the TLS handshake",
-			row: func(p Provider) Provider {
+			row: func(p Federation) Federation {
 				p.Mode, p.Servers = ModeLDAPS, []string{"ldaps://" + silentDirectory(t)}
 				p.TimeoutMS = 300
 				return p
@@ -73,7 +73,7 @@ func TestProbeNamesTheStageThatFailed(t *testing.T) {
 		},
 		{
 			name: "the service bind",
-			row: func(p Provider) Provider {
+			row: func(p Federation) Federation {
 				p.Mode, p.Servers = ModePlain, []string{"ldap://" + directory(t, ldap.LDAPResultInvalidCredentials, 0, 0)}
 				return p
 			},
@@ -81,7 +81,7 @@ func TestProbeNamesTheStageThatFailed(t *testing.T) {
 		},
 		{
 			name: "the search",
-			row: func(p Provider) Provider {
+			row: func(p Federation) Federation {
 				p.Mode, p.Servers = ModePlain, []string{"ldap://" + directory(t, ldap.LDAPResultSuccess, 0, ldap.LDAPResultNoSuchObject)}
 				return p
 			},
@@ -91,7 +91,7 @@ func TestProbeNamesTheStageThatFailed(t *testing.T) {
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got := probe(context.Background(), c.row(storedProvider(testOrgID)))
+			got := probe(context.Background(), c.row(storedFederation(testOrgID)))
 			if got.OK || got.Stage != c.stage {
 				t.Fatalf("probe = %+v, want a failure at %s", got, c.stage)
 			}
@@ -108,7 +108,7 @@ func TestProbeNamesTheStageThatFailed(t *testing.T) {
 // TestProbeRefusesARowWithNoBindCredential answers before it dials. A row that
 // carries no credential cannot bind, and the stage says so.
 func TestProbeRefusesARowWithNoBindCredential(t *testing.T) {
-	p := storedProvider(testOrgID)
+	p := storedFederation(testOrgID)
 	p.BindPassword = ""
 
 	if got := probe(context.Background(), p); got.OK || got.Stage != StageBind {
@@ -119,7 +119,7 @@ func TestProbeRefusesARowWithNoBindCredential(t *testing.T) {
 // TestProbeReportsWhatTheSearchMatched covers the success. The count is what
 // tells an administrator that the base and the object classes are right.
 func TestProbeReportsWhatTheSearchMatched(t *testing.T) {
-	p := storedProvider(testOrgID)
+	p := storedFederation(testOrgID)
 	p.Mode = ModePlain
 	p.Servers = []string{"ldap://" + directory(t, ldap.LDAPResultSuccess, 3, ldap.LDAPResultSuccess)}
 
@@ -136,7 +136,7 @@ func TestProbeReportsWhatTheSearchMatched(t *testing.T) {
 // the cap. The directory stops at the limit, which is not a failure: the count
 // still says the base and the object classes are right.
 func TestProbeCountsWhatTheSizeLimitLeft(t *testing.T) {
-	p := storedProvider(testOrgID)
+	p := storedFederation(testOrgID)
 	p.Mode = ModePlain
 	p.Servers = []string{"ldap://" + directory(t, ldap.LDAPResultSuccess, 5, ldap.LDAPResultSizeLimitExceeded)}
 
@@ -151,10 +151,10 @@ func TestProbeCountsWhatTheSizeLimitLeft(t *testing.T) {
 func TestTestRecordsTheEventWithTheStage(t *testing.T) {
 	svc := testService(t, deps{
 		tenantRoles: []string{tenant.RoleIAMOwner},
-		rows:        []Provider{failingProvider(t)},
+		rows:        []Federation{failingFederation(t)},
 	})
 
-	got, err := svc.Test(context.Background(), admin, tenantIdpID, nil)
+	got, err := svc.Test(context.Background(), admin, tenantFederationID, nil)
 	if err != nil {
 		t.Fatalf("Test: %v", err)
 	}
@@ -177,11 +177,11 @@ func TestTestRecordsTheEventWithTheStage(t *testing.T) {
 func TestTestRefusesASpentBudget(t *testing.T) {
 	svc := testService(t, deps{
 		tenantRoles: []string{tenant.RoleIAMOwner},
-		rows:        []Provider{failingProvider(t)},
+		rows:        []Federation{failingFederation(t)},
 		budgetSpent: true,
 	})
 
-	if _, err := svc.Test(context.Background(), admin, tenantIdpID, nil); !errors.Is(err, ErrTooManyTests) {
+	if _, err := svc.Test(context.Background(), admin, tenantFederationID, nil); !errors.Is(err, ErrTooManyTests) {
 		t.Fatalf("err = %v, want ErrTooManyTests", err)
 	}
 	if len(events) != 0 {
@@ -195,11 +195,11 @@ func TestTestRefusesASpentBudget(t *testing.T) {
 func TestTestRefusesABudgetNobodyCouldRead(t *testing.T) {
 	svc := testService(t, deps{
 		tenantRoles:  []string{tenant.RoleIAMOwner},
-		rows:         []Provider{failingProvider(t)},
+		rows:         []Federation{failingFederation(t)},
 		budgetBroken: true,
 	})
 
-	_, err := svc.Test(context.Background(), admin, tenantIdpID, nil)
+	_, err := svc.Test(context.Background(), admin, tenantFederationID, nil)
 	if !errors.Is(err, ErrTestUnavailable) {
 		t.Fatalf("err = %v, want ErrTestUnavailable", err)
 	}
@@ -209,22 +209,22 @@ func TestTestRefusesABudgetNobodyCouldRead(t *testing.T) {
 }
 
 // TestTestRefusesAnOrgOwnerOfAnotherOrganization covers the gate. A test spends
-// the credential of the provider on an outbound call, so it reads the write gate
+// the credential of the federation on an outbound call, so it reads the write gate
 // and not the read gate every administrator passes.
 func TestTestRefusesAnOrgOwnerOfAnotherOrganization(t *testing.T) {
 	svc := testService(t, deps{
 		memberships: []organization.Membership{{OrgID: otherOrgID, Roles: []string{organization.RoleOrgOwner}}},
-		rows:        []Provider{failingProvider(t)},
+		rows:        []Federation{failingFederation(t)},
 	})
 
-	if _, err := svc.Test(context.Background(), admin, tenantIdpID, nil); !errors.Is(err, ErrForbidden) {
+	if _, err := svc.Test(context.Background(), admin, tenantFederationID, nil); !errors.Is(err, ErrForbidden) {
 		t.Fatalf("err = %v, want ErrForbidden", err)
 	}
 }
 
 // TestTestRunsAnUnsavedConfiguration covers the check an administrator makes
 // before the first save. No id names a stored row, so the body is the whole
-// provider.
+// federation.
 func TestTestRunsAnUnsavedConfiguration(t *testing.T) {
 	svc := testService(t, deps{
 		memberships: []organization.Membership{{OrgID: testOrgID, Roles: []string{organization.RoleOrgOwner}}},
@@ -252,14 +252,14 @@ func TestTestRunsAnUnsavedConfiguration(t *testing.T) {
 func TestTestKeepsTheStoredCredentialWhenTheBodyOmitsIt(t *testing.T) {
 	svc := testService(t, deps{
 		tenantRoles: []string{tenant.RoleIAMOwner},
-		rows:        []Provider{failingProvider(t)},
+		rows:        []Federation{failingFederation(t)},
 	})
 
 	write := body()
 	write.OrgID, write.Mode, write.Servers = testOrgID, ModePlain, []string{"ldap://" + closedPort(t)}
 	write.ConfirmPlaintext, write.BindPassword = true, nil
 
-	got, err := svc.Test(context.Background(), admin, tenantIdpID, &write)
+	got, err := svc.Test(context.Background(), admin, tenantFederationID, &write)
 	if err != nil {
 		t.Fatalf("Test: %v", err)
 	}
@@ -271,14 +271,14 @@ func TestTestKeepsTheStoredCredentialWhenTheBodyOmitsIt(t *testing.T) {
 }
 
 // TestNoTestAnswerOrLogLineCarriesTheBindPassword walks the answer and every log
-// line of one test. Neither carries the credential the provider binds with.
+// line of one test. Neither carries the credential the federation binds with.
 func TestNoTestAnswerOrLogLineCarriesTheBindPassword(t *testing.T) {
 	svc := testService(t, deps{
 		tenantRoles: []string{tenant.RoleIAMOwner},
-		rows:        []Provider{failingProvider(t)},
+		rows:        []Federation{failingFederation(t)},
 	})
 
-	got, err := svc.Test(context.Background(), admin, tenantIdpID, nil)
+	got, err := svc.Test(context.Background(), admin, tenantFederationID, nil)
 	if err != nil {
 		t.Fatalf("Test: %v", err)
 	}
@@ -298,13 +298,13 @@ func TestNoTestAnswerOrLogLineCarriesTheBindPassword(t *testing.T) {
 	}
 }
 
-// failingProvider is the stored row the service tests run against. It dials a
+// failingFederation is the stored row the service tests run against. It dials a
 // port nothing listens on, so the test fails at the first stage and no test of
 // this file needs a directory to answer.
-func failingProvider(t *testing.T) Provider {
+func failingFederation(t *testing.T) Federation {
 	t.Helper()
 
-	p := storedProvider(testOrgID)
+	p := storedFederation(testOrgID)
 	p.Mode, p.Servers, p.TimeoutMS = ModePlain, []string{"ldap://" + closedPort(t)}, 2000
 	return p
 }

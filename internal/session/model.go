@@ -172,7 +172,7 @@ var ErrDirectoryUnavailable = errors.New("the directory did not answer")
 // It carries a slug of its own, and that discloses no more than the answer above
 // already does. The state is a fault of the configuration, and it says nothing
 // about which people the tenant holds. The three deliberate refusals of
-// identityprovider.ErrDirectory are the ones that would, and they stay on
+// userfederation.ErrDirectory are the ones that would, and they stay on
 // ErrDirectoryUnavailable.
 var ErrDirectoryMisconfigured = errors.New("the directory cannot create the person")
 

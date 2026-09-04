@@ -1,4 +1,4 @@
-package identityprovider
+package userfederation
 
 import (
 	"context"
@@ -10,12 +10,12 @@ import (
 	"alphaomega/identitygateway/internal/platform/logger"
 )
 
-// ErrAmbiguous reports that no single Identity Provider proves one sign-in. Two
-// live active providers of the tenant give it, and so do two Identity Links that
+// ErrAmbiguous reports that no single User Federation proves one sign-in. Two
+// live active federations of the tenant give it, and so do two Federation Links that
 // both take a typed password.
 //
 // provider_ambiguous is not a slug. No answer carries it and no route maps it,
-// because a slug of its own would count the providers of a tenant for an
+// because a slug of its own would count the federations of a tenant for an
 // unauthenticated caller. The identifier step answers the same thing in every
 // case, so the caller falls back to the local password compare, which refuses
 // the password step the way an unknown identifier already does. A gateway that
@@ -26,15 +26,15 @@ var ErrAmbiguous = errors.New("no single identity provider proves this sign-in")
 // The reads the resolver composes its answer from. Each one is a function value,
 // so the logic is testable without a database.
 type (
-	// DomainFinder reads the live active provider that claims one email domain.
+	// DomainFinder reads the live active federation that claims one email domain.
 	// A domain nobody claims returns ErrNotFound.
 	DomainFinder func(ctx context.Context, tenantID, domain string) (string, error)
 
-	// LinkedFinder reads the live active providers that take a typed password
-	// and that one person holds an Identity Link with.
+	// LinkedFinder reads the live active federations that take a typed password
+	// and that one person holds a Federation Link with.
 	LinkedFinder func(ctx context.Context, tenantID, userID string) ([]string, error)
 
-	// ActiveFinder reads every live active provider of one tenant.
+	// ActiveFinder reads every live active federation of one tenant.
 	ActiveFinder func(ctx context.Context, tenantID string) ([]string, error)
 
 	// PersonFinder reports whether the tenant holds any account for one
@@ -61,7 +61,7 @@ type ResolverDeps struct {
 	Log logger.Logger
 }
 
-// Resolver names the Identity Provider that proves one sign-in.
+// Resolver names the User Federation that proves one sign-in.
 //
 // It is a type of its own, beside the console service. Resolution runs on the
 // sign-in path, where there is no actor, no audit row, and no transaction, so it
@@ -75,7 +75,7 @@ func NewResolver(deps ResolverDeps) *Resolver {
 	return &Resolver{deps: deps, log: deps.Log}
 }
 
-// Resolve names the Identity Provider that proves one sign-in, and answers an
+// Resolve names the User Federation that proves one sign-in, and answers an
 // empty id when the local password compare proves it. It is what the identifier
 // step takes.
 //
@@ -92,11 +92,11 @@ func NewResolver(deps ResolverDeps) *Resolver {
 // userID and email are the person the identifier step named, and both are empty
 // when that read named nobody.
 func (r *Resolver) Resolve(ctx context.Context, tenantID, userID, identifier, email string) (string, error) {
-	idpID, err := r.resolve(ctx, tenantID, userID, identifier, email)
+	federationID, err := r.resolve(ctx, tenantID, userID, identifier, email)
 	if errors.Is(err, ErrAmbiguous) {
 		return "", nil
 	}
-	return idpID, err
+	return federationID, err
 }
 
 // resolve runs the four cases and refuses with ErrAmbiguous.
@@ -104,27 +104,27 @@ func (r *Resolver) Resolve(ctx context.Context, tenantID, userID, identifier, em
 // userID and email are the person FindByIdentifier named, and both are empty
 // when that read missed. Four cases run in this order:
 //
-//  1. A live active provider claims the domain of the person. Two forms carry
+//  1. A live active federation claims the domain of the person. Two forms carry
 //     that domain, and case 1 reads both: the identifier they typed, and the
 //     email address the tenant holds for them. A person who types their
 //     username carries the claim in the second form alone, and a claim a person
 //     steps around by typing another form of their own identifier is no guard
-//     rail. Either match answers that provider. It outranks every case below,
+//     rail. Either match answers that federation. It outranks every case below,
 //     including a person who holds a local password, which is what makes a
 //     domain claim a guard rail of its own. See
 //     docs/specs/0002-directory-sign-in.md.
-//  2. No domain match, and the person holds exactly one Identity Link with a
-//     provider that takes a typed password. That provider answers.
+//  2. No domain match, and the person holds exactly one Federation Link with a
+//     federation that takes a typed password. That federation answers.
 //  3. No domain match, and the person holds no such link. The local compare
 //     answers, as it does today.
-//  4. No domain match and no account at all. One live active provider of the
+//  4. No domain match and no account at all. One live active federation of the
 //     tenant answers, and two or more refuse.
 //
 // A person who holds no link and no password hash reaches case 3 and is refused
 // by the password step, which is what happens to them today.
 //
 // The email form of case 1 carries a ceiling. The bind searches the directory on
-// the string the person typed, ldap.go:273, so a provider whose user filter
+// the string the person typed, ldap.go:273, so a federation whose user filter
 // matches the email attribute alone refuses a typed username that a claim on the
 // email form routed here. That filter has to match every form a tenant lets
 // people type in any case, because a typed email meets the same wall today.
@@ -136,9 +136,9 @@ func (r *Resolver) resolve(ctx context.Context, tenantID, userID, identifier, em
 		logger.String("tenant_id", tenantID), logger.RequestID(ctx))
 
 	for _, domain := range domainsOf(identifier, email) {
-		idpID, err := r.deps.DomainOwner(ctx, tenantID, domain)
+		federationID, err := r.deps.DomainOwner(ctx, tenantID, domain)
 		if err == nil {
-			return idpID, nil
+			return federationID, nil
 		}
 		if !errors.Is(err, ErrNotFound) {
 			r.log.Error("read the provider that claims the domain",
@@ -181,18 +181,18 @@ func (r *Resolver) resolve(ctx context.Context, tenantID, userID, identifier, em
 	return r.sole(tenantID, active)
 }
 
-// sole answers the one provider a list holds. An empty list answers the local
+// sole answers the one federation a list holds. An empty list answers the local
 // password compare, and two or more answer ErrAmbiguous.
 //
 // Neither the log line nor the error names which case refused, and neither
 // carries the count. Both of those would say whether the identifier named a real
-// person, because case 2 counts links and case 4 counts providers.
-func (r *Resolver) sole(tenantID string, idpIDs []string) (string, error) {
-	switch len(idpIDs) {
+// person, because case 2 counts links and case 4 counts federations.
+func (r *Resolver) sole(tenantID string, federationIDs []string) (string, error) {
+	switch len(federationIDs) {
 	case 0:
 		return "", nil
 	case 1:
-		return idpIDs[0], nil
+		return federationIDs[0], nil
 	}
 
 	r.log.Warn("refused a sign-in that no single identity provider proves",

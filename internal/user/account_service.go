@@ -76,7 +76,7 @@ type (
 	PasswordChecker func(ctx context.Context, tenantID, orgID, plain string) error
 
 	// DirectoryProver proves one password against the Directory that owns a
-	// person. identityprovider.Service.Prove has this shape, and the strings run
+	// person. userfederation.Service.Prove has this shape, and the strings run
 	// in that order.
 	//
 	// The caller names the provider and the username, because DirectoryResolver

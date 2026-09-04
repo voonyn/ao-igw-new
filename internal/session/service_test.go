@@ -339,7 +339,7 @@ func TestIdentify_RecordsTheResolvedProvider(t *testing.T) {
 // TestIdentify_NamesTheEmailOfThePerson proves that the identifier step hands
 // the resolver both forms of the person. The identifier step accepts a username,
 // and a domain claim read from the typed form alone is stepped around by typing
-// one. See internal/identityprovider/resolve.go.
+// one. See internal/userfederation/resolve.go.
 func TestIdentify_NamesTheEmailOfThePerson(t *testing.T) {
 	var gotIdentifier, gotEmail string
 	svc, _ := testServiceResolving(t,

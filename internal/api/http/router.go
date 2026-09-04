@@ -18,7 +18,6 @@ import (
 	"alphaomega/identitygateway/internal/audit"
 	"alphaomega/identitygateway/internal/authpolicy"
 	"alphaomega/identitygateway/internal/di"
-	"alphaomega/identitygateway/internal/identityprovider"
 	"alphaomega/identitygateway/internal/notification"
 	"alphaomega/identitygateway/internal/oidc"
 	"alphaomega/identitygateway/internal/organization"
@@ -34,6 +33,7 @@ import (
 	"alphaomega/identitygateway/internal/tenant"
 	"alphaomega/identitygateway/internal/totp"
 	"alphaomega/identitygateway/internal/user"
+	"alphaomega/identitygateway/internal/userfederation"
 )
 
 // loginPrefix is where the login UI reaches the login steps.
@@ -816,19 +816,19 @@ func mountAdmin(
 	// Identity Link that ties one directory account to one person. The repository
 	// holds the cipher, so the bind password is sealed at rest and no layer above
 	// it ever holds the ciphertext.
-	idps := identityprovider.NewRepository(bdb, cipher, log)
-	idpSvc := identityprovider.NewService(identityprovider.Deps{
-		List:    idps.List,
-		Find:    idps.FindByID,
-		Insert:  idps.Insert,
-		Update:  idps.Update,
-		Delete:  idps.Delete,
-		Domains: idps.Domains,
-		Claim:   idps.Claim,
+	federations := userfederation.NewRepository(bdb, cipher, log)
+	federationSvc := userfederation.NewService(userfederation.Deps{
+		List:    federations.List,
+		Find:    federations.FindByID,
+		Insert:  federations.Insert,
+		Update:  federations.Update,
+		Delete:  federations.Delete,
+		Domains: federations.Domains,
+		Claim:   federations.Claim,
 
-		Links:      idps.Links,
-		Linked:     idps.LinkedProviders,
-		DeleteLink: idps.DeleteLink,
+		Links:      federations.Links,
+		Linked:     federations.LinkedFederations,
+		DeleteLink: federations.DeleteLink,
 
 		Org: orgs.FindByID,
 		// The package imports neither the user domain nor the login session
@@ -844,7 +844,7 @@ func mountAdmin(
 			orgID, err := users.OrgOf(ctx, tenantID, userID)
 			if errors.Is(err, user.ErrNoSuchUser) {
 				return "", fmt.Errorf("%w: tenant %s, user %s",
-					identityprovider.ErrUserNotFound, tenantID, userID)
+					userfederation.ErrUserNotFound, tenantID, userID)
 			}
 			if err != nil {
 				return "", err
@@ -891,7 +891,7 @@ func mountAdmin(
 	session.GrantRoutes(group, session.NewGrantHandler(grantSvc))
 	authpolicy.AdminRoutes(group, authpolicy.NewHandler(policySvc))
 	notification.AdminRoutes(group, notification.NewHandler(notificationSvc))
-	identityprovider.AdminRoutes(group, identityprovider.NewHandler(idpSvc))
+	userfederation.AdminRoutes(group, userfederation.NewHandler(federationSvc))
 	audit.AdminRoutes(group, audit.NewHandler(auditSvc, auditActor),
 		middlewares.Paginate(audit.SortKeys...))
 }
@@ -1159,11 +1159,11 @@ func newSessionService(
 	// The resolver is built beside the session and not beside the console
 	// service, because resolution runs on the sign-in path, where there is no
 	// actor, no audit row, and no transaction.
-	idps := identityprovider.NewRepository(bdb, cipher, log)
-	resolver := identityprovider.NewResolver(identityprovider.ResolverDeps{
-		DomainOwner: idps.FindByDomain,
-		Linked:      idps.LinkedProviders,
-		Active:      idps.ActiveIDs,
+	federations := userfederation.NewRepository(bdb, cipher, log)
+	resolver := userfederation.NewResolver(userfederation.ResolverDeps{
+		DomainOwner: federations.FindByDomain,
+		Linked:      federations.LinkedFederations,
+		Active:      federations.ActiveIDs,
 		Held:        users.HoldsIdentifier,
 		Log:         log,
 	})
@@ -1177,16 +1177,16 @@ func newSessionService(
 	// The budget lives in Redis alone. A cache failure refuses the sign-in
 	// instead of leaving an outbound call into a customer network unmetered, and
 	// a directory that did not answer gives its bind back. See CLAUDE.md.
-	prover := identityprovider.NewService(identityprovider.Deps{
-		Find:      idps.FindByID,
+	prover := userfederation.NewService(userfederation.Deps{
+		Find:      federations.FindByID,
 		Allow:     rdb.AllowInWindow,
 		Release:   rdb.ReleaseInWindow,
-		WriteLink: idps.InsertLink,
-		FindLink:  idps.LinkedUser,
+		WriteLink: federations.InsertLink,
+		FindLink:  federations.LinkedUser,
 		// The links the person the session names already holds. A bind whose
 		// entry a link of this provider does not name signs nobody in. See
 		// Service.PersonOf.
-		Linked: idps.LinkedProviders,
+		Linked: federations.LinkedFederations,
 		// The one read that says whether the person an Identity Link names may
 		// still sign in. FindByID filters the state, the account type, and the
 		// soft delete inside the query, so a deactivated, deleted, or machine
@@ -1226,25 +1226,25 @@ func newSessionService(
 		// counter. An identifier step that named nobody passes an empty id, which
 		// the budget keys on the typed string instead. That form still ends at a
 		// person when the Identity Link names one, so such a person keeps a
-		// second counter. See identityprovider.bindKey.
+		// second counter. See userfederation.proofKey.
 		//
 		// The email address of the directory entry comes back beside the person.
 		// It is the one Provision writes to a person the first bind creates, and
 		// it is what a session that named nobody at the identifier step carries
 		// from there on.
 		Bind: func(
-			ctx context.Context, tenantID, idpID, userID, identifier, password string,
+			ctx context.Context, tenantID, federationID, userID, identifier, password string,
 		) (session.Identity, error) {
 			// The four strings the login session hands over are named here once,
 			// and the two calls below carry that one value. This closure is the
 			// last place a swap of them can hide, because the login session
 			// domain must not import this one and takes them loose. See
-			// identityprovider.Attempt.
-			attempt := identityprovider.Attempt{
-				TenantID:   tenantID,
-				IdpID:      idpID,
-				UserID:     userID,
-				Identifier: identifier,
+			// userfederation.Attempt.
+			attempt := userfederation.Attempt{
+				TenantID:     tenantID,
+				FederationID: federationID,
+				UserID:       userID,
+				Identifier:   identifier,
 			}
 
 			person, err := prover.Prove(ctx, attempt, password)
@@ -1307,16 +1307,16 @@ func directoryReProof(
 	bdb *bun.DB, rdb cache.Client, cipher *crypto.Cipher,
 	users *user.Repository, log logger.Logger,
 ) (user.DirectoryResolver, user.DirectoryProver) {
-	idps := identityprovider.NewRepository(bdb, cipher, log)
-	resolver := identityprovider.NewResolver(identityprovider.ResolverDeps{
-		DomainOwner: idps.FindByDomain,
-		Linked:      idps.LinkedProviders,
-		Active:      idps.ActiveIDs,
+	federations := userfederation.NewRepository(bdb, cipher, log)
+	resolver := userfederation.NewResolver(userfederation.ResolverDeps{
+		DomainOwner: federations.FindByDomain,
+		Linked:      federations.LinkedFederations,
+		Active:      federations.ActiveIDs,
 		Held:        users.HoldsIdentifier,
 		Log:         log,
 	})
-	prover := identityprovider.NewService(identityprovider.Deps{
-		Find:    idps.FindByID,
+	prover := userfederation.NewService(userfederation.Deps{
+		Find:    federations.FindByID,
 		Allow:   rdb.AllowInWindow,
 		Release: rdb.ReleaseInWindow,
 		Log:     log,
@@ -1337,11 +1337,11 @@ func directoryReProof(
 // that only an administrator can mend. Both answer ErrDirectoryNoEntry, and
 // neither says "try again". See .scratch/directory-sign-in/issues/25.
 func directoryReProver(
-	prove func(ctx context.Context, a identityprovider.Attempt, plain string) (identityprovider.Identity, error),
+	prove func(ctx context.Context, a userfederation.Attempt, plain string) (userfederation.Identity, error),
 	log logger.Logger,
 ) user.DirectoryProver {
-	return func(ctx context.Context, tenantID, idpID, userID, username, plain string) error {
-		if idpID == "" {
+	return func(ctx context.Context, tenantID, federationID, userID, username, plain string) error {
+		if federationID == "" {
 			log.Warn("refused a re-proof that no single directory proves",
 				logger.String("tenant_id", tenantID), logger.String("user_id", userID))
 			return user.ErrDirectoryNoEntry
@@ -1353,12 +1353,12 @@ func directoryReProver(
 		}
 		// The username the user domain holds is the identifier the search runs
 		// on. Naming the fields here is what keeps a swap of the four a compile
-		// error. See identityprovider.Attempt.
-		_, err := prove(ctx, identityprovider.Attempt{
-			TenantID:   tenantID,
-			IdpID:      idpID,
-			UserID:     userID,
-			Identifier: username,
+		// error. See userfederation.Attempt.
+		_, err := prove(ctx, userfederation.Attempt{
+			TenantID:     tenantID,
+			FederationID: federationID,
+			UserID:       userID,
+			Identifier:   username,
 		}, plain)
 		return accountDirectoryError(err)
 	}
@@ -1390,9 +1390,9 @@ func accountDirectoryError(err error) error {
 	switch {
 	case err == nil:
 		return nil
-	case errors.Is(err, identityprovider.ErrWrongPassword):
+	case errors.Is(err, userfederation.ErrWrongPassword):
 		return user.ErrBadPassword
-	case errors.Is(err, identityprovider.ErrNoEntry):
+	case errors.Is(err, userfederation.ErrNoEntry):
 		return user.ErrDirectoryNoEntry
 	default:
 		return user.ErrDirectoryUnavailable
@@ -1430,8 +1430,8 @@ func directoryOf(
 		if err != nil {
 			return "", "", err
 		}
-		idpID, err := resolve(ctx, tenantID, userID, "", person.Email)
-		return idpID, person.Username, err
+		federationID, err := resolve(ctx, tenantID, userID, "", person.Email)
+		return federationID, person.Username, err
 	}
 }
 
@@ -1458,7 +1458,7 @@ func directoryOf(
 // A provider in this state creates nobody, so nothing the oracle names can sign
 // in until an administrator mends the configuration.
 //
-// The three deliberate refusals of identityprovider.ErrDirectory are not among
+// The three deliberate refusals of userfederation.ErrDirectory are not among
 // them: the offboarded person, the entry another link names, and the account the
 // tenant already holds. Each one would say which people a tenant holds, so each
 // keeps the answer below. Ticket 12 and ticket 15 settled it.
@@ -1473,15 +1473,15 @@ func directoryError(err error) error {
 	switch {
 	case err == nil:
 		return nil
-	case errors.Is(err, identityprovider.ErrWrongPassword),
-		errors.Is(err, identityprovider.ErrNoEntry):
+	case errors.Is(err, userfederation.ErrWrongPassword),
+		errors.Is(err, userfederation.ErrNoEntry):
 		return session.ErrBadCredentials
-	case errors.Is(err, identityprovider.ErrDisabled):
+	case errors.Is(err, userfederation.ErrDisabled):
 		return session.ErrDirectoryDisabled
-	case errors.Is(err, identityprovider.ErrTooManyBinds):
+	case errors.Is(err, userfederation.ErrTooManyProofs):
 		return session.ErrTooManyBinds
-	case errors.Is(err, identityprovider.ErrNoOrganization),
-		errors.Is(err, identityprovider.ErrNoUsername):
+	case errors.Is(err, userfederation.ErrNoOrganization),
+		errors.Is(err, userfederation.ErrNoUsername):
 		return session.ErrDirectoryMisconfigured
 	default:
 		return session.ErrDirectoryUnavailable

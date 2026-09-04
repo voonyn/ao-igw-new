@@ -370,13 +370,13 @@ func TestLocalOwners(t *testing.T) {
 		t.Fatalf("the tenant reads %+v local owners, want both", rows)
 	}
 
-	// An Identity Link with a live active provider takes the second owner:
-	// Provider Resolution case 2 sends them to that directory.
-	const idpID = "88888888-8888-8888-8888-888888888888"
-	exec(`INSERT INTO identity_providers (id, tenant_id, name, type, state)
-	      VALUES (?, ?, 'Head office', 1, 1)`, idpID, testTenantID)
-	exec(`INSERT INTO identity_provider_user_links (tenant_id, idp_id, external_id, user_id)
-	      VALUES (?, ?, 'a-stable-guid', ?)`, testTenantID, idpID, secondUserID)
+	// An Federation Link with a live active federation takes the second owner:
+	// Federation Resolution case 2 sends them to that directory.
+	const federationID = "88888888-8888-8888-8888-888888888888"
+	exec(`INSERT INTO user_federations (id, tenant_id, name, type, state)
+	      VALUES (?, ?, 'Head office', 1, 1)`, federationID, testTenantID)
+	exec(`INSERT INTO user_federation_links (tenant_id, federation_id, external_id, user_id)
+	      VALUES (?, ?, 'a-stable-guid', ?)`, testTenantID, federationID, secondUserID)
 	rows = read("after the link")
 	if len(rows) != 1 || rows[0].UserID != testUserID {
 		t.Fatalf("the tenant reads %+v local owners, want the linked owner dropped", rows)
@@ -384,20 +384,20 @@ func TestLocalOwners(t *testing.T) {
 
 	// A claimed domain takes the first owner: case 1 outranks case 3, so the
 	// claim routes them even though they hold a hash.
-	exec(`INSERT INTO identity_provider_domains (tenant_id, domain, idp_id)
-	      VALUES (?, 'acme.com', ?)`, testTenantID, idpID)
+	exec(`INSERT INTO user_federation_domains (tenant_id, domain, federation_id)
+	      VALUES (?, 'acme.com', ?)`, testTenantID, federationID)
 	if rows := read("after the claim"); len(rows) != 0 {
 		t.Fatalf("the tenant reads %+v local owners, want the claimed owner dropped", rows)
 	}
 
-	// An inactive provider routes nobody, and a soft-deleted one behaves alike.
+	// An inactive federation routes nobody, and a soft-deleted one behaves alike.
 	// Both give the two owners back.
-	exec(`UPDATE identity_providers SET state = 2 WHERE id = ?`, idpID)
-	if rows := read("after the provider was switched off"); len(rows) != 2 {
+	exec(`UPDATE user_federations SET state = 2 WHERE id = ?`, federationID)
+	if rows := read("after the federation was switched off"); len(rows) != 2 {
 		t.Fatalf("the tenant reads %+v local owners, want both back", rows)
 	}
-	exec(`UPDATE identity_providers SET state = 1, deleted_at = NOW(6) WHERE id = ?`, idpID)
-	if rows := read("after the provider was deleted"); len(rows) != 2 {
+	exec(`UPDATE user_federations SET state = 1, deleted_at = NOW(6) WHERE id = ?`, federationID)
+	if rows := read("after the federation was deleted"); len(rows) != 2 {
 		t.Fatalf("the tenant reads %+v local owners, want both back", rows)
 	}
 }
@@ -477,7 +477,7 @@ func TestPeopleAtDomains(t *testing.T) {
 		t.Errorf("acme.com moves %d people after a soft delete, want 1", total)
 	}
 
-	// The username is the second form Provider Resolution case 1 reads. This
+	// The username is the second form Federation Resolution case 1 reads. This
 	// person carries another address, and the claim still moves them.
 	exec(`INSERT INTO users (id, tenant_id, org_id, username, user_type, state)
 	      VALUES (?, ?, ?, 'fourth@acme.com', 1, 1)`, revokedUserID, testTenantID, testOrgID)

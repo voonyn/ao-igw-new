@@ -1,4 +1,4 @@
-package identityprovider
+package userfederation
 
 import (
 	"context"
@@ -52,7 +52,7 @@ func TestSearchFilter(t *testing.T) {
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			p := Provider{UserObjectClasses: c.classes, UserFilters: c.filters}
+			p := Federation{UserObjectClasses: c.classes, UserFilters: c.filters}
 
 			if got := searchFilter(p, c.identifier); got != c.want {
 				t.Fatalf("searchFilter = %q, want %q", got, c.want)
@@ -66,7 +66,7 @@ func TestSearchFilter(t *testing.T) {
 // search to every person of the directory, and the second bind then proves the
 // password of somebody else.
 func TestSearchFilterEscapesTheIdentifier(t *testing.T) {
-	p := Provider{UserObjectClasses: []string{"user"}, UserFilters: []string{"uid"}}
+	p := Federation{UserObjectClasses: []string{"user"}, UserFilters: []string{"uid"}}
 
 	hostile := []string{"*", "*)(uid=*", "alice)(|(uid=admin", "alice\\", "alice\x00"}
 
@@ -89,7 +89,7 @@ func TestSearchFilterEscapesTheIdentifier(t *testing.T) {
 // TestSearchBase covers the subtree the search runs under. user_base is a
 // subtree of base_dn, so it is prefixed and never replaces the base.
 func TestSearchBase(t *testing.T) {
-	p := Provider{BaseDN: "dc=corp,dc=example"}
+	p := Federation{BaseDN: "dc=corp,dc=example"}
 	if got := searchBase(p); got != "dc=corp,dc=example" {
 		t.Fatalf("searchBase = %q, want the base", got)
 	}
@@ -104,7 +104,7 @@ func TestSearchBase(t *testing.T) {
 // is never asked for, and the answer carries an empty value instead of a
 // failure.
 func TestAttributes(t *testing.T) {
-	p := storedProvider(testOrgID)
+	p := storedFederation(testOrgID)
 	p.AttrDisplayName = "displayName"
 
 	want := []string{"objectGUID", "sAMAccountName", "mail", "displayName"}
@@ -158,21 +158,21 @@ func TestStableIDEncodesBinary(t *testing.T) {
 	}
 }
 
-// TestBindRefusesAProviderWithNoFilter covers a row that maps no user filter.
+// TestBindRefusesAFederationWithNoFilter covers a row that maps no user filter.
 // The filter would then name no identifier, and the search would match whichever
 // person the base holds. The columns are nullable, so the guard is not the body
 // alone.
-func TestBindRefusesAProviderWithNoFilter(t *testing.T) {
+func TestBindRefusesAFederationWithNoFilter(t *testing.T) {
 	svc := testService(t, deps{})
 	ctx := context.Background()
 
-	p := storedProvider(testOrgID)
+	p := storedFederation(testOrgID)
 	p.UserFilters = nil
 	if _, err := svc.Bind(ctx, p, "alice", "the-typed-password"); !errors.Is(err, ErrDirectory) {
 		t.Fatalf("err = %v, want ErrDirectory for a row with no user filter", err)
 	}
 
-	p = storedProvider(testOrgID)
+	p = storedFederation(testOrgID)
 	p.UserObjectClasses = nil
 	if _, err := svc.Bind(ctx, p, "alice", "the-typed-password"); !errors.Is(err, ErrDirectory) {
 		t.Fatalf("err = %v, want ErrDirectory for a row with no object class", err)
@@ -209,11 +209,11 @@ func TestAddress(t *testing.T) {
 	}
 }
 
-// TestTLSConfig covers the transport of one provider. Certificate checks are on,
-// the minimum version is pinned, and root_ca is the one authority the provider
+// TestTLSConfig covers the transport of one federation. Certificate checks are on,
+// the minimum version is pinned, and root_ca is the one authority the federation
 // trusts.
 func TestTLSConfig(t *testing.T) {
-	p := storedProvider(testOrgID)
+	p := storedFederation(testOrgID)
 
 	cfg, err := tlsConfig(p, "dc1.corp.example")
 	if err != nil {
@@ -253,7 +253,7 @@ func TestTLSConfig(t *testing.T) {
 func TestBindRefusesAnEmptyPassword(t *testing.T) {
 	svc := testService(t, deps{})
 
-	if _, err := svc.Bind(context.Background(), storedProvider(testOrgID), "alice", ""); !errors.Is(err, ErrWrongPassword) {
+	if _, err := svc.Bind(context.Background(), storedFederation(testOrgID), "alice", ""); !errors.Is(err, ErrWrongPassword) {
 		t.Fatalf("err = %v, want ErrWrongPassword", err)
 	}
 }
@@ -263,12 +263,12 @@ func TestBindRefusesAnEmptyPassword(t *testing.T) {
 // timeout_ms bounds it.
 //
 // The same test walks every log line: neither the password the person typed nor
-// the bind password of the provider reaches one.
+// the bind password of the federation reaches one.
 func TestBindStopsAtTheTimeout(t *testing.T) {
 	svc := testService(t, deps{})
 	silent := silentDirectory(t)
 
-	p := storedProvider(testOrgID)
+	p := storedFederation(testOrgID)
 	p.Mode, p.Servers, p.TimeoutMS = ModePlain, []string{"ldap://" + silent}, 200
 
 	start := time.Now()
@@ -293,7 +293,7 @@ func TestBindStopsAtTheTimeout(t *testing.T) {
 func TestBindReportsADirectoryThatRefusesTheConnection(t *testing.T) {
 	svc := testService(t, deps{})
 
-	p := storedProvider(testOrgID)
+	p := storedFederation(testOrgID)
 	p.Mode, p.Servers, p.TimeoutMS = ModePlain, []string{"ldap://" + closedPort(t)}, 2000
 
 	_, err := svc.Bind(context.Background(), p, "alice", "the-typed-password")
@@ -305,17 +305,17 @@ func TestBindReportsADirectoryThatRefusesTheConnection(t *testing.T) {
 	}
 }
 
-// TestProveRefusesAnInactiveProvider covers the switch a tenant turns off. The
+// TestProveRefusesAnInactiveFederation covers the switch a tenant turns off. The
 // directory is not dialled and the budget is not spent, because neither the
 // person nor the directory did anything wrong.
-func TestProveRefusesAnInactiveProvider(t *testing.T) {
-	off := failingProvider(t)
+func TestProveRefusesAnInactiveFederation(t *testing.T) {
+	off := failingFederation(t)
 	off.State = StateInactive
-	svc := testService(t, deps{rows: []Provider{off}})
+	svc := testService(t, deps{rows: []Federation{off}})
 
 	_, err := svc.Prove(
 		context.Background(),
-		Attempt{TenantID: testTenantID, IdpID: tenantIdpID, UserID: personID, Identifier: "alice"},
+		Attempt{TenantID: testTenantID, FederationID: tenantFederationID, UserID: personID, Identifier: "alice"},
 		"the-typed-password",
 	)
 	if !errors.Is(err, ErrDisabled) {
@@ -326,15 +326,15 @@ func TestProveRefusesAnInactiveProvider(t *testing.T) {
 	}
 }
 
-// TestProveRefusesAProviderNobodyHolds covers the soft-deleted row. The read
-// filters deleted_at, so a deleted provider is a miss, and the two states behave
+// TestProveRefusesAFederationNobodyHolds covers the soft-deleted row. The read
+// filters deleted_at, so a deleted federation is a miss, and the two states behave
 // alike: both refuse and neither spends the budget.
-func TestProveRefusesAProviderNobodyHolds(t *testing.T) {
+func TestProveRefusesAFederationNobodyHolds(t *testing.T) {
 	svc := testService(t, deps{})
 
 	_, err := svc.Prove(
 		context.Background(),
-		Attempt{TenantID: testTenantID, IdpID: deadIdpID, UserID: personID, Identifier: "alice"},
+		Attempt{TenantID: testTenantID, FederationID: deadFederationID, UserID: personID, Identifier: "alice"},
 		"the-typed-password",
 	)
 	if !errors.Is(err, ErrDisabled) {
@@ -345,19 +345,19 @@ func TestProveRefusesAProviderNobodyHolds(t *testing.T) {
 	}
 }
 
-// TestProveRefusesASpentBindBudget covers the cap. The provider dials an address
+// TestProveRefusesASpentBindBudget covers the cap. The federation dials an address
 // nothing listens on, so an answer that named the directory would prove that the
-// bind ran. ErrTooManyBinds proves that it did not.
+// bind ran. ErrTooManyProofs proves that it did not.
 func TestProveRefusesASpentBindBudget(t *testing.T) {
-	svc := testService(t, deps{rows: []Provider{failingProvider(t)}, budgetSpent: true})
+	svc := testService(t, deps{rows: []Federation{failingFederation(t)}, budgetSpent: true})
 
 	_, err := svc.Prove(
 		context.Background(),
-		Attempt{TenantID: testTenantID, IdpID: tenantIdpID, UserID: personID, Identifier: "alice"},
+		Attempt{TenantID: testTenantID, FederationID: tenantFederationID, UserID: personID, Identifier: "alice"},
 		"the-typed-password",
 	)
-	if !errors.Is(err, ErrTooManyBinds) {
-		t.Fatalf("err = %v, want ErrTooManyBinds", err)
+	if !errors.Is(err, ErrTooManyProofs) {
+		t.Fatalf("err = %v, want ErrTooManyProofs", err)
 	}
 	if errors.Is(err, ErrDirectory) {
 		t.Fatalf("err = %v, want the cap and not a directory that was dialled", err)
@@ -368,31 +368,31 @@ func TestProveRefusesASpentBindBudget(t *testing.T) {
 // holds the whole budget, so a bind that ran without it would leave an outbound
 // call into a customer network unmetered for as long as Redis is down.
 func TestProveRefusesABindBudgetNobodyCouldRead(t *testing.T) {
-	svc := testService(t, deps{rows: []Provider{failingProvider(t)}, budgetBroken: true})
+	svc := testService(t, deps{rows: []Federation{failingFederation(t)}, budgetBroken: true})
 
 	_, err := svc.Prove(
 		context.Background(),
-		Attempt{TenantID: testTenantID, IdpID: tenantIdpID, UserID: personID, Identifier: "alice"},
+		Attempt{TenantID: testTenantID, FederationID: tenantFederationID, UserID: personID, Identifier: "alice"},
 		"the-typed-password",
 	)
-	if !errors.Is(err, ErrBindUnavailable) {
-		t.Fatalf("err = %v, want ErrBindUnavailable", err)
+	if !errors.Is(err, ErrProofUnavailable) {
+		t.Fatalf("err = %v, want ErrProofUnavailable", err)
 	}
-	if errors.Is(err, ErrTooManyBinds) || errors.Is(err, ErrDirectory) {
+	if errors.Is(err, ErrTooManyProofs) || errors.Is(err, ErrDirectory) {
 		t.Fatalf("err = %v, want the unreadable budget and not the spent one", err)
 	}
 }
 
-// TestProveSpendsOneBindOnALiveProvider covers the order the budget is spent in.
+// TestProveSpendsOneBindOnALiveFederation covers the order the budget is spent in.
 // It is spent on the way in, because it bounds the outbound call and not the
 // answer. The directory here never answers, so the spend is given back and the
 // counter ends where it started.
-func TestProveSpendsOneBindOnALiveProvider(t *testing.T) {
-	svc := testService(t, deps{rows: []Provider{failingProvider(t)}})
+func TestProveSpendsOneBindOnALiveFederation(t *testing.T) {
+	svc := testService(t, deps{rows: []Federation{failingFederation(t)}})
 
 	_, err := svc.Prove(
 		context.Background(),
-		Attempt{TenantID: testTenantID, IdpID: tenantIdpID, UserID: personID, Identifier: "alice"},
+		Attempt{TenantID: testTenantID, FederationID: tenantFederationID, UserID: personID, Identifier: "alice"},
 		"the-typed-password",
 	)
 	if !errors.Is(err, ErrDirectory) {
@@ -417,23 +417,23 @@ func TestProveSpendsOneBindOnALiveProvider(t *testing.T) {
 func TestProveGivesTheBindBackWhenTheDirectoryDoesNotAnswer(t *testing.T) {
 	cases := []struct {
 		name string
-		row  func(t *testing.T) Provider
+		row  func(t *testing.T) Federation
 	}{
-		{"a dial failure", failingProvider},
-		{"a timeout", func(t *testing.T) Provider {
-			p := storedProvider(testOrgID)
+		{"a dial failure", failingFederation},
+		{"a timeout", func(t *testing.T) Federation {
+			p := storedFederation(testOrgID)
 			p.Mode, p.Servers, p.TimeoutMS = ModePlain, []string{"ldap://" + silentDirectory(t)}, 200
 			return p
 		}},
-		{"a TLS failure", func(t *testing.T) Provider {
-			p := storedProvider(testOrgID)
+		{"a TLS failure", func(t *testing.T) Federation {
+			p := storedFederation(testOrgID)
 			p.Mode = ModeLDAPS
 			p.Servers = []string{"ldaps://" + directory(t, ldap.LDAPResultSuccess, 0, ldap.LDAPResultSuccess)}
 			p.TimeoutMS = 2000
 			return p
 		}},
-		{"a bind failure of the service credential", func(t *testing.T) Provider {
-			p := storedProvider(testOrgID)
+		{"a bind failure of the service credential", func(t *testing.T) Federation {
+			p := storedFederation(testOrgID)
 			p.Mode = ModePlain
 			p.Servers = []string{"ldap://" + directory(t, ldap.LDAPResultInvalidCredentials, 0, 0)}
 			p.TimeoutMS = 2000
@@ -443,11 +443,11 @@ func TestProveGivesTheBindBackWhenTheDirectoryDoesNotAnswer(t *testing.T) {
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			svc := testService(t, deps{rows: []Provider{c.row(t)}})
+			svc := testService(t, deps{rows: []Federation{c.row(t)}})
 
 			_, err := svc.Prove(
 				context.Background(),
-				Attempt{TenantID: testTenantID, IdpID: tenantIdpID, UserID: personID, Identifier: "alice"},
+				Attempt{TenantID: testTenantID, FederationID: tenantFederationID, UserID: personID, Identifier: "alice"},
 				"the-typed-password",
 			)
 			if !errors.Is(err, ErrDirectory) {
@@ -480,13 +480,13 @@ func TestProveKeepsTheBindOnACredentialFailure(t *testing.T) {
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			p := storedProvider(testOrgID)
+			p := storedFederation(testOrgID)
 			p.Mode, p.Servers, p.TimeoutMS = ModePlain, []string{"ldap://" + c.address}, 2000
-			svc := testService(t, deps{rows: []Provider{p}})
+			svc := testService(t, deps{rows: []Federation{p}})
 
 			_, err := svc.Prove(
 				context.Background(),
-				Attempt{TenantID: testTenantID, IdpID: tenantIdpID, UserID: personID, Identifier: "alice"},
+				Attempt{TenantID: testTenantID, FederationID: tenantFederationID, UserID: personID, Identifier: "alice"},
 				"the-typed-password",
 			)
 			if !errors.Is(err, c.want) {
@@ -504,11 +504,11 @@ func TestProveKeepsTheBindOnACredentialFailure(t *testing.T) {
 // be written. The person keeps the answer they earned, and the counter drifts
 // high by one and never low. One error line records the drift.
 func TestProveAnswersTheDirectoryWhenTheRefundFails(t *testing.T) {
-	svc := testService(t, deps{rows: []Provider{failingProvider(t)}, releaseBroken: true})
+	svc := testService(t, deps{rows: []Federation{failingFederation(t)}, releaseBroken: true})
 
 	_, err := svc.Prove(
 		context.Background(),
-		Attempt{TenantID: testTenantID, IdpID: tenantIdpID, UserID: personID, Identifier: "alice"},
+		Attempt{TenantID: testTenantID, FederationID: tenantFederationID, UserID: personID, Identifier: "alice"},
 		"the-typed-password",
 	)
 	if !errors.Is(err, ErrDirectory) {
@@ -588,7 +588,7 @@ func serveProof(conn net.Conn, personCode int) {
 	}
 }
 
-// namedEntry is one search result that carries the id attribute the provider
+// namedEntry is one search result that carries the id attribute the federation
 // maps. Without it the entry names nobody, and the bind that proves the password
 // is never reached.
 func namedEntry(id int64) []byte {
@@ -613,11 +613,11 @@ func namedEntry(id int64) []byte {
 // stranger locks a named person out of the directory sign-in with ten empty
 // requests.
 func TestProveSpendsNothingOnAnEmptyPassword(t *testing.T) {
-	svc := testService(t, deps{rows: []Provider{failingProvider(t)}})
+	svc := testService(t, deps{rows: []Federation{failingFederation(t)}})
 
 	_, err := svc.Prove(
 		context.Background(),
-		Attempt{TenantID: testTenantID, IdpID: tenantIdpID, UserID: personID, Identifier: "alice"},
+		Attempt{TenantID: testTenantID, FederationID: tenantFederationID, UserID: personID, Identifier: "alice"},
 		"",
 	)
 	if !errors.Is(err, ErrWrongPassword) {
@@ -633,15 +633,15 @@ func TestProveSpendsNothingOnAnEmptyPassword(t *testing.T) {
 // of the identifier and never the address itself, because every operator who
 // lists the keyspace reads these keys.
 func TestUnnamedBindKeyCarriesNoIdentifier(t *testing.T) {
-	key := bindKey(Attempt{TenantID: testTenantID, UserID: "", Identifier: "alice@corp.example"})
+	key := proofKey(Attempt{TenantID: testTenantID, UserID: "", Identifier: "alice@corp.example"})
 
 	if strings.Contains(key, "alice") || strings.Contains(key, "corp.example") {
-		t.Fatalf("bindKey = %q, want no identifier in it", key)
+		t.Fatalf("proofKey = %q, want no identifier in it", key)
 	}
-	if key == bindKey(Attempt{TenantID: testTenantID, UserID: "", Identifier: "bob@corp.example"}) {
+	if key == proofKey(Attempt{TenantID: testTenantID, UserID: "", Identifier: "bob@corp.example"}) {
 		t.Fatal("two identifiers share one budget key, want one key each")
 	}
-	if key != bindKey(Attempt{TenantID: testTenantID, UserID: "", Identifier: "alice@corp.example"}) {
+	if key != proofKey(Attempt{TenantID: testTenantID, UserID: "", Identifier: "alice@corp.example"}) {
 		t.Fatal("the key of one identifier changed between two reads")
 	}
 }
@@ -652,7 +652,7 @@ func TestUnnamedBindKeyCarriesNoIdentifier(t *testing.T) {
 // key that folded neither gave one entry a fresh counter of ten for every typed
 // form a caller invented. See .scratch/directory-sign-in/issues/34.
 func TestUnnamedBindKeyFoldsTheIdentifier(t *testing.T) {
-	key := bindKey(Attempt{TenantID: testTenantID, UserID: "", Identifier: "alice@corp.example"})
+	key := proofKey(Attempt{TenantID: testTenantID, UserID: "", Identifier: "alice@corp.example"})
 
 	forms := []string{
 		"Alice@corp.example",
@@ -661,12 +661,12 @@ func TestUnnamedBindKeyFoldsTheIdentifier(t *testing.T) {
 		"alice@corp.example\t",
 	}
 	for _, form := range forms {
-		if bindKey(Attempt{TenantID: testTenantID, UserID: "", Identifier: form}) != key {
+		if proofKey(Attempt{TenantID: testTenantID, UserID: "", Identifier: form}) != key {
 			t.Errorf("the form %q holds a budget of its own, want one counter for one entry", form)
 		}
 	}
 
-	if bindKey(Attempt{TenantID: testTenantID, UserID: "", Identifier: "bob@corp.example"}) == key {
+	if proofKey(Attempt{TenantID: testTenantID, UserID: "", Identifier: "bob@corp.example"}) == key {
 		t.Error("two entries share one budget key, want one key each")
 	}
 }
@@ -675,18 +675,18 @@ func TestUnnamedBindKeyFoldsTheIdentifier(t *testing.T) {
 // a username and an email address, so a key of the typed string gave one person
 // two counters of ten, and the real cap was twenty.
 func TestBindKeyNamesThePerson(t *testing.T) {
-	byUsername := bindKey(Attempt{TenantID: testTenantID, UserID: personID, Identifier: "alice"})
+	byUsername := proofKey(Attempt{TenantID: testTenantID, UserID: personID, Identifier: "alice"})
 
-	if byUsername != bindKey(Attempt{TenantID: testTenantID, UserID: personID, Identifier: "alice@corp.example"}) {
-		t.Fatalf("bindKey = %q, want both forms of one identifier on one key", byUsername)
+	if byUsername != proofKey(Attempt{TenantID: testTenantID, UserID: personID, Identifier: "alice@corp.example"}) {
+		t.Fatalf("proofKey = %q, want both forms of one identifier on one key", byUsername)
 	}
-	if byUsername == bindKey(Attempt{TenantID: testTenantID, UserID: testUserID, Identifier: "alice"}) {
+	if byUsername == proofKey(Attempt{TenantID: testTenantID, UserID: testUserID, Identifier: "alice"}) {
 		t.Fatal("two people share one budget key, want one key each")
 	}
-	if byUsername == bindKey(Attempt{TenantID: otherTenant, UserID: personID, Identifier: "alice"}) {
+	if byUsername == proofKey(Attempt{TenantID: otherTenant, UserID: personID, Identifier: "alice"}) {
 		t.Fatal("two tenants share one budget key, want one key each")
 	}
-	if byUsername == bindKey(Attempt{TenantID: testTenantID, UserID: "", Identifier: "alice"}) {
+	if byUsername == proofKey(Attempt{TenantID: testTenantID, UserID: "", Identifier: "alice"}) {
 		t.Fatal("a named person and a first bind share one key, want one key each")
 	}
 }
@@ -695,12 +695,12 @@ func TestBindKeyNamesThePerson(t *testing.T) {
 // person types their username and then their email address, and the two binds
 // spend one counter.
 func TestProveSpendsOneBudgetForBothIdentifierForms(t *testing.T) {
-	svc := testService(t, deps{rows: []Provider{failingProvider(t)}})
+	svc := testService(t, deps{rows: []Federation{failingFederation(t)}})
 
 	for _, identifier := range []string{"alice", "alice@corp.example"} {
 		_, err := svc.Prove(
 			context.Background(),
-			Attempt{TenantID: testTenantID, IdpID: tenantIdpID, UserID: personID, Identifier: identifier},
+			Attempt{TenantID: testTenantID, FederationID: tenantFederationID, UserID: personID, Identifier: identifier},
 			"the-typed-password",
 		)
 		if !errors.Is(err, ErrDirectory) {
@@ -719,12 +719,12 @@ func TestProveSpendsOneBudgetForBothIdentifierForms(t *testing.T) {
 // TestProveKeepsASecondCounterForAnUnresolvableForm pins the residual the person
 // key leaves. The person types a User Principal Name the identifier step cannot
 // resolve, so the bind names nobody and the budget keys on the typed string. The
-// Identity Link names the same person after that bind, and their next sign-in
+// Federation Link names the same person after that bind, and their next sign-in
 // spends the counter of the person. The two counters are separate, and no key
 // available before the bind can join them. See the ceiling on bindLimit and
 // docs/specs/0002-directory-sign-in.md.
 func TestProveKeepsASecondCounterForAnUnresolvableForm(t *testing.T) {
-	svc := testService(t, deps{rows: []Provider{failingProvider(t)}})
+	svc := testService(t, deps{rows: []Federation{failingFederation(t)}})
 
 	for _, c := range []struct{ userID, identifier string }{
 		{"", "alice@corp.example"},
@@ -732,7 +732,7 @@ func TestProveKeepsASecondCounterForAnUnresolvableForm(t *testing.T) {
 	} {
 		_, err := svc.Prove(
 			context.Background(),
-			Attempt{TenantID: testTenantID, IdpID: tenantIdpID, UserID: c.userID, Identifier: c.identifier},
+			Attempt{TenantID: testTenantID, FederationID: tenantFederationID, UserID: c.userID, Identifier: c.identifier},
 			"the-typed-password",
 		)
 		if !errors.Is(err, ErrDirectory) {
@@ -751,11 +751,11 @@ func TestProveKeepsASecondCounterForAnUnresolvableForm(t *testing.T) {
 // TestProveLogsNoPassword proves that neither the typed password nor the
 // configured bind password reaches a log line of the sign-in bind.
 func TestProveLogsNoPassword(t *testing.T) {
-	svc := testService(t, deps{rows: []Provider{failingProvider(t)}})
+	svc := testService(t, deps{rows: []Federation{failingFederation(t)}})
 
 	if _, err := svc.Prove(
 		context.Background(),
-		Attempt{TenantID: testTenantID, IdpID: tenantIdpID, UserID: personID, Identifier: "alice"},
+		Attempt{TenantID: testTenantID, FederationID: tenantFederationID, UserID: personID, Identifier: "alice"},
 		"the-typed-password",
 	); err == nil {
 		t.Fatal("Prove answered no error, want a directory that refused the connection")

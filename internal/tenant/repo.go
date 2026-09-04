@@ -49,11 +49,11 @@ var ErrLastLocalOwner = errors.New("the tenant would keep no local owner")
 // count carries its own copy rather than closing the cycle.
 const userStateActive = 1
 
-// idpStateActive is identity_providers.state for a provider that proves a
-// sign-in. The value is declared in internal/identityprovider, and that package
+// federationStateActive is user_federations.state for a federation that proves a
+// sign-in. The value is declared in internal/userfederation, and that package
 // imports this one, so the local owner read carries its own copy rather than
 // closing the cycle.
-const idpStateActive = 1
+const federationStateActive = 1
 
 // The tenant roles. A person who holds one of them administers the whole
 // tenant, so the console admits them. The tenant owns tenant membership, so the
@@ -199,16 +199,16 @@ func (r *Repository) CountOwners(ctx context.Context, tenantID string) (int64, e
 // because a tenant whose owners a directory proves counts owners it cannot reach
 // while that directory is off.
 //
-// A local owner is an owner that Provider Resolution case 3 answers for. Four
+// A local owner is an owner that Federation Resolution case 3 answers for. Four
 // predicates say so, and each one matches a case of the resolver:
 //
 //   - The account is live and active, and the membership carries IAM_OWNER. This
 //     is what CountOwners already reads.
 //   - The person holds a password hash. A NULL or empty hash proves nothing, so
 //     that person signs in through a directory or not at all.
-//   - The person holds no Identity Link with a live active provider. Case 2 sends
-//     them to that provider and never to the local compare.
-//   - No live active provider claims the domain of their email address. Case 1
+//   - The person holds no Federation Link with a live active federation. Case 2 sends
+//     them to that federation and never to the local compare.
+//   - No live active federation claims the domain of their email address. Case 1
 //     outranks case 3, so a claim routes them even though they hold a hash.
 //
 // The email comes back with the row, lowercased, because the guard that refuses
@@ -232,18 +232,18 @@ func (r *Repository) LocalOwners(ctx context.Context, tenantID string) ([]LocalO
 		Where("h.password_hash IS NOT NULL").
 		Where("h.password_hash <> ''").
 		Where(`NOT EXISTS (
-			SELECT 1 FROM identity_provider_user_links AS l
-			JOIN identity_providers AS lp
-			  ON lp.id = l.idp_id AND lp.tenant_id = l.tenant_id AND lp.deleted_at IS NULL
+			SELECT 1 FROM user_federation_links AS l
+			JOIN user_federations AS lp
+			  ON lp.id = l.federation_id AND lp.tenant_id = l.tenant_id AND lp.deleted_at IS NULL
 			WHERE l.tenant_id = m.tenant_id AND l.user_id = m.user_id AND lp.state = ?
-		)`, idpStateActive).
+		)`, federationStateActive).
 		Where(`NOT EXISTS (
-			SELECT 1 FROM identity_provider_domains AS d
-			JOIN identity_providers AS dp
-			  ON dp.id = d.idp_id AND dp.tenant_id = d.tenant_id AND dp.deleted_at IS NULL
+			SELECT 1 FROM user_federation_domains AS d
+			JOIN user_federations AS dp
+			  ON dp.id = d.federation_id AND dp.tenant_id = d.tenant_id AND dp.deleted_at IS NULL
 			WHERE d.tenant_id = m.tenant_id AND d.deleted_at IS NULL AND dp.state = ?
 			  AND d.domain = SUBSTRING_INDEX(LOWER(h.email), '@', -1)
-		)`, idpStateActive).
+		)`, federationStateActive).
 		Order("m.user_id ASC").
 		Scan(ctx, &rows)
 	if err != nil {
@@ -387,7 +387,7 @@ func (r *Repository) DeleteMember(ctx context.Context, tenantID, userID string) 
 // of the given domains, and the total behind the page.
 //
 // It is the read behind the claim preview of docs/specs/0002-directory-sign-in.md:
-// the console names the people a domain claim moves before it saves. Provider
+// the console names the people a domain claim moves before it saves. Federation
 // Resolution case 1 outranks every case below it, so a claim routes every one of
 // these people to the directory, including the people who hold a local password
 // and no directory account. Those are the ones the preview is for, because every
@@ -397,7 +397,7 @@ func (r *Repository) DeleteMember(ctx context.Context, tenantID, userID string) 
 // whole population, because a preview that named the subset would read as the
 // whole blast radius and the people it dropped still move.
 //
-// Two forms carry the domain, and the read matches both, because Provider
+// Two forms carry the domain, and the read matches both, because Federation
 // Resolution case 1 reads both: the identifier the person types, and the email
 // address the tenant holds for them. A person whose username is an address at a
 // claimed domain is routed by the claim even when their stored email is not, so
