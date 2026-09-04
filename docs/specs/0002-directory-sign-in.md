@@ -1,6 +1,7 @@
 # Directory Sign-In
 
-Status: ready for agent. Vocabulary: `CONTEXT.md`. Decisions: `docs/adr/0013`.
+Status: ready for agent. Vocabulary: `CONTEXT.md`. Decisions: `docs/adr/0013` and
+`docs/adr/0014`.
 
 ## Problem Statement
 
@@ -18,26 +19,31 @@ The gateway has one credential check and one place that runs it.
 `internal/session/service.go:172`. Nothing else proves a password at sign-in. The
 change is small in surface and large in consequence.
 
-Nothing in the schema serves an external credential today. The only occurrence of the
-word "federation" is `application_oidc_configs.federation_config`, which belongs to a
-relying party and not to a credential. `applications.app_type = 2` names SAML for an
-application the gateway would serve, which is the opposite direction. No table, no
-package, and no dependency exists for this work.
+Before this work, nothing in the schema served an external credential. The only
+occurrence of the word "federation" was `application_oidc_configs.federation_config`,
+which belongs to a relying party and not to a credential. `applications.app_type = 2`
+names SAML for an application the gateway would serve, which is the opposite direction.
+No table, no package, and no dependency existed for this work.
 
 ## Solution
 
-A Tenant administrator registers an **Identity Provider** in the Console: the servers,
+A Tenant administrator registers a **User Federation** in the Console: the servers,
 the transport, the bind credential, the search, and the attribute names. The row lives
-at the Tenant level, or at one Organization.
+at the Tenant level, or at one Organization. Its Federation Method is Directory, and
+its Server Type is LDAP or Active Directory.
 
-A person whose account belongs to that provider types the directory password into the
-same sign-in screen as everybody else. The gateway resolves the provider at the
+**Identity Provider is a reserved word here, and it names the redirect kind alone.**
+Nothing in this spec serves one. `docs/adr/0014` holds that word, names the concept
+this spec builds, and `CONTEXT.md` carries the vocabulary.
+
+A person whose account belongs to that federation types the directory password into the
+same sign-in screen as everybody else. The gateway resolves the federation at the
 identifier step, and the password step proves the password with an LDAP bind instead
 of a bcrypt compare. The front end sees no difference, and the answer never says which
 people a Tenant holds.
 
-The first successful bind creates the person here, in the Organization the provider
-names, with an **Identity Link** to the directory account. The person holds no local
+The first successful bind creates the person here, in the Organization the federation
+names, with a **Federation Link** to the directory account. The person holds no local
 password from that moment on.
 
 Everything after the password is unchanged. The person owes the same Pending Steps,
@@ -82,25 +88,27 @@ reports `pwd` in `amr`, exactly as a local password does.
 
 ### Scope and role
 
-- This spec covers one Identity Provider type: LDAP, which serves Active Directory.
+- This spec covers one Federation Method: Directory. Its Server Type is LDAP or
+  Active Directory, and the two share every column and every code path.
 - A bind proves a password. It is the credential check, and nothing more. The gateway
   stays the only OpenID Provider.
-- Redirect providers, which is every social and enterprise SSO provider, are out of
-  scope. The tables here are built to hold them, and no code here serves them.
+- An External Identity Provider, which is every redirect kind, is out of scope. It
+  gets a table, a package, and a link table of its own when it lands. See
+  `docs/adr/0014`.
 - A machine account is never owned by a directory. It holds no `user_humans` row, and
   a bind writes to that row.
 
 ### Modules
 
-- A new `identityprovider` domain package holds the provider record and the LDAP
+- A new `userfederation` domain package holds the federation record and the LDAP
   client. It follows the layout of `authpolicy`: model, repository, DTO, service,
   handler.
 - The package imports neither the user domain nor the login session domain. It takes
   what it needs as function values in a `Deps` struct, the way `totp` and `passkey`
   already do. The composition root wires every crossing.
 - `session` gains no import of the new package. The router hands `session.Deps` two new
-  function values: one that resolves a provider, and one that proves a password against
-  it.
+  function values. One runs **Federation Resolution**. The other runs the **External
+  Proof** of a password against the federation that resolution named.
 - The pending-step closure in the composition root, `internal/api/http/router.go:1112`,
   does not change. A person the directory owns holds a local row, and every step reads
   that row.
@@ -109,23 +117,31 @@ reports `pwd` in `amr`, exactly as a local password does.
 
 Three tables, in migration `00045`.
 
-- `identity_providers` — one row per provider. Keyed `(id, tenant_id)`, with `org_id`
-  where `''` is the Tenant-wide row and a UUID is that Organization's own. `type` is
-  `1` for LDAP. `state` is active or inactive, beside `deleted_at`, which is the
-  `applications` shape. Per-type fields are inline and nullable.
-- `identity_provider_domains` — `(tenant_id, domain)` unique. A domain belongs to at
-  most one provider of a Tenant, and the database enforces it. A JSON list could not.
-- `identity_provider_user_links` — the Identity Link. Primary key
-  `(tenant_id, idp_id, external_id)`, so one directory account maps to one person. A
-  second unique key `(tenant_id, idp_id, user_id)` means one person holds at most one
-  account per provider. One person can hold several links, one per provider, which is
-  what a redirect provider will need.
+- `user_federations` — one row per federation. Keyed `(id, tenant_id)`, with `org_id`
+  where `''` is the Tenant-wide row and a UUID is that Organization's own. `state` is
+  active or inactive, beside `deleted_at`, which is the `applications` shape.
+  Per-method fields are inline and nullable.
+- Two columns of that table carry two axes, and neither carries both. `type` names the
+  Federation Method: `1` is Directory, and `2` is Database, recorded and not served.
+  `server_type` names the server that method talks to: `1` is LDAP, and `2` is Active
+  Directory. `server_type` values are numbered globally and never restart per method,
+  so a value means one thing on its own. No Go code branches on `server_type` today.
+  The column exists because an administrator saves an Active Directory row, reopens the
+  form, and the Console must show the server that administrator picked. See
+  `docs/adr/0014`.
+- `user_federation_domains` — `(tenant_id, domain)` unique. A domain belongs to at
+  most one federation of a Tenant, and the database enforces it. A JSON list could not.
+- `user_federation_links` — the Federation Link. Primary key
+  `(tenant_id, federation_id, external_id)`, so one directory account maps to one
+  person. A second unique key `(tenant_id, federation_id, user_id)` means one person
+  holds at most one account per federation. One person can hold several links, one per
+  federation, which is what a Tenant that runs two federations needs.
 
 Rules that ride with them:
 
-- The provider is an entity. It carries `deleted_at`, and every read filters
+- The federation is an entity. It carries `deleted_at`, and every read filters
   `deleted_at IS NULL`.
-- The Identity Link is not an entity. It is hard deleted, and the audit row is the
+- The Federation Link is not an entity. It is hard deleted, and the audit row is the
   record. See `CLAUDE.md`.
 - `bind_password` is `VARBINARY`, sealed by `crypto.Cipher`. Copy
   `internal/notification/repo.go:88-96` exactly: the repository holds the cipher, seals
@@ -133,31 +149,31 @@ Rules that ride with them:
   holds it. The DTO answers a boolean and takes a `*string`, which is
   `internal/notification/dto.go:29`: absent keeps, empty clears, a value replaces.
 - No bootstrap seed. A Tenant with no directory holds no rows, and the repository
-  answers "no provider" the way `notification_settings` answers `ErrNoSettings`.
+  answers "no federation" the way `notification_settings` answers `ErrNoSettings`.
 - The resolved row wins **whole, never merged**. `auth_policy_settings` merges knob by
   knob in Go, at `internal/authpolicy/dto.go:146-153`. A connection row must not: half a
   bind DN from the Tenant and half from an Organization is nonsense. Resolution never
   walks the two levels either — no case below reads `org_id` — so there is no level
   precedence to write. See ADR 0013.
 - `default_org_id` is required when `org_id` is `''`. `users.org_id` is mandatory
-  (`00006`), so a Tenant-wide provider that names no Organization creates nobody, and the
-  first bind would fail after the password was proved. The service refuses to save one,
-  and the Console marks the field required at that level.
+  (`00006`), so a Tenant-wide federation that names no Organization creates nobody,
+  and the first bind would fail after the password was proved. The service refuses to
+  save one, and the Console marks the field required at that level.
 
-### Provider Resolution
+### Federation Resolution
 
 The identifier step resolves one of four cases and records the result on the Login
 Session. The front end sees one answer for every case, and the same answer for a person
 who does not exist.
 
-1. The identifier carries a domain that `identity_provider_domains` holds, live and
-   active. That provider answers.
-2. No domain match, and the person holds exactly one Identity Link whose provider
-   accepts a typed password. That provider answers.
+1. The identifier carries a domain that `user_federation_domains` holds, live and
+   active. That federation answers.
+2. No domain match, and the person holds exactly one Federation Link whose federation
+   accepts a typed password. That federation answers.
 3. No domain match, and the person holds a password hash. The local bcrypt compare
    answers, as it does today.
 4. No domain match and no local person. If the Tenant holds exactly one live active
-   provider, that provider answers. If it holds two or more, refuse.
+   federation, that federation answers. If it holds two or more, refuse.
 
 Case 4 is how a person the directory owns signs in for the first time with a bare
 username. The count covers both levels, Tenant-wide rows and Organization rows
@@ -179,15 +195,15 @@ returns before the case 4 read, so a claim alone routes an offboarded person str
 the first bind. The refusal therefore lives in `Provision`, where every case arrives.
 See "Never revive a person the Tenant already holds" below.
 
-A Tenant that registers a second provider therefore loses the bare-username route for
+A Tenant that registers a second federation therefore loses the bare-username route for
 everybody. That is stated, not accidental. The alternative sends one customer's
 password to another customer's server. See ADR 0013.
 
 Case 2 refuses when a person holds two links that both accept a password. The unique
-key above makes that impossible inside one provider, so it can happen only across two
+key above makes that impossible inside one federation, so it can happen only across two
 directories.
 
-The resolved provider id goes into the Login Session blob. That costs one struct field
+The resolved federation id goes into the Login Session blob. That costs one struct field
 and no migration: the blob is `SealJSON(LoginSession)` and no SQL read names a field
 inside it, `internal/session/model.go:147-158`. Sessions already in flight decode the
 new field to its zero value, which is case 3, which is what they were.
@@ -218,18 +234,18 @@ new field to its zero value, which is case 3, which is what they were.
   the existing property, so this one must be asserted by a new test.
 - **A directory that does not answer is not a wrong password.** A dial failure, a
   timeout, a TLS failure, and a bind failure of the service credential answer
-  `directory_unavailable`. Neither is a credential failure and neither spends the budget.
-  That answer discloses that the identifier is served by a directory, and story 4 pays
-  for it on purpose: the state is transient, and the person needs to call the right
-  helpdesk.
-- **A provider that is inactive or soft deleted answers `invalid_credentials` at
+  `federation_unavailable`. Neither is a credential failure and neither spends the
+  budget. That answer discloses that the identifier is served by a directory, and
+  story 4 pays for it on purpose: the state is transient, and the person needs to call
+  the right helpdesk.
+- **A federation that is inactive or soft deleted answers `invalid_credentials` at
   sign-in**, the same slug an unknown identifier gets. It is not a credential failure
   and it spends no budget, but a slug of its own would name every directory-owned person
-  for as long as the provider stays off, which is a permanent enumeration oracle at
+  for as long as the federation stays off, which is a permanent enumeration oracle at
   `/login/password`. The admin and test routes carry no slug of their own for this
-  state. An administrator reads the state off the provider row, and the connection
-  test still runs against an inactive provider, so a misconfiguration can be fixed
-  and verified before the provider goes active again. A soft-deleted provider
+  state. An administrator reads the state off the federation row, and the connection
+  test still runs against an inactive federation, so a misconfiguration can be fixed
+  and verified before the federation goes active again. A soft-deleted federation
   answers 404 `not_found` on those routes, like every other deleted entity.
 - **Every failure still reaches `refuse`.** `internal/session/service.go:249-260` is the
   only writer of `login.failed` and it has one caller. A bind that returns early writes
@@ -247,8 +263,8 @@ That gap is a defect of the local password path, and this spec does not fix it. 
 refuse to inherit it, because a bind is an outbound call into a customer network that
 any caller can drive with a fresh partial token.
 
-- **A bind budget**, keyed by Tenant and person, on a Redis key of its own. A first
-  bind names no person, and that one is keyed by Tenant and identifier. Copy
+- **An External Proof budget**, keyed by Tenant and person, on a Redis key of its own.
+  A first proof names no person, and that one is keyed by Tenant and identifier. Copy
   `totp.Service.spendGuess`, `internal/totp/service.go:656-695`, including its refusal
   on a Redis error.
 - This is a **fifth** Redis-only exception to the stateless rule, and `CLAUDE.md` is
@@ -258,7 +274,7 @@ any caller can drive with a fresh partial token.
   A spray across many identifiers still reaches the directory. An IP key is the
   upgrade, and it is not built here.
 - A typed form the identifier step cannot resolve keeps a key of its own. Such a form
-  still ends at a person, because the Identity Link names them after the bind. A person
+  still ends at a person, because the Federation Link names them after the bind. A person
   addressable by an unresolvable form therefore keeps a second counter, and the cap on
   them is twice the number. That key folds case and outer space before it digests the
   typed string, because the directory folds both onto one entry. Without the fold, one
@@ -303,12 +319,12 @@ decision is recorded here so that a later reader does not re-open it without a n
 
 ### The person the first bind creates
 
-- The insert writes `users` and `user_humans` in one transaction, plus the Identity
+- The insert writes `users` and `user_humans` in one transaction, plus the Federation
   Link, and it writes `state = active`. Not state 5. `Invite` writes state 5 with a NULL
   hash and `SetPassword` requires state active, so an invited person can never set a
   first password. That defect is real, it predates this work, and this spec does not
   ride on it.
-- `org_id` is the Organization of the provider row. A Tenant-wide provider names the
+- `org_id` is the Organization of the federation row. A Tenant-wide federation names the
   Organization in a column of its own, because `users.org_id` is mandatory.
 - `password_hash` stays NULL for ever. There is no local password for a person the
   directory owns.
@@ -326,7 +342,7 @@ decision is recorded here so that a later reader does not re-open it without a n
   let through, and the deactivated person it answers a 500 for.
 - **Three forms are read, not one.** The typed identifier is the read case 4 makes, moved
   to where case 1 also arrives. The two entry attributes catch a person held under a form
-  they did not type, and a provider that maps no email attribute leaves one of them
+  they did not type, and a federation that maps no email attribute leaves one of them
   empty. Any single read leaves the others through.
 - Six attributes are mapped: the stable external id, the username, the email, the first
   name, the last name, and the display name. Zitadel maps thirteen. Nine of those would
@@ -335,7 +351,7 @@ decision is recorded here so that a later reader does not re-open it without a n
   `users.attributes` has no Go writer, and a mapper of source type 3 or 4 passes
   validation and is then dropped at `internal/oidc/claims_service.go:129-139`.
 - `attr_id` is the stable id of the directory, `objectGUID` in Active Directory. The
-  Identity Link stores it, so a username changed in the directory never orphans the
+  Federation Link stores it, so a username changed in the directory never orphans the
   person.
 
 ### Guard rails
@@ -344,7 +360,7 @@ Three refusals, each of the same shape as the rule that forbids deletion of the 
 owner. The first one runs in three places, and the bullet under it says why.
 
 - **Never leave a Tenant with zero local `IAM_OWNER`.** The check runs where a Role is
-  removed, where a person is tied to a provider, and **where a domain is claimed**. One
+  removed, where a person is tied to a federation, and **where a domain is claimed**. One
   directory outage must not lock every administrator out of the Console.
 - A domain claim ties people the same way a link does, and it is the easier one to miss.
   Case 1 outranks case 3, so claiming `corp.example` routes every person whose email
@@ -352,12 +368,12 @@ owner. The first one runs in three places, and the bullet under it says why.
   directory account. The claim is refused when it would take the last local `IAM_OWNER`
   of the Tenant with it, and the Console names the people the claim moves before it
   saves.
-- **Never remove the last Identity Link of a person who holds no password hash.** That
+- **Never remove the last Federation Link of a person who holds no password hash.** That
   removal looks like tidy-up and it locks the person out for ever.
-- **A provider that is inactive or soft deleted refuses every sign-in of the people tied
-  to it.** Both states behave alike. Two states that treat the same person differently
-  surprise everybody, and a delete that is blocked by live links traps an administrator
-  whose directory is gone for good.
+- **A federation that is inactive or soft deleted refuses every sign-in of the people
+  tied to it.** Both states behave alike. Two states that treat the same person
+  differently surprise everybody, and a delete that is blocked by live links traps an
+  administrator whose directory is gone for good.
 
 ### The portal
 
@@ -367,8 +383,8 @@ owner. The first one runs in three places, and the bullet under it says why.
   passkey removal at `internal/passkey/account_service.go:147`.
 - A person the directory owns re-proves with a **bind**, the same credential they signed
   in with. One rule serves everybody: prove the credential that signs you in.
-- **Provider Resolution decides the credential, and the stored hash never does.**
-  Case 1 routes a person whose email domain a live active provider claims, and the
+- **Federation Resolution decides the credential, and the stored hash never does.**
+  Case 1 routes a person whose email domain a live active federation claims, and the
   claim writes no row, so that person keeps the hash the claim retired. A compare
   against it would refuse the password that signs them in. `passwordLocal` asks the
   resolver the question the sign-in asks.
@@ -387,39 +403,44 @@ owner. The first one runs in three places, and the bullet under it says why.
 
 Admin routes, on the shared admin group beside `authpolicy`:
 
-- `GET /api/v1/admin/identity-providers`
-- `POST /api/v1/admin/identity-providers`
-- `GET /api/v1/admin/identity-providers/:id`
-- `PUT /api/v1/admin/identity-providers/:id`
-- `DELETE /api/v1/admin/identity-providers/:id`
-- `POST /api/v1/admin/identity-providers/:id/test`
-- `POST /api/v1/admin/identity-providers/claim-preview`
-- `GET /api/v1/admin/users/:id/identity-links`
-- `DELETE /api/v1/admin/users/:id/identity-links/:linkId`
+- `GET /api/v1/admin/user-federations`
+- `POST /api/v1/admin/user-federations`
+- `GET /api/v1/admin/user-federations/:id`
+- `PUT /api/v1/admin/user-federations/:id`
+- `DELETE /api/v1/admin/user-federations/:id`
+- `POST /api/v1/admin/user-federations/test`
+- `POST /api/v1/admin/user-federations/:id/test`
+- `POST /api/v1/admin/user-federations/claim-preview`
+- `GET /api/v1/admin/users/:id/federation-links`
+- `DELETE /api/v1/admin/users/:id/federation-links/:linkId`
+
+Two paths reach one connection test. The path with an id tests a stored federation.
+The path without one tests a configuration nobody saved yet, so an administrator
+checks a directory before the first save.
 
 Every answer uses the one envelope. Every error carries a slug. New slugs:
-`directory_unavailable`, `domain_already_claimed`, `last_local_owner`,
-`last_identity_link`, `password_not_local`, `directory_no_entry`,
-`directory_misconfigured`.
+`federation_unavailable`, `domain_already_claimed`, `last_local_owner`,
+`last_federation_link`, `password_not_local`, `federation_no_account`,
+`federation_misconfigured`.
 
-`directory_disabled` and `provider_ambiguous` are not slugs. Both name a state that
-no answer carries. `directory_disabled` is an audit `reason` only. The resolver
-swallows the ambiguous case, because a slug for it counts the providers of a tenant
+`federation_disabled` and `federation_ambiguous` are not slugs. Both name a state that
+no answer carries. `federation_disabled` is an audit `reason` only. The resolver
+swallows the ambiguous case, because a slug for it counts the federations of a tenant
 for an unauthenticated caller.
 
-`directory_no_entry` is the portal re-proof only, and it answers 409. A person whom
-no single directory entry proves holds a broken account: no live active Identity
+`federation_no_account` is the portal re-proof only, and it answers 409. A person whom
+no single directory entry proves holds a broken account: no live active Federation
 Link, more than one, a search that matched none, or a search that matched two. The
 state stays until somebody edits the links or the directory, so the answer never
 tells the person to try again. The sign-in keeps `invalid_credentials` for the same
 states, because the password step must not say which people a tenant holds.
 
-`directory_misconfigured` is the sign-in only, and it answers 409. Two states reach
-it, and both are configuration faults of the first bind: the provider names no
+`federation_misconfigured` is the sign-in only, and it answers 409. Two states reach
+it, and both are configuration faults of the first bind: the federation names no
 organization to create people in, and the directory entry carries no username. The
 bind proved the password, so it is not a credential failure, and only an
 administrator or somebody with the directory can mend it, so the answer never tells
-the person to try again. The slug discloses no more than `directory_unavailable`
+the person to try again. The slug discloses no more than `federation_unavailable`
 already does. It names a fault of the configuration, and never which people a tenant
 holds.
 
@@ -431,9 +452,11 @@ request and their answer, which is the point.
 - Sign-in keeps its two actions, `login.succeeded` and `login.failed`. A bind failure is
   a `login.failed` with a metadata key that names the cause. `recorder.go` holds a
   metadata allow-list at `:258-283`, and the new key is added there.
-- Four new admin actions: `idp.created`, `idp.updated`, `idp.deleted`, `idp.tested`. Two
-  link actions: `idp.linked` and `idp.unlinked`. `idp.linked` is what records the person
-  a bind created, because the link is hard deleted and the trail is the record.
+- Four new admin actions: `federation.created`, `federation.updated`,
+  `federation.deleted`, and `federation.tested`. Two link actions:
+  `federation.linked` and `federation.unlinked`. `federation.linked` is what records
+  the person a bind created, because the link is hard deleted and the trail is the
+  record.
 - One new Entity constant. `internal/audit/recorder.go` is a merge-conflict hotspot: the
   Action block, the Entity constant, and the result map are three separate edits in one
   file.
@@ -445,9 +468,9 @@ request and their answer, which is the point.
 One screen, in the Tenant section beside policies and notifications, at
 `web/console-ui/src/components/console/sidebar.tsx:59-68`, with `tenantOnly: true`.
 
-- `web/console-ui/src/app/(console)/identity-providers/page.tsx`, a Server Component
+- `web/console-ui/src/app/(console)/user-federation/page.tsx`, a Server Component
   that seeds the tenant scope through `serverRead`, copying `policies/page.tsx`.
-- `web/console-ui/src/components/views/identity-providers.tsx`, the client view.
+- `web/console-ui/src/components/views/user-federation.tsx`, the client view.
 - Edits: `lib/console-api.ts` for the interfaces and the path builder, `lib/helpers.ts`
   for `PAGE_PATH` and `PAGE_TITLES`, and one `NAV` entry.
 - No new BFF route file. `app/api/admin/[...path]/route.ts` already proxies every method
@@ -469,24 +492,25 @@ the fake instead of the wire behaviour that carries every real defect.
 ### What is tested
 
 - The full sign-in of a person the directory owns, end to end, and `pwd` in `amr`.
-- Each of the four resolution cases, and the refusal when a Tenant holds two providers.
+- Each of the four resolution cases, and the refusal when a Tenant holds two
+  federations.
 - The first bind: the row it writes, `state = active`, the NULL password hash, the
   Organization it lands in, and the link.
 - A second sign-in of the same person, which creates nothing and changes no attribute.
 - A wrong directory password and an entry that does not exist answer the same slug, and
   the password step takes the same time. This is the enumeration test, and it is the one
   the existing suite never had.
-- A directory that does not answer: `directory_unavailable`, no budget spent, and a
+- A directory that does not answer: `federation_unavailable`, no budget spent, and a
   `login.failed` row present.
-- The two configuration faults of the first bind, a provider that names no
-  organization and an entry that carries no username: `directory_misconfigured` and
-  never `directory_unavailable`, with a `login.failed` row that names the reason.
+- The two configuration faults of the first bind, a federation that names no
+  organization and an entry that carries no username: `federation_misconfigured` and
+  never `federation_unavailable`, with a `login.failed` row that names the reason.
 - The budget: the cap, the refusal on a Redis error, and the Guessing Budget untouched.
-- An inactive provider and a soft-deleted provider both refuse, with the same slug an
-  unknown identifier gets.
+- An inactive federation and a soft-deleted federation both refuse, with the same slug
+  an unknown identifier gets.
 - A deactivated person and a soft-deleted person never reach case 4, and a claimed domain
   that routes them through case 1 is refused in the write: no second `users` row, no
-  Identity Link, and no `idp.linked` row.
+  Federation Link, and no `federation.linked` row.
 - The three guard rails, each with the row it refuses to leave behind, and the domain
   claim that would take the last local `IAM_OWNER` with it.
 - The portal: the bind re-proof on TOTP disable, the empty hash, and the person a
@@ -503,8 +527,9 @@ above. This is a known gap.
 
 ## Out of Scope
 
-- Every redirect provider: OIDC, SAML, Google, Microsoft Entra, and every other social
-  or enterprise SSO provider. The tables hold them and no code here serves them.
+- Every External Identity Provider: OIDC, SAML, Google, Microsoft Entra, and every
+  other redirect kind. `docs/adr/0014` gives that concept a table, a package, and a
+  link table of its own, and none of the three exists.
 - A sync job that reads the whole directory, and any disable that arrives before the
   next sign-in.
 - Refresh of attributes on a later bind.
@@ -513,7 +538,9 @@ above. This is a known gap.
   own ticket.
 - An IP-keyed budget. See "The IP key is not due" above for the decision and its cost.
 - An outbound agent for a directory that refuses to open a port.
-- Any change to `user_humans.di_user_uuid`. A Scan Verifier is not an Identity Provider.
+- Any change to `user_humans.di_user_uuid`. A Scan Verifier is not a User Federation.
+  It holds no credential of the people of this gateway, and it answers one scan.
+  `CONTEXT.md` says the same.
 - Any change to `acr`, to the Assurance Level, or to the finalize gate.
 
 ## Further Notes
@@ -523,11 +550,17 @@ above. This is a known gap.
   one meaning. The others are enrolment, session, and code.
 - Two words are taken before this work names anything. `applications.app_type = 2` is
   SAML for an application the gateway would serve, which is the opposite direction.
-  `application_oidc_configs.federation_config` belongs to a relying party. Neither is an
-  Identity Provider, and neither is touched.
+  `application_oidc_configs.federation_config` belongs to a relying party. Neither is a
+  User Federation, and neither is touched. The word "federation" therefore carries two
+  meanings in the schema, and the two never meet. `federation_config` configures an
+  application this gateway serves, and `user_federations` configures an external store
+  this gateway proves a password against. Read the table name before the column name.
 - ADR 0013 records the table shape, the replace rule, the bind at the password step, and
-  the refusal when a Tenant holds two providers.
-- `CLAUDE.md` gains the fifth Redis-only exception in the same change as the budget.
+  the refusal when a Tenant holds two federations. ADR 0014 supersedes its naming, adds
+  `server_type`, and holds the words Identity Provider and Identity Link for the
+  redirect kind.
+- `CLAUDE.md` gains the fifth Redis-only exception, the External Proof budget, in the
+  same change as the budget itself.
 - Three defects were found while this spec was written, and each one is called out in
   place above: the lockout that only resets, the `checkPassword` guard that is missing,
   and the invitation that can never set a first password. The second is fixed here

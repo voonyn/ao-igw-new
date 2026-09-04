@@ -113,15 +113,15 @@ failure refuses the request instead of letting it through.
 - The challenge budget in `passkey.Service.spendChallenge`. It caps sign-in challenge
   starts on a key of its own, for the same reason: a start proves nothing, and the
   person who cancels it is mid sign-in.
-- The connection test budget in `identityprovider.Service.spendTest`. The test is an
+- The connection test budget in `userfederation.Service.spendTest`. The test is an
   outbound call into a customer network that any Console administrator of the Tenant
   drives, against a host the Tenant names. A failure that let it through would leave
   that call unmetered for as long as Redis is down.
-- The bind budget in `identityprovider.Service.spendBind`. A bind is an outbound call
-  into a customer network that any caller can drive, and a failure that let it through
-  would turn the password step into a lever against that directory. The password step
-  itself carries no budget, so there is nothing weaker to fall back to. See
-  `docs/specs/0002-directory-sign-in.md`.
+- The External Proof budget in `userfederation.Service.spendProof`. A proof is an
+  outbound call into a customer network that any caller can drive, and a failure that
+  let it through would turn the password step into a lever against that store. The
+  password step itself carries no budget, so there is nothing weaker to fall back to.
+  See `docs/specs/0002-directory-sign-in.md`.
 - The passkey ceremony in `passkey.Service.store` and `passkey.Service.consume`. A
   ceremony that proceeds without a stored challenge proves nothing, and a challenge
   a table held would outlive the one prompt it belongs to.

@@ -368,8 +368,10 @@ record an event, so by the time the feed is readable it has something to show.
 - Cross-tenant authority. No operator identity exists outside a tenant, and no
   token signed by one tenant can authorize a write to another. A system resource
   identifier and a separate key set are a later task with their own ADR.
-- Upstream identity provider federation. No table, no migration, and no login flow
-  branch exists for it.
+- The External Identity Provider: the redirect kind, which hands the gateway the
+  answer instead of a password. No table, no migration, and no login flow branch
+  exists for it. User Federation is a separate concept and it is built. See
+  `docs/adr/0014`.
 - Project roles, project grants, and branding. Without them the four project
   settings enforce nothing, which is why they carry a label.
 - The six unread OIDC JSON blobs on an application, and `signing_alg_config` on the
