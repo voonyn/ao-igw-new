@@ -13,6 +13,8 @@ published to a remote tracker, and the GitHub remote is used for code alone.
   says "None — can start immediately".
 - Triage state is a `Status:` line near the top of each issue file. See
   `triage-labels.md` for the role strings.
+- A closed ticket carries `Status: done`. It is the only closed word for a ticket under
+  `issues/`. The word `resolved` belongs to a wayfinder map child ticket alone.
 - Comments and conversation history append to the bottom of the file, under a
   `## Comments` heading.
 
